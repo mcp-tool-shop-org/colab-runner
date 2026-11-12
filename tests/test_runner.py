@@ -323,5 +323,50 @@ class CliEnvTest(unittest.TestCase):
             self.assertEqual(cli_from_env().argv, ["python", "fake.py"])
 
 
+class CliRefusalTest(unittest.TestCase):
+    """An uncapped window must be impossible to start."""
+
+    BASE = ["run", "--session", "s", "--out-dir", "o", "--hold-s", "1", "--wall-s", "10"]
+
+    def call(self, *extra):
+        import contextlib
+        import io
+
+        from colab_runner.__main__ import main
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = main(self.BASE + list(extra))
+        return code, err.getvalue()
+
+    def test_no_cap_is_refused(self):
+        code, err = self.call("--max-rate", "10.5")
+        self.assertEqual(code, 3)
+        self.assertIn("REFUSED: CAP_REQUIRED", err)
+
+    def test_no_max_rate_is_refused(self):
+        code, err = self.call("--cap", "5")
+        self.assertEqual((code, "MAX_RATE_REQUIRED" in err), (3, True))
+
+    def test_cap_zero_negative_or_not_finite_is_refused(self):
+        for bad in ("0", "-1", "nan", "inf"):
+            code, err = self.call("--max-rate", "10.5", "--cap", bad)
+            self.assertEqual((code, "CAP_INVALID" in err), (3, True), bad)
+
+    def test_max_rate_zero_negative_or_not_finite_is_refused(self):
+        for bad in ("0", "-0.1", "nan", "inf"):
+            code, err = self.call("--cap", "5", "--max-rate", bad)
+            self.assertEqual((code, "MAX_RATE_INVALID" in err), (3, True), bad)
+
+    def test_the_old_rate_flag_no_longer_stands_in_for_max_rate(self):
+        with self.assertRaises(SystemExit):
+            self.call("--rate", "10.5", "--cap", "5")
+
+    def test_the_guard_itself_refuses_a_zero_rate_or_cap(self):
+        for rate, cap in ((0, 5), (-1, 5), (1, 0), (1, -2)):
+            with self.assertRaises(ValueError):
+                SpendGuard(rate_per_h=rate, cap=cap)
+
+
 if __name__ == "__main__":
     unittest.main()

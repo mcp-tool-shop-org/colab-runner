@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
+from typing import Optional
 
 from colab_runner import __version__
 from colab_runner.colab_cli import cli_from_env
@@ -27,24 +29,42 @@ def _run_parser() -> argparse.ArgumentParser:
     p.add_argument("--poll-s", type=float, default=60.0)
     p.add_argument("--progress-stall-s", type=float, default=900.0)
     p.add_argument("--setup-stall-s", type=float, default=600.0)
-    p.add_argument("--rate", type=float, help="this window's priced rate per hour (with --cap)")
-    p.add_argument("--cap", type=float)
+    p.add_argument("--max-rate", type=float, help="REQUIRED: the highest rate per hour this window may bill; prices it")
+    p.add_argument("--cap", type=float, help="REQUIRED: the window's spend cap, in compute units")
     p.add_argument("--margin", type=float, default=0.0)
     p.add_argument("--env", action="append", default=[], help="K=V passed to the VM cells (repeatable)")
     return p
 
 
+def refuse_unbounded(max_rate, cap) -> Optional[tuple[str, str]]:
+    """An uncapped window must be impossible to start: no cap, a non-positive or non-finite cap, or a missing or
+    non-positive max-rate is refused with a named code before anything runs."""
+    if cap is None:
+        return "CAP_REQUIRED", "--cap is required: a window without a cap cannot be started"
+    if not math.isfinite(cap) or cap <= 0:
+        return "CAP_INVALID", "--cap must be a finite number greater than 0 (got %r)" % cap
+    if max_rate is None:
+        return "MAX_RATE_REQUIRED", "--max-rate is required: it prices the window when no stable rate can be attributed"
+    if not math.isfinite(max_rate) or max_rate <= 0:
+        return "MAX_RATE_INVALID", "--max-rate must be a finite number greater than 0 (got %r)" % max_rate
+    return None
+
+
 def run_command(argv: list[str]) -> int:
     args = _run_parser().parse_args(argv)
+    refusal = refuse_unbounded(args.max_rate, args.cap)
+    if refusal:
+        print("REFUSED: %s: %s" % refusal, file=sys.stderr)
+        return 3
     env = dict(kv.split("=", 1) for kv in args.env if "=" in kv)
-    guard = SpendGuard(args.rate, args.cap, args.margin) if args.rate is not None and args.cap is not None else None
+    guard = SpendGuard(args.max_rate, args.cap, args.margin)
     runner = Runner(
         cli_from_env(), args.session, Path(args.out_dir), job=args.job, content=args.content,
         poll_s=args.poll_s, log=lambda s: print(s, file=sys.stderr),
     )
     result = runner.run(
         script=args.script, hold_s=args.hold_s, heartbeat_s=args.heartbeat_s, env=env, wall_s=args.wall_s,
-        cap_check=guard.check if guard else None, progress_stall_s=args.progress_stall_s,
+        cap_check=guard.check, progress_stall_s=args.progress_stall_s,
         setup_stall_s=args.setup_stall_s, resident=args.resident,
     )
     print("RUN_END reason=%s rc=%s" % (result.reason, result.rc))

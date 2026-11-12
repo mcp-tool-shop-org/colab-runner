@@ -46,6 +46,11 @@ class SpendGuard:
     cleanup_reserve: float = 0.0
     balance_records: list = field(default_factory=list)
 
+    def __post_init__(self):
+        # a guard with rate 0 prices every window at 0 forever, and a non-positive cap trips at once or never
+        if not (self.rate_per_h > 0 and self.cap > 0):
+            raise ValueError("SpendGuard needs a rate and a cap greater than 0 (rate=%r, cap=%r)" % (self.rate_per_h, self.cap))
+
     @property
     def ceiling(self) -> float:
         return self.cap - self.margin - self.cleanup_reserve

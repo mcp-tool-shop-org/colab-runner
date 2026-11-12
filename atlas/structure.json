@@ -41,15 +41,16 @@
         {
           "exports": [
             "main",
+            "refuse_unbounded",
             "run_command"
           ],
           "failurePaths": [
             {
               "kind": "raise",
-              "line": 69
+              "line": 89
             }
           ],
-          "hash": "e512ce5a386a8c0fff3e1db589f4ac22a17a93fc0625244139af0da6f5b8866e",
+          "hash": "2e4a6cb5021609c06408bfebc86f606c02e7fa26189e26f7b86a48d7191633cc",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -111,7 +112,14 @@
             "attribute_rate",
             "neighbour_warning"
           ],
-          "hash": "894ed34636d09c0f0a2609fae2a1b2de617c1f4de3b144e7087ff996da9fd188",
+          "failurePaths": [
+            {
+              "in": "__post_init__",
+              "kind": "raise",
+              "line": 52
+            }
+          ],
+          "hash": "33dbb7b945f1dbb62deee5379d475863e2455df3a3053c2b4f0b6b887d81b538",
           "path": "colab_runner/spend.py"
         },
         {
@@ -182,6 +190,112 @@
         {
           "hash": "f9776e616c6a0efd2fcfcf78e7ad7ebbac5e3843b3cf78a549df716acacd8b2e",
           "path": "colab_runner/vm/start.py"
+        },
+        {
+          "hash": "818467c545b7368fa4e1b81b18996e4cd677864b7c835fd5d2ee1208cd34a781",
+          "path": "colab_runner/window_lib/PROVENANCE.md"
+        },
+        {
+          "hash": "d147ba95ade4ff7b17128a27750927d7092a143151841e0147fa7ecd33453ecf",
+          "path": "colab_runner/window_lib/colab_window.sh"
+        },
+        {
+          "exports": [
+            "check_host_ram_projection",
+            "compute_cap_trip",
+            "evaluate_cap_budget",
+            "evaluate_cap_guard",
+            "evaluate_host_ram_projection",
+            "evaluate_vitals_and_stall_guard",
+            "evaluate_wall_guard",
+            "format_dry_cap_budget",
+            "gpu_projection_rate",
+            "host_ram_reading",
+            "host_ram_status",
+            "is_vitals_line",
+            "main",
+            "normalize_hex_sha",
+            "parse_active_assignments",
+            "parse_usage_text",
+            "parse_vitals_log",
+            "run_between_item_fetch",
+            "run_output_bytes",
+            "scrub_colab_tokens",
+            "scrub_file_in_place",
+            "sha256_file",
+            "sha256_self_normalized",
+            "update_window_rate",
+            "verify_input_shas",
+            "wall_cap_refusal",
+            "window_rate_decision"
+          ],
+          "failurePaths": [
+            {
+              "in": "verify_input_shas",
+              "kind": "raise",
+              "line": 70
+            },
+            {
+              "in": "verify_input_shas",
+              "kind": "raise",
+              "line": 78
+            },
+            {
+              "in": "parse_usage_text",
+              "kind": "raise",
+              "line": 341
+            },
+            {
+              "in": "_select_rate",
+              "kind": "raise",
+              "line": 361
+            },
+            {
+              "in": "_failure_rates",
+              "kind": "except",
+              "line": 374
+            },
+            {
+              "in": "parse_usage_text",
+              "kind": "except",
+              "line": 450
+            },
+            {
+              "in": "parse_usage_text",
+              "kind": "raise",
+              "line": 453
+            },
+            {
+              "in": "parse_vitals_log",
+              "kind": "except",
+              "line": 743
+            },
+            {
+              "in": "check_host_ram_projection",
+              "kind": "raise",
+              "line": 1132
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 1277
+            },
+            {
+              "kind": "raise",
+              "line": 1391
+            }
+          ],
+          "hash": "2998b4f8e3aea3aea2ecc9f779c743b4b44824b30e7ff55fb1da782d7a416c69",
+          "path": "colab_runner/window_lib/launch_guards.py"
+        },
+        {
+          "exports": [
+            "prepare_content_downloads",
+            "run_remote_script",
+            "scrub_line"
+          ],
+          "hash": "393929ed704ccbacaee2b590010e348a5d635cbdd70361209d3e0103d1fba6eb",
+          "path": "colab_runner/window_lib/remote_runner.py"
         }
       ],
       "globs": [
@@ -192,15 +306,15 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 5,
+          "reads": 13,
           "where": [
             "caller"
           ],
-          "writes": 2
+          "writes": 7
         }
       ],
-      "outsideReads": 5,
-      "outsideWrites": 2,
+      "outsideReads": 13,
+      "outsideWrites": 7,
       "role": "code",
       "testRunners": [
         "unittest"
@@ -241,7 +355,7 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "a8f4c5456f4e67bfdadfcaea1f023111fcacaef2219354898ec0c7b486dacc6f",
+          "hash": "ea34ee81c2f2ac04fbf88102076f2cca4a687efcab846ddcab3744e90bfde0d7",
           "path": "pyproject.toml"
         },
         {
@@ -293,14 +407,16 @@
           "exports": [
             "make"
           ],
-          "hash": "0eff88602f93849d845e160767262c3c6c5bd701cf118e69bcb889fe16d8712f",
+          "hash": "2f8bccaa81840355c3211eede64c416a94d998e1ea3ad03db9f60e0ce95e6f62",
           "importOrder": [
             "colab_runner/runner.py",
             "colab_runner/spend.py",
             "tests/fakes.py",
-            "colab_runner/colab_cli.py"
+            "colab_runner/colab_cli.py",
+            "colab_runner/__main__.py"
           ],
           "importsFiles": [
+            "colab_runner/__main__.py",
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py",
             "colab_runner/spend.py",
@@ -323,7 +439,7 @@
             "run_cell",
             "wait_for"
           ],
-          "hash": "ea8f21168ffcc5dd64c53233f8f66169ee1432a079e1c8c0040f750e94de341f",
+          "hash": "88d39242b1fdf8342a8931bb2f68414cf1aea992a53224f273bda4491889542e",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py"
@@ -332,6 +448,15 @@
           "spawns": [
             "colab_runner/__main__.py"
           ],
+          "testFramework": "unittest"
+        },
+        {
+          "hash": "1023f1d289b54f55169436750812e179f85d0e835ecdca39fd1b023fdaf73207",
+          "names": [
+            "colab_runner/window_lib/launch_guards.py",
+            "colab_runner/window_lib/remote_runner.py"
+          ],
+          "path": "tests/test_window_lib.py",
           "testFramework": "unittest"
         }
       ],
@@ -446,7 +571,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 9
+          "files": 11
         },
         {
           "boundary": "root",
@@ -456,7 +581,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 6
+          "files": 7
         }
       ],
       "readers": [],
@@ -510,7 +635,7 @@
         },
         {
           "coverage": true,
-          "files": 6,
+          "files": 7,
           "job": "ci",
           "runner": "unittest",
           "step": "Coverage (floor 90)"
@@ -605,8 +730,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "3ef5ad12acfaaf43d1c5b34169bd4090a4a6a4d8",
-    "tracked": 24
+    "commit": "ba58165c0d51d3b9fbbaf61fece2b5784237d391",
+    "tracked": 29
   },
   "landings": [
     {
@@ -645,6 +770,17 @@
     {
       "readers": [
         {
+          "by": "pyproject.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "colab_runner/window_lib",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
           "by": "tests/test_vm_cells.py",
           "call": "literal",
           "confidence": "ast",
@@ -658,6 +794,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 6,
+  "testFiles": 7,
   "unassigned": []
 }

@@ -21,10 +21,14 @@ Repository = "https://github.com/mcp-tool-shop-org/colab-runner"
 [tool.setuptools.packages.find]
 include = ["colab_runner*"]
 
+[tool.ruff]
+# vendored byte for byte (see colab_runner/window_lib/PROVENANCE.md); never edited here
+extend-exclude = ["colab_runner/window_lib"]
+
 [tool.ruff.lint.per-file-ignores]
 # the VM cells are concatenated with lib.py and run as one kernel cell, so their names resolve at run time
 "colab_runner/vm/*.py" = ["F821"]
 
 [tool.coverage.run]
 # the VM cells run on the VM (and under exec() in tests), where coverage cannot follow them
-omit = ["colab_runner/vm/*"]
+omit = ["colab_runner/vm/*", "colab_runner/window_lib/*"]

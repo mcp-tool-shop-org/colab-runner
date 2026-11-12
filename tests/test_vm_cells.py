@@ -224,7 +224,7 @@ class EndToEndTest(unittest.TestCase):
                    COLAB_RUNNER_CLI="%s %s" % (sys.executable, FAKE))
         proc = subprocess.run(
             [sys.executable, "-m", "colab_runner", "run", "--session", "s", "--out-dir", str(self.out), "--content", str(self.vm),
-             "--hold-s", "0.4", "--heartbeat-s", "0.1", "--wall-s", "60", "--poll-s", "0.2", "--rate", "0.26", "--cap", "0.9",
+             "--hold-s", "0.4", "--heartbeat-s", "0.1", "--wall-s", "60", "--poll-s", "0.2", "--max-rate", "0.26", "--cap", "0.9",
              "--env", "X=1"],
             env=env, capture_output=True, text=True, timeout=120,
         )
