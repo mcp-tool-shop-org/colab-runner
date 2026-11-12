@@ -1,15 +1,18 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-12 from commit ba58165 by Atlas 1.26.0.
+Mapped at 2026-11-12 from commit cc633ab by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (18 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
+4 parts, mostly Python (19 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
 
-## What changed since 2026-11-12 (3ef5ad1)
+## What changed since 2026-11-12 (ba58165)
 
-- colab_runner/window_lib/ is now read by pyproject.toml.
-- 5 files added and 5 changed content, across 3 parts.
+- colab_runner/vm/lib.py is now also read by tests/test_window_lib.py.
+- colab_runner/vm/poll.py is now read by tests/test_window_lib.py.
+- colab_runner/window_lib/PROVENANCE.md is now read by tests/test_window_lib.py.
+- And 3 more new writers and readers of places.
+- 1 file added and 2 changed content, across 3 parts.
 
 ## What comes in
 

@@ -19,11 +19,38 @@ class WindowLibProvenanceTest(unittest.TestCase):
 
     def test_no_other_file_sits_in_the_vendored_directory(self):
         names = sorted(p.name for p in LIB.iterdir() if p.name != "__pycache__")
-        self.assertEqual(names, ["PROVENANCE.md", "colab_window.sh", "launch_guards.py", "remote_runner.py"])
+        self.assertEqual(names, ["PROVENANCE.md", "__init__.py", "colab_window.sh", "launch_guards.py", "remote_runner.py"])
 
     def test_the_vendored_files_have_unix_line_endings(self):
         for name in ("colab_window.sh", "launch_guards.py", "remote_runner.py"):
             self.assertNotIn(b"\r\n", (LIB / name).read_bytes(), name)
+
+
+class WheelContentsTest(unittest.TestCase):
+    def test_the_built_wheel_ships_the_vendored_files_and_the_vm_cells(self):
+        import subprocess
+        import sys
+        import tempfile
+        import zipfile
+
+        root = Path(__file__).parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pip", "wheel", str(root), "--no-deps", "-q", "-w", tmp],
+                capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr[-800:])
+            wheel = next(Path(tmp).glob("colab_runner-*.whl"))
+            names = set(zipfile.ZipFile(wheel).namelist())
+        for want in (
+            "colab_runner/window_lib/colab_window.sh",
+            "colab_runner/window_lib/launch_guards.py",
+            "colab_runner/window_lib/remote_runner.py",
+            "colab_runner/window_lib/PROVENANCE.md",
+            "colab_runner/vm/lib.py",
+            "colab_runner/vm/poll.py",
+        ):
+            self.assertIn(want, names)
 
 
 if __name__ == "__main__":

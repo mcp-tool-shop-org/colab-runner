@@ -196,6 +196,11 @@
           "path": "colab_runner/window_lib/PROVENANCE.md"
         },
         {
+          "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "noStatements": true,
+          "path": "colab_runner/window_lib/__init__.py"
+        },
+        {
           "hash": "d147ba95ade4ff7b17128a27750927d7092a143151841e0147fa7ecd33453ecf",
           "path": "colab_runner/window_lib/colab_window.sh"
         },
@@ -355,7 +360,7 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "ea34ee81c2f2ac04fbf88102076f2cca4a687efcab846ddcab3744e90bfde0d7",
+          "hash": "e7313177bac960b340af393198098d76ac0e64bdb30d9fee04bf9945da077eae",
           "path": "pyproject.toml"
         },
         {
@@ -451,8 +456,10 @@
           "testFramework": "unittest"
         },
         {
-          "hash": "1023f1d289b54f55169436750812e179f85d0e835ecdca39fd1b023fdaf73207",
+          "hash": "98757616589c76708a2e0c1abbba0856fb37f492b0ece40c27740ecdc3e6ccfb",
           "names": [
+            "colab_runner/vm/lib.py",
+            "colab_runner/vm/poll.py",
             "colab_runner/window_lib/launch_guards.py",
             "colab_runner/window_lib/remote_runner.py"
           ],
@@ -571,7 +578,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 11
+          "files": 12
         },
         {
           "boundary": "root",
@@ -730,8 +737,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "ba58165c0d51d3b9fbbaf61fece2b5784237d391",
-    "tracked": 29
+    "commit": "cc633abb7abd43fd4544ca8a309269d9a64fe34e",
+    "tracked": 30
   },
   "landings": [
     {
@@ -762,9 +769,27 @@
           "by": "colab_runner/runner.py",
           "call": "read_text",
           "confidence": "ast"
+        },
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
         }
       ],
       "target": "colab_runner/vm/lib.py",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/vm/poll.py",
       "writers": []
     },
     {
@@ -776,6 +801,54 @@
         }
       ],
       "target": "colab_runner/window_lib",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/window_lib/PROVENANCE.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/window_lib/colab_window.sh",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/window_lib/launch_guards.py",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_window_lib.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/window_lib/remote_runner.py",
       "writers": []
     },
     {

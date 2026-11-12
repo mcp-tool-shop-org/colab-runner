@@ -21,6 +21,11 @@ Repository = "https://github.com/mcp-tool-shop-org/colab-runner"
 [tool.setuptools.packages.find]
 include = ["colab_runner*"]
 
+[tool.setuptools.package-data]
+# the vendored window library and the VM cells are data the runner ships, not importable modules
+"colab_runner.window_lib" = ["*.sh", "*.md", "*.py"]
+"colab_runner.vm" = ["*.py"]
+
 [tool.ruff]
 # vendored byte for byte (see colab_runner/window_lib/PROVENANCE.md); never edited here
 extend-exclude = ["colab_runner/window_lib"]
