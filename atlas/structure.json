@@ -1,0 +1,436 @@
+{
+  "boundaries": [
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "2d3336bfb15f77a7564a4a0899c39a6b98295f3b6a8437c4daf4727a21bb1fd1",
+          "path": ".github/workflows/ci.yml"
+        }
+      ],
+      "globs": [
+        ".github/**"
+      ],
+      "importConfidence": "full",
+      "name": ".github",
+      "origin": "authored",
+      "role": "config",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [
+        "colab_runner/__init__.py"
+      ],
+      "externals": 0,
+      "files": [
+        {
+          "constantOnly": true,
+          "hash": "78598dbf5d00a6c2cb69bbfa60347ee6c735d0297350aed5cb12c817bfa8e75e",
+          "path": "colab_runner/__init__.py"
+        },
+        {
+          "exports": [
+            "main"
+          ],
+          "failurePaths": [
+            {
+              "kind": "raise",
+              "line": 21
+            }
+          ],
+          "hash": "853a09a59f38738b43b597b2cc776e828c74af5c78e06765d02395db6d1659c4",
+          "importsFiles": [
+            "colab_runner/__init__.py"
+          ],
+          "path": "colab_runner/__main__.py"
+        }
+      ],
+      "globs": [
+        "colab_runner/**"
+      ],
+      "importConfidence": "full",
+      "name": "colab_runner",
+      "origin": "authored",
+      "role": "code",
+      "testRunners": [
+        "unittest"
+      ],
+      "testedBy": 1,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
+          "path": ".gitattributes"
+        },
+        {
+          "hash": "d2c9408a02c467abd23efd968315fb51112de7f3f7e743764c4e19b6bee89f09",
+          "path": ".gitignore"
+        },
+        {
+          "hash": "c9783d679ee14ef8e77dc884dc9961dbd1e21cc3634397b7998f7b1be1ace341",
+          "path": "CHANGELOG.md"
+        },
+        {
+          "hash": "367e5141e4f5884e5791c4021f33a9faa958840a5decf44e1b273a87aad1c459",
+          "path": "LICENSE"
+        },
+        {
+          "hash": "b91ecd12d9102269dd6a8499183016994a210a0b540c06c613670135aa4b7169",
+          "path": "README.md"
+        },
+        {
+          "hash": "3430759e0e9dc78320aa93faa7d9140bf540174bf7bfd0a0fcbbba4b5ec0e08d",
+          "path": "codecov.yml"
+        },
+        {
+          "hash": "dbac0e994f5bcab2c1628e63735e49772b60d08561c65be558a710c920886365",
+          "path": "pyproject.toml"
+        },
+        {
+          "hash": "7bce6544cc29b98892eb2f20fe095ca7cbe80018981e6db99ed6da86acb8c1fc",
+          "path": "verify.sh"
+        }
+      ],
+      "globs": [
+        "*"
+      ],
+      "importConfidence": "full",
+      "name": "root",
+      "origin": "authored",
+      "role": "config",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "noStatements": true,
+          "path": "tests/__init__.py"
+        },
+        {
+          "hash": "57c875fc27554920e988b478f4779a2b3c9c0b02b24734f5dce2579f22cfa4f9",
+          "importsFiles": [
+            "colab_runner/__init__.py",
+            "colab_runner/__main__.py"
+          ],
+          "path": "tests/test_scaffold.py",
+          "testFramework": "unittest"
+        }
+      ],
+      "globs": [
+        "tests/**"
+      ],
+      "importConfidence": "full",
+      "name": "tests",
+      "origin": "authored",
+      "role": "test",
+      "testRunners": [
+        "unittest"
+      ],
+      "testedBy": 0,
+      "unresolvedSites": 0
+    }
+  ],
+  "doors": [
+    {
+      "checksCount": 1,
+      "commands": [
+        {
+          "dir": "",
+          "job": "ci",
+          "programs": [
+            "python"
+          ],
+          "step": "Install (the package and its dev tools)"
+        },
+        {
+          "dir": "",
+          "job": "ci",
+          "programs": [
+            "bash"
+          ],
+          "step": "Verify (lint, tests, smoke)"
+        },
+        {
+          "dir": "",
+          "job": "ci",
+          "programs": [
+            "python"
+          ],
+          "step": "Coverage (floor 90)"
+        },
+        {
+          "dir": "",
+          "job": "ci",
+          "programs": [
+            "npx"
+          ],
+          "step": "Atlas check"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/ci.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "ci",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.11",
+                  "range": ">=3.11.0 <3.12.0-0"
+                },
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "Set up Python ${{ matrix.python-version }}",
+              "uses": "actions/setup-python",
+              "version": "${{ matrix.python-version }}"
+            },
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "6",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [],
+      "name": "CI",
+      "permissions": [
+        "contents:read",
+        "id-token:write"
+      ],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "colab_runner",
+          "depth": 0,
+          "files": 2
+        },
+        {
+          "boundary": "root",
+          "depth": 0,
+          "files": 1
+        },
+        {
+          "boundary": "tests",
+          "depth": 0,
+          "files": 2
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "directory": true,
+          "job": "ci",
+          "matched": true,
+          "path": "colab_runner/",
+          "runKind": "checks",
+          "via": "verify.sh → ruff"
+        },
+        {
+          "directory": true,
+          "job": "ci",
+          "matched": true,
+          "path": "tests/",
+          "runKind": "executes",
+          "via": "unittest"
+        },
+        {
+          "job": "ci",
+          "path": "verify.sh",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 3,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "tests": [
+        {
+          "job": "ci",
+          "ran": [
+            "verify.sh"
+          ],
+          "runner": null,
+          "step": "Verify (lint, tests, smoke)",
+          "through": [
+            "verify.sh"
+          ]
+        },
+        {
+          "coverage": true,
+          "files": 2,
+          "job": "ci",
+          "runner": "unittest",
+          "step": "Coverage (floor 90)"
+        }
+      ],
+      "triggers": [
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "pull_request"
+        },
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/**",
+            "atlas/**",
+            "codecov.yml",
+            "colab_runner/**",
+            "pyproject.toml",
+            "tests/**",
+            "verify.sh"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/setup-node",
+        "actions/setup-python",
+        "codecov/codecov-action"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [],
+      "elsewhere": [],
+      "entry": "colab_runner/__init__.py",
+      "file": "pyproject.toml",
+      "kind": "package",
+      "landings": [],
+      "mentions": [],
+      "name": "colab_runner",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "colab_runner",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "path": "colab_runner/__init__.py",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 1,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [],
+      "unpublished": true,
+      "uses": [],
+      "usesWorkflowToken": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "tests",
+      "fromTests": true,
+      "kind": "file",
+      "to": "colab_runner"
+    }
+  ],
+  "engine": "1.26.0",
+  "generatedFrom": {
+    "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7",
+    "tracked": 13
+  },
+  "landings": [
+    {
+      "readers": [
+        {
+          "by": "pyproject.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "README.md",
+      "writers": []
+    }
+  ],
+  "overlaps": [],
+  "submodules": [],
+  "symlinks": [],
+  "testFiles": 2,
+  "unassigned": []
+}

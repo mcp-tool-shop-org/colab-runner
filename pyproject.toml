@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "colab-runner"
+version = "0.0.1"
+description = "Shared runner for paid Google Colab windows: detached jobs, card guards, token-file route, bucket sync."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "mcp-tool-shop" }]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["ruff==0.14.3", "coverage==7.11.0"]
+
+[project.urls]
+Repository = "https://github.com/mcp-tool-shop-org/colab-runner"
+
+[tool.setuptools.packages.find]
+include = ["colab_runner*"]

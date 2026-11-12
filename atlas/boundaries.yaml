@@ -1,0 +1,18 @@
+summary: ""
+boundaries:
+  - name: .github
+    globs:
+      - .github/**
+    role: config
+  - name: colab_runner
+    globs:
+      - colab_runner/**
+    role: code
+  - name: root
+    globs:
+      - "*"
+    role: config
+  - name: tests
+    globs:
+      - tests/**
+    role: test

@@ -1,0 +1,142 @@
+{
+  "authored": [
+    ".github/",
+    "root"
+  ],
+  "breaks": [
+    {
+      "doors": 2,
+      "importedBy": [],
+      "importedByTests": [
+        "tests"
+      ],
+      "kind": "part",
+      "name": "colab_runner",
+      "partLabel": "colab_runner"
+    }
+  ],
+  "changes": {
+    "first": true
+  },
+  "changesTogether": [],
+  "changesTogetherNote": [
+    "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
+  ],
+  "changesTogetherWithTests": 0,
+  "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7",
+  "defaultBranch": "main",
+  "derived": "4 parts, mostly Python (4 files) and shell (1). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
+  "doors": [
+    {
+      "checks": [
+        "colab_runner/"
+      ],
+      "checksCount": 1,
+      "checksMore": 0,
+      "file": ".github/workflows/ci.yml",
+      "id": ".github/workflows/ci.yml",
+      "landings": [],
+      "name": "CI",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "colab_runner",
+          "depth": 0,
+          "files": 2
+        },
+        {
+          "boundary": "root",
+          "depth": 0,
+          "files": 1
+        },
+        {
+          "boundary": "tests",
+          "depth": 0,
+          "files": 2
+        }
+      ],
+      "runs": [
+        "verify.sh",
+        "tests/"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [
+        "uploads coverage to Codecov"
+      ],
+      "stages": [],
+      "triggers": [
+        "on a pull request to main",
+        "on a push to main touching 7 paths",
+        "or by hand"
+      ]
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "pyproject.toml",
+      "id": "pyproject.toml#colab_runner",
+      "kind": "package",
+      "landings": [],
+      "name": "colab_runner",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "colab_runner",
+          "depth": 0,
+          "files": 1
+        }
+      ],
+      "runs": [
+        "colab_runner/__init__.py"
+      ],
+      "runsCount": 1,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": [],
+      "unpublished": true
+    }
+  ],
+  "duplicates": [],
+  "duplicatesLead": null,
+  "duplicatesNote": [],
+  "edges": [],
+  "engine": "1.26.0",
+  "generated": [],
+  "generatedAt": "2026-11-12T19:59:32.761Z",
+  "limits": [
+    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions."
+  ],
+  "mainDoor": ".github/workflows/ci.yml",
+  "partLabels": {
+    ".github": ".github",
+    "colab_runner": "colab_runner",
+    "root": "the repository root",
+    "tests": "tests"
+  },
+  "parts": 4,
+  "readers": [],
+  "repo": "mcp-tool-shop-org/colab-runner",
+  "sequences": [],
+  "startDoor": ".github/workflows/ci.yml",
+  "startHere": [
+    ".github/workflows/ci.yml",
+    "colab_runner/__main__.py"
+  ],
+  "summary": null,
+  "summaryFrom": null,
+  "testFiles": 2,
+  "testedBy": {
+    "colab_runner": 1
+  },
+  "testedCodeParts": 1,
+  "unnamedWrites": 0,
+  "unread": [],
+  "unreadFiles": 0,
+  "unreadNote": [],
+  "untested": [],
+  "untestedNote": [],
+  "written": 0
+}
