@@ -76,22 +76,107 @@
     "files": [
       {
         "commits": 1,
+        "lines": 1,
+        "path": ".gitattributes"
+      },
+      {
+        "commits": 1,
+        "lines": 72,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 9,
+        "path": ".gitignore"
+      },
+      {
+        "commits": 1,
+        "lines": 6,
+        "path": "CHANGELOG.md"
+      },
+      {
+        "commits": 1,
         "lines": 21,
         "path": "LICENSE"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 71,
+        "path": "atlas/README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 18,
+        "path": "atlas/boundaries.yaml"
+      },
+      {
+        "commits": 1,
+        "lines": 142,
+        "path": "atlas/page.json"
+      },
+      {
+        "commits": 1,
+        "lines": 133,
+        "path": "atlas/statistics.json"
+      },
+      {
+        "commits": 1,
+        "lines": 436,
+        "path": "atlas/structure.json"
+      },
+      {
+        "commits": 1,
+        "lines": 12,
+        "path": "codecov.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "colab_runner/__init__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 21,
+        "path": "colab_runner/__main__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 22,
+        "path": "pyproject.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "tests/__init__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 31,
+        "path": "tests/test_scaffold.py"
+      },
+      {
+        "commits": 1,
+        "lines": 10,
+        "path": "verify.sh"
       }
     ]
   },
   "confidence": {
     "level": "low",
-    "reason": "fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions"
+    "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-12T19:59:32.761Z",
+  "generatedAt": "2026-11-12T20:42:01.557Z",
   "generatedFrom": {
-    "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7"
+    "commit": "3ef5ad12acfaaf43d1c5b34169bd4090a4a6a4d8"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 3.5,
+    "appliedChangesetLimit": 7.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -100,16 +185,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-12T14:55:34-05:00",
-    "inScopeFiles": 14,
+    "headDate": "2026-11-12T14:59:44-05:00",
+    "inScopeFiles": 29,
     "pinnedStart": null,
-    "priorFloor": null,
+    "priorFloor": "fallen",
     "qualifyingCommits": 1,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-16T19:55:34.000Z",
+    "since": "2026-05-16T19:59:44.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

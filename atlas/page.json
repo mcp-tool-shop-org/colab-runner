@@ -16,16 +16,58 @@
     }
   ],
   "changes": {
-    "first": true
+    "fileCounts": {
+      "added": 11,
+      "changed": 2,
+      "moved": 0,
+      "parts": 3,
+      "removed": 0
+    },
+    "items": [
+      {
+        "kind": "landing",
+        "sentence": "colab_runner/vm/ is now read by colab_runner/runner.py.",
+        "subjects": [
+          "colab_runner/vm/",
+          "colab_runner/runner.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "colab_runner/vm/lib.py is now read by colab_runner/runner.py.",
+        "subjects": [
+          "colab_runner/vm/lib.py",
+          "colab_runner/runner.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "tests/fake_colab.py is now read by tests/test_vm_cells.py.",
+        "subjects": [
+          "tests/fake_colab.py",
+          "tests/test_vm_cells.py"
+        ]
+      },
+      {
+        "kind": "counts",
+        "sentence": "11 files added and 2 changed content, across 3 parts.",
+        "subjects": []
+      }
+    ],
+    "since": {
+      "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7",
+      "generatedAt": "2026-11-12T19:59:32.761Z"
+    },
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7",
+  "commit": "3ef5ad12acfaaf43d1c5b34169bd4090a4a6a4d8",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (4 files) and shell (1). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
+  "derived": "4 parts, mostly Python (15 files) and shell (1). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
   "doors": [
     {
       "checks": [
@@ -42,7 +84,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 2
+          "files": 9
         },
         {
           "boundary": "root",
@@ -52,7 +94,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 2
+          "files": 6
         }
       ],
       "runs": [
@@ -105,9 +147,11 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-12T19:59:32.761Z",
+  "generatedAt": "2026-11-12T20:42:01.557Z",
   "limits": [
-    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions."
+    "4 writes and 2 reads use paths built at run time and are not named here.",
+    "2 writes and 5 reads go to a path their caller passes, not to this repository.",
+    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
@@ -121,18 +165,16 @@
   "repo": "mcp-tool-shop-org/colab-runner",
   "sequences": [],
   "startDoor": ".github/workflows/ci.yml",
-  "startHere": [
-    ".github/workflows/ci.yml",
-    "colab_runner/__main__.py"
-  ],
+  "startHere": [],
+  "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 2,
+  "testFiles": 6,
   "testedBy": {
-    "colab_runner": 1
+    "colab_runner": 4
   },
   "testedCodeParts": 1,
-  "unnamedWrites": 0,
+  "unnamedWrites": 4,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],
