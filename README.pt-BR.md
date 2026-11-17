@@ -168,7 +168,7 @@ antecipadamente. O saldo da conta é registrado e nunca define o preço da janel
 
 **O que ele afeta.**
 - A sessão do Colab: carrega arquivos de células, inicia e encerra o processo que iniciou, faz o download dos arquivos solicitados e encerra a sessão. Nunca envia um sinal para um processo que pertença a outra execução do colab-runner (`CR_NOT_OURS`).
-- O diretório de saída (`--out-dir`) e o diretório de quarentena irmão `<out-dir>.quarantine/` no sistema. Um diretório básico `Colab.download`, sem diretório de quarentena, usa uma nova pasta `colab-runner-quarantine-*` no diretório temporário do sistema.
+- O diretório de saída (`--out-dir`) e o diretório de quarentena irmão `<out-dir>.quarantine/` no sistema. Uma chamada direta a `Colab.download`, sem diretório de quarentena, usa uma nova pasta `colab-runner-quarantine-*` no diretório temporário do sistema.
 - As variáveis de ambiente que o processo usa com `--env`, as quais são passadas para a VM dentro do arquivo de célula.
 
 **O que ele não afeta.** Nenhum arquivo fora do diretório de saída, sua quarentena e a quarentena temporária. Nenhuma outra sessão do Colab. Nenhuma configuração de conta, credenciais ou faturamento: ele lê a taxa e o saldo da conta através da linha de comando `colab` e nunca os altera.

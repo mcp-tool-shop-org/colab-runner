@@ -102,7 +102,7 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 - `session_open.json`，在会话可能打开时；
 - `runner_result.json`，运行结束。其 `quarantined` 列出了在运行期间隔离的每个二进制下载文件，并且来自后续 `Runner.download` 通过相同的 `Runner` 的隔离文件会使用它重写该文件；
 - `<job>.run.out`，作业的日志（仅在作业写入日志行或 `--resident` 收集到日志后才会出现）；
-- 当 `--resident` 设置时，为 `<job>.poll.json`（运行器下载的作业的最新轮询记录）和 `<job>.refused.json`，即本次运行的拒绝记录，当其拒绝的驻留单元写入一个记录时（一个 `JOB_ALREADY_EXISTS`，该记录仅在另一个运行的记录上超时）。
+- 当 `--resident` 设置时，为 `<job>.poll.json`（运行器下载的作业的最新轮询记录）和 `<job>.refused.json`，即本次运行的拒绝记录，当其拒绝的驻留单元写入一个记录时（仅因另一个运行的记录而超时的 `JOB_ALREADY_EXISTS` 没有该记录）。
 - `stop_confirmed.json`，在确认停止后；或者 `stop_pending.json`，在失败后。
 
 **`colab` 命令** 默认为 `colab`，除非 `COLAB_RUNNER_CLI` 指定了另一个命令行。它使用 `shlex.split` 进行拆分，该命令使用 POSIX 引用：在 Windows 上，使用正斜杠写入路径或对其进行引用（`"C:\tools\colab.exe"`），因为未引用的反斜杠会被删除。无法拆分（未关闭的引用）的命令会被拒绝（`CLI_INVALID`，退出代码 1）。
@@ -142,8 +142,8 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 **它会影响哪些方面。**
 
 - Colab 会话：它会上传单元格文件，启动并终止它启动的任务，下载请求的文件，并停止会话。它绝不会向属于另一个 colab-runner（`CR_NOT_OURS`）实例的进程发送信号。
-- 输出目录（`--out-dir`）及其在设备上的隔离目录 `<out-dir>.quarantine/`。一个不包含隔离目录的简单目录 `Colab.download` 会在系统临时目录的下方使用一个新的 `colab-runner-quarantine-*` 文件夹。
-- 它使用 `--env` 为通道命名，并将这些环境变量传递到单元格文件内的虚拟机中。
+- 输出目录（`--out-dir`）及其在设备上的隔离目录 `<out-dir>.quarantine/`。未指定隔离目录而直接调用 `Colab.download` 时，会在系统临时目录下使用一个新的 `colab-runner-quarantine-*` 文件夹。
+- 通道通过 `--env` 指定的环境变量，它们放在单元格文件中传递给虚拟机。
 
 **它不会影响什么。** 不会影响 out 目录、其隔离区和临时隔离区之外的任何文件。不会影响任何其他 Colab 会话。不会影响任何帐户设置、凭据或账单：它会通过 `colab` 命令行读取帐户的速率和余额，并且不会对其进行任何更改。
 

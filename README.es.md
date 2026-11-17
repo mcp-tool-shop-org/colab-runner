@@ -186,7 +186,7 @@ temprano. El saldo de la cuenta se registra y nunca establece el precio de la ve
 
 **Qué afecta.**
 - La sesión de Colab: carga los archivos de las celdas, inicia y finaliza el trabajo que comenzó, descarga los archivos que se le solicitaron y detiene la sesión. Nunca envía una señal a un proceso que pertenezca a otra ejecución de colab-runner (`CR_NOT_OURS`).
-- El directorio de salida (`--out-dir`) y su directorio de cuarentena hermano `<out-dir>.quarantine/` en el sistema. Un directorio `Colab.download` sin directorio de cuarentena utiliza una nueva carpeta `colab-runner-quarantine-*` dentro del directorio temporal del sistema.
+- El directorio de salida (`--out-dir`) y su directorio de cuarentena hermano `<out-dir>.quarantine/` en el sistema. Una llamada directa a `Colab.download` sin directorio de cuarentena utiliza una nueva carpeta `colab-runner-quarantine-*` dentro del directorio temporal del sistema.
 - Las variables de entorno que utiliza la sesión con `--env`, y que se pasan a la máquina virtual dentro del archivo de la celda.
 
 **Qué no afecta.** Ningún archivo fuera del directorio de salida, su cuarentena y la cuarentena temporal. Ninguna otra sesión de Colab. Ninguna configuración de cuenta, credenciales o facturación: lee la tarifa y el saldo de la cuenta a través de la línea de comandos `colab` y nunca los cambia.

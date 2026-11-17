@@ -110,7 +110,7 @@ Un refus après le marqueur n’est pas une sortie 1. Un `--job` réutilisé, pa
 - `session_open.json` pendant que la session peut être ouverte ;
 - `runner_result.json`, la fin de l’exécution. Son `quarantined` répertorie chaque fichier binaire téléchargé et mis en quarantaine pendant l’exécution, et une quarantaine d’une `Runner.download` ultérieure via le même `Runner` réécrit le fichier avec.
 - `<job>.run.out`, le journal de la tâche (n’apparaît que lorsque la tâche a écrit des lignes de journal, ou une fois que `--resident` l’a collecté) ;
-- lorsque `--resident` est défini, `<job>.poll.json` (le dernier enregistrement de sondage de la tâche, tel que le processus l’a téléchargé) et `<job>.refused.json`, le propre enregistrement de refus de cette exécution, lorsque sa cellule résidente refusée en a écrit un (un `JOB_ALREADY_EXISTS` qui n’a expiré que sur les enregistrements d’une autre exécution) ;
+- lorsque `--resident` est défini, `<job>.poll.json` (le dernier enregistrement de sondage de la tâche, tel que le processus l’a téléchargé) et `<job>.refused.json`, le propre enregistrement de refus de cette exécution, lorsque sa cellule résidente refusée en a écrit un (un `JOB_ALREADY_EXISTS` qui n’a expiré que sur les enregistrements d’une autre exécution n’en a pas) ;
 - `stop_confirmed.json` après un arrêt confirmé, ou `stop_pending.json` après un échec.
 
 **La commande `colab`** est `colab`, sauf si `COLAB_RUNNER_CLI` indique une autre ligne de commande. Elle est divisée avec `shlex.split`, qui utilise les guillemets POSIX : sous Windows, écrivez le chemin avec des barres obliques ou mettez-le entre guillemets (`"C:\tools\colab.exe"`), car une barre oblique inversée non entre guillemets est supprimée. Une commande qui ne peut pas être divisée (une guillemet non fermée) est refusée (`CLI_INVALID`, sortie 1).
@@ -163,7 +163,7 @@ plus tôt. Le solde du compte est enregistré et n’affecte jamais le prix de l
 
 **Ce qu’il affecte.**
 - La session Colab : il télécharge les fichiers des cellules, démarre et arrête la tâche qu’il a lancée, télécharge les fichiers demandés et arrête la session. Il n’envoie jamais de signal à un processus qui appartient à une autre exécution de colab-runner (`CR_NOT_OURS`).
-- Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé `<out-dir>.quarantine/` sur le système. Un répertoire `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` dans le répertoire temporaire du système.
+- Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé `<out-dir>.quarantine/` sur le système. Un appel direct à `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` dans le répertoire temporaire du système.
 - Les variables d’environnement que la tâche utilise avec `--env`, qu’elle transmet à la machine virtuelle à l’intérieur du fichier de cellule.
 
 **Ce que cela n’affecte pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte, aucune information d’identification ou aucune facturation : il lit le taux et le solde du compte via l’interface de ligne de commande `colab` et ne les modifie jamais.

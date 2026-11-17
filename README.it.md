@@ -114,7 +114,7 @@ rifiutato durante la pulizia trasforma la fine in `error` e mantiene la fine che
 - `session_open.json` mentre la sessione potrebbe essere aperta;
 - `runner_result.json`, la fine dell'esecuzione. Il suo `quarantined` elenca ogni file binario scaricato e messo in quarantena durante l'esecuzione, e una quarantena da un `Runner.download` successivo attraverso lo stesso `Runner` sovrascrive il file.
 - `<job>.run.out`, il log del job (appare solo dopo che il job ha scritto righe di log, o dopo che `--resident` le ha raccolte);
-- quando `--resident` è impostato, `<job>.poll.json` (l'ultimo record di sondaggio del job, come scaricato dal runner) e `<job>.refused.json`, il record di rifiuto di questa esecuzione, quando la sua cella residente rifiutata ne ha scritto uno (un `JOB_ALREADY_EXISTS` che ha solo superato il timeout sui record di un'altra esecuzione).
+- quando `--resident` è impostato, `<job>.poll.json` (l'ultimo record di sondaggio del job, come scaricato dal runner) e `<job>.refused.json`, il record di rifiuto di questa esecuzione, quando la sua cella residente rifiutata ne ha scritto uno (un `JOB_ALREADY_EXISTS` che ha solo superato il timeout sui record di un'altra esecuzione non ne ha nessuno).
 - `stop_confirmed.json` dopo un arresto confermato, oppure `stop_pending.json` dopo un arresto non riuscito.
 
 **Il comando `colab`** è `colab` a meno che `COLAB_RUNNER_CLI` non specifichi un altro comando. Viene suddiviso con `shlex.split`,
@@ -171,7 +171,7 @@ prima. Il saldo dell'account viene registrato e non influisce sul prezzo della f
 
 **Cosa influisce.**
 - La sessione Colab: carica i file delle celle, avvia e interrompe il processo avviato, scarica i file richiesti e termina la sessione. Non invia mai un segnale a un processo che appartiene a un’altra esecuzione di colab-runner (`CR_NOT_OURS`).
-- La directory di output (`--out-dir`) e la relativa directory di quarantena `<out-dir>.quarantine/` sull’ambiente di test. Una directory `Colab.download` senza directory di quarantena utilizza una nuova cartella `colab-runner-quarantine-*` all’interno della directory temporanea del sistema.
+- La directory di output (`--out-dir`) e la relativa directory di quarantena `<out-dir>.quarantine/` sull’ambiente di test. Una chiamata diretta a `Colab.download` senza directory di quarantena utilizza una nuova cartella `colab-runner-quarantine-*` all’interno della directory temporanea del sistema.
 - Le variabili d’ambiente che la sessione Colab utilizza con `--env`, e che vengono passate alla macchina virtuale all’interno del file della cella.
 
 **Cosa non influisce.** Nessun file al di fuori della directory di output, della sua quarantena e della quarantena temporanea. Nessun'altra sessione Colab. Nessuna impostazione dell'account, credenziale o fatturazione: legge la tariffa e il saldo dell'account tramite la riga di comando `colab` e non li modifica mai.
