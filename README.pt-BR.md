@@ -104,7 +104,7 @@ a célula de interrupção responde `CR_NOT_OURS`, e então o `<job>.run.out` do
 | 2 | erro de tempo de execução | qualquer finalização diferente de `done` (independentemente do que sua interrupção fez) ou `RUN_ERROR` | uma interrupção que não foi confirmada ou `STOP_ERROR` |
 | 3 | sucesso parcial | `done`, mas a interrupção não foi confirmada: `session_open.json` ainda está lá | (não usado) |
 
-No dia 3, o resultado do trabalho está no diretório de saída, e a sessão ainda deve ser interrompida com `python -m colab_runner stop --out-dir D`.
+Na saída 3, o resultado do trabalho está no diretório de saída e a sessão ainda deve ser interrompida com `python -m colab_runner stop --out-dir D`.
 
 Uma recusa após o marcador não é uma saída 1. Um `--job` reutilizado, por exemplo, resulta em uma saída 2: o executor estava responsável pela sessão naquele momento, então a interrompeu, e a última linha é `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` com uma dica que indica
 `--job` no stderr. Nenhuma linha `REFUSED:` é escrita.
@@ -155,37 +155,36 @@ de arquivos correspondentes a `CR_UNITS_GLOB` e os sinais de vida em espera.
 - Uma execução sem uma consulta válida por `--unreachable-polls` consultas consecutivas (padrão 10), ou por `--unreachable-s` (padrão 1800), termina
 `unreachable`.
 
-**Segredos e limpeza de downloads seguros para arquivos binários.** Passe um segredo como `--env NAME`, com NAME definido no ambiente do canal. `--env NAME=VALUE`
+**Segredos e limpeza para download seguro em formato binário.** Passe um segredo como `--env NAME`, com NAME definido no ambiente do canal. `--env NAME=VALUE`
 coloca o valor na linha de comando do executor. Os valores chegam à VM dentro do arquivo da célula, nunca como argumentos para a CLI `colab`.
 Cada linha de saída da CLI e cada linha de erro são limpas com a biblioteca fornecida `scrub_colab_tokens`. Os arquivos e
-diretórios baixados (incluindo transferências parciais) são classificados apenas pelo conteúdo (um byte NUL ou uma decodificação estrita com falha UTF-8 é binário):
+diretórios baixados (incluindo transferências parciais) são classificados apenas pelo conteúdo (um byte NUL ou uma decodificação estrita UTF-8 com falha é binário):
 - Os arquivos de texto são limpos no local com `scrub_colab_tokens`.
 - Os arquivos binários limpos permanecem idênticos em termos de bytes. Os arquivos ilegíveis são removidos.
 - **A regra binária.** Um arquivo binário é verificado com pares de bytes dos padrões de token da biblioteca.
 - Em UTF-8, os pares correspondem exatamente ao que os padrões de texto correspondem no texto decodificado. Cada caractere que `\s` do Python corresponde
 é contado como um espaço, incluindo `\x1c`-`\x1f`, NBSP, NEL e ESPAÇO EM.
-- A única diferença é que está ao lado de uma letra não ASCII, onde o par `hf_` corresponde e o padrão de texto não: mais,
+- A única diferença é ao lado de uma letra não ASCII, onde o par `hf_` corresponde e o padrão de texto não: mais,
 nunca menos.
-- Uma regra é mais rigorosa do que o texto: em um arquivo binário, `Bearer` conta apenas quando o valor após ele tem a forma de um token. Isso significa
-pelo menos 20 caracteres de `[A-Za-z0-9._-]`, usando pelo menos dois de minúsculas, maiúsculas e dígitos.
-- Portanto, uma renderização cujo prompt diz "Portador da Chama do Norte" é transmitida com bytes idênticos. Um token de portador real (um token de acesso OAuth,
-um JWT, um token do Hugging Face) é detectado.
+- Uma regra é mais rigorosa do que o texto: em um arquivo binário, `Bearer` conta apenas quando o valor após ele tem o formato de um token. Isso significa
+pelo menos 20 caracteres de `[A-Za-z0-9._-]`, usando pelo menos duas letras minúsculas, maiúsculas e dígitos.
+- Portanto, um render cujo prompt diz `Flame Bearer of the North` é transmitido exatamente como está. Um token de portador real (um token de acesso OAuth,
+um JWT, um token Hugging Face) é detectado.
 - Os arquivos de texto mantêm os padrões da biblioteca inalterados: o mesmo texto em um arquivo de texto ainda se torna `Bearer [REDACTED] the
 North`.
 - **Uma correspondência nunca é reescrita.**
 - O arquivo é movido inalterado para a quarentena, registrado e nomeado em `runner_result.json` (`quarantined`) apenas pelo caminho e nome do padrão.
 - O download é recusado com `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Isso encerra `Runner.run` como `error` (saída da CLI 2) e a sessão ainda é interrompida.
-- **O download de um diretório** é limpo arquivo por arquivo, e uma falha nunca interrompe o restante: uma correspondência cuja movimentação para a quarentena
-falha é removida, e um subdiretório que não pode ser listado é anotado. O primeiro erro desse tipo é gerado uma vez a cada dois
-arquivos que foram limpos. Apenas os arquivos regulares são lidos. Um link simbólico, para um arquivo ou para um diretório, é removido, nunca
+- **O download de um diretório** é limpo de tokens arquivo por arquivo, e uma falha nunca interrompe o restante: uma correspondência cuja movimentação para a quarentena
+falha é removida, e um subdiretório que não pode ser listado é anotado. O primeiro erro desse tipo é gerado após a limpeza de todos os arquivos restantes. Apenas os arquivos regulares são lidos. Um link simbólico, para um arquivo ou para um diretório, é removido, nunca
 seguido, e qualquer outra entrada que não seja um arquivo regular ou um diretório (um FIFO, um socket, um dispositivo) é removida, nunca
 lida.
-- **Onde está a quarentena.**
+- **Onde fica a quarentena.**
 - Através de `Runner` (e, portanto, `run`), é o diretório irmão `<out-dir>.quarantine/`. Está fora de `--out-dir`, portanto,
-nem `salvage` nem o agrupamento de out-dir o capturam.
+nem `salvage` nem o agrupamento out-dir o capturam.
 - Um `Colab.download` ou `scrub_local` simples, sem `quarantine_dir`, move o arquivo para uma nova pasta
 `colab-runner-quarantine-*` sob o diretório temporário do sistema (`tempfile.gettempdir()`). Nunca é colocado ao lado do arquivo, portanto,
-nunca dentro da pasta na qual o arquivo foi baixado. Seu caminho está em `BinaryDownloadRefused.quarantined`. Passe
+nunca dentro da pasta em que o arquivo foi baixado. Seu caminho está em `BinaryDownloadRefused.quarantined`. Passe
 `Colab(quarantine_dir=...)` para escolher o local.
 - Cada caminho de quarentena é resolvido e verificado para garantir que permaneça dentro de sua pasta de quarentena antes da movimentação. Um arquivo que
 seria colocado fora dela é removido em vez disso, e o download falha com `QuarantineEscape` (`QUARANTINE_ESCAPE`).

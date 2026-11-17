@@ -81,7 +81,7 @@ export const config: SiteConfig = {
       cards: [
         {
           title: 'A window',
-          code: 'colab new -s my-window\npython -m colab_runner run --session my-window --out-dir runs/w1 \\n  --script /content/train.sh --wall-s 3600 \\n  --max-rate 13.5 --cap 15 --cleanup-bound-s 600',
+          code: 'colab new -s my-window\npython -m colab_runner run --session my-window --out-dir runs/w1 \\\n  --script /content/train.sh --wall-s 3600 \\\n  --max-rate 13.5 --cap 15 --cleanup-bound-s 600',
         },
         {
           title: 'After a lost rig',

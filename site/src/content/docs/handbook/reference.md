@@ -102,7 +102,7 @@ options:
 | 2 | runtime error | any end but `done` (whatever its stop did), or `RUN_ERROR` | a stop that was not confirmed, or `STOP_ERROR` |
 | 3 | partial success | `done`, but the stop was not confirmed: `session_open.json` is still there | (not used) |
 
-On 3 the job's work is in the out dir, and the session must still be stopped with `python -m colab_runner stop --out-dir D`.
+On exit 3 the job's work is in the out dir, and the session must still be stopped with `python -m colab_runner stop --out-dir D`.
 
 A refusal after the marker is not an exit 1. A reused `--job`, for one, ends exit 2: the runner owned the session by
 then, so it stopped it, and the last line is `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` with a hint naming
@@ -127,9 +127,9 @@ traceback. A token is scrubbed at every level, the traceback included.
 
 | Reason | When |
 | --- | --- |
-| `done` | The job's status file shows rc 0. |
-| `failed` | The job's status file shows any other non-zero rc. |
-| `oom` | The job's status file shows rc 137, or its log shows an out-of-memory kill line. |
+| `oom` | The job's status file is in, and it shows rc 137 or the job's log has an out-of-memory kill line (whatever the rc). |
+| `failed` | The job's status file shows a non-zero rc other than 137, and its log has no out-of-memory kill line. |
+| `done` | The job's status file shows rc 0, and its log has no out-of-memory kill line. |
 | `wall` | The run reached `--wall-s`. |
 | `cap` | The spend guard tripped: the priced spend reached the cap less the margin and the cleanup reserve, or a stable rate went above `--max-rate` (`RATE_ABOVE_MAX`). |
 | `setup_stall` | `setup.log` stopped growing for `--setup-stall-s` during setup. |

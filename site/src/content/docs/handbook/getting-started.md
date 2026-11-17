@@ -47,7 +47,7 @@ RUN_END reason=done rc=0 stopped=True
 | Exit | What to do |
 | --- | --- |
 | 0 | Nothing: the job finished and the session is stopped. |
-| 1 | Read the `REFUSED:` line and its hint. Nothing was started, so if the lane opened a session, stop it with `colab stop -s S`. |
+| 1 | A refusal prints a `REFUSED:` line and its hint; a usage error prints `usage: …` and an `error:` line. Nothing was started, so if the lane opened a session, stop it with `colab stop -s S`. |
 | 2 | Read `RUN_END` (or `RUN_ERROR:`) and `runner_result.json`. If `session_open.json` is still in the out dir, run `python -m colab_runner stop --out-dir D`. |
 | 3 | The job finished, but the stop was not confirmed. Run `python -m colab_runner stop --out-dir D`. |
 

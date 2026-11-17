@@ -81,7 +81,7 @@ Le cifre sono segnaposto. Imposta `--max-rate` sulle unità orarie previste per 
 | 2 | errore di runtime | qualsiasi uscita diversa da `done` (indipendentemente da ciò che ha fatto l'interruzione) o `RUN_ERROR` | un'interruzione che non è stata confermata o `STOP_ERROR` |
 | 3 | successo parziale | `done`, ma l'interruzione non è stata confermata: `session_open.json` è ancora presente | (non utilizzato) |
 
-Il 3, i risultati del job si trovano nella directory di output e la sessione deve essere interrotta con `python -m colab_runner stop --out-dir D`.
+All'uscita 3, il risultato del job si trova nella directory di output e la sessione deve comunque essere interrotta con `python -m colab_runner stop --out-dir D`.
 
 Un rifiuto dopo il marker non è un'uscita con codice 1. Un `--job` riutilizzato, ad esempio, causa un'uscita con codice 2: a quel punto, il runner gestisce la sessione, quindi la interrompe, e l'ultima riga è `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` con un suggerimento che indica
 `--job` su stderr. Nessuna riga `REFUSED:` viene scritta.
@@ -133,30 +133,28 @@ dei file corrispondenti a `CR_UNITS_GLOB` e i battiti cardiaci in attesa.
 - Un'esecuzione senza un buon polling per `--unreachable-polls` polling consecutivi (impostazione predefinita 10), o per `--unreachable-s` (impostazione predefinita 1800), termina con
 `unreachable`.
 
-**Segreti e rimozione dei dati sensibili dai download, garantendo la sicurezza per i file binari.** Passa un segreto come `--env NAME`, con NAME impostato nell'ambiente del processo. `--env NAME=VALUE`
-inserisce il valore nella riga di comando del processo. I valori raggiungono la VM all'interno del file della cella, mai come argomenti per la CLI `colab`.
-Ogni riga di output della CLI e ogni riga di errore vengono ripulite utilizzando la funzione `scrub_colab_tokens` della libreria fornita. I file e le
+**Segreti e pulizia dei download per garantire la sicurezza binaria.** Passa un segreto come `--env NAME`, con NAME impostato nell'ambiente del canale. `--env NAME=VALUE`
+inserisce il valore nella riga di comando del runner. I valori raggiungono la VM all'interno del file della cella, mai come argomenti per la CLI `colab`.
+Ogni riga di output e ogni riga di errore della CLI vengono ripulite con la libreria fornita `scrub_colab_tokens`. I file e le
 directory scaricati (inclusi i trasferimenti parziali) vengono classificati solo in base al contenuto (un byte NUL o un tentativo di decodifica UTF-8 non riuscito indica un file binario):
 - I file di testo vengono ripuliti direttamente con `scrub_colab_tokens`.
-- I file binari puliti rimangono identici byte per byte. I file illeggibili vengono rimossi.
-- **La regola per i file binari.** Un file binario viene scansionato con coppie di byte dei modelli di token della libreria.
-- In UTF-8, le coppie corrispondono esattamente a ciò che i modelli di testo corrispondono nel testo decodificato. Ogni carattere con cui `\s` di Python corrisponde
+- I file binari puliti vengono lasciati identici. I file illeggibili vengono rimossi.
+- **La regola binaria.** Un file binario viene scansionato con coppie di byte dei modelli di token della libreria.
+- Su UTF-8, le coppie corrispondono esattamente a ciò che i modelli di testo corrispondono nel testo decodificato. Ogni carattere con cui `\s` di Python corrisponde
 viene considerato uno spazio, inclusi `\x1c`-`\x1f`, NBSP, NEL e EM SPACE.
-- L'unica differenza si trova accanto a una lettera non ASCII, dove la coppia `hf_` corrisponde e il modello di testo non lo fa: più,
-mai meno.
-- Una regola è più rigorosa rispetto al testo: in un file binario, `Bearer` conta solo quando il valore successivo è simile a un token. Ciò significa
-almeno 20 caratteri di `[A-Za-z0-9._-]`, utilizzando almeno due tra lettere minuscole, maiuscole e cifre.
-- Quindi, un rendering il cui prompt dice "Portatore della fiamma del Nord" viene trasmesso byte per byte. Un token reale (un token di accesso OAuth,
+- L'unica differenza è accanto a una lettera non ASCII, dove la coppia `hf_` corrisponde e il modello di testo non lo fa: di più,
+mai di meno.
+- Una regola è più rigorosa rispetto al testo: in un file binario, `Bearer` conta solo quando il valore successivo ha la forma di un token. Ciò significa
+almeno 20 caratteri di `[A-Za-z0-9._-]`, utilizzando almeno due tra minuscole, maiuscole e cifre.
+- Quindi, un rendering il cui prompt dice `Flame Bearer of the North` viene trasmesso in forma identica. Un vero token di autenticazione (un token di accesso OAuth,
 un JWT, un token di Hugging Face) viene rilevato.
 - I file di testo mantengono invariati i modelli della libreria: lo stesso testo in un file di testo diventa ancora `Bearer [REDACTED] the
 North`.
-- **Una corrispondenza non viene mai riscritta.**
+- **Un elemento corrispondente non viene mai riscritto.**
 - Il file viene spostato invariato nella quarantena, registrato e denominato in `runner_result.json` (`quarantined`) solo in base al percorso e al nome del modello.
 - Il download viene rifiutato con `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Ciò termina `Runner.run` come `error` (uscita CLI 2) e la sessione viene comunque interrotta.
-- **Il download di una directory** viene ripulito file per file e un errore non interrompe il resto: una corrispondenza il cui spostamento nella quarantena
-fallisce viene rimossa e una sottodirectory che non può essere elencata viene annotata. Il primo errore di questo tipo viene segnalato una volta ogni due
-file ripuliti. Vengono letti solo i file regolari. Un collegamento simbolico, a un file o a una directory, viene eliminato, mai seguito e qualsiasi altro elemento che non sia un file regolare o una directory (un FIFO, un socket, un dispositivo) viene eliminato, mai
-letto.
+- **Il download di una directory** viene ripulito di token, file per file, e un singolo errore non interrompe il resto: un elemento corrispondente il cui spostamento nella quarantena
+fallisce viene rimosso e una sottodirectory che non può essere elencata viene annotata. Il primo errore di questo tipo viene segnalato una volta che tutti i file rimanenti sono stati ripuliti. Vengono letti solo i file regolari. Un collegamento simbolico, a un file o a una directory, viene eliminato, mai seguito, e qualsiasi altra voce che non sia un file regolare o una directory (un FIFO, un socket, un dispositivo) viene eliminata, mai letta.
 - **Dove si trova la quarantena.**
 - Tramite `Runner` (e quindi `run`), è la directory sorella `<out-dir>.quarantine/`. Si trova all'esterno di `--out-dir`, quindi
 né `salvage` né il raggruppamento out-dir lo rilevano.
@@ -165,8 +163,8 @@ né `salvage` né il raggruppamento out-dir lo rilevano.
 mai all'interno della cartella in cui è stato scaricato il file. Il suo percorso è in `BinaryDownloadRefused.quarantined`. Passa
 `Colab(quarantine_dir=...)` per scegliere il luogo.
 - Ogni percorso di quarantena viene risolto e verificato per assicurarsi che rimanga all'interno della sua cartella di quarantena prima dello spostamento. Un file che
-si troverebbe al di fuori di essa viene invece rimosso e il download fallisce con `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-- Il processo non elimina mai una quarantena; **il processo deve eliminarla e non inviarla mai.**
+si troverebbe all'esterno viene invece rimosso e il download fallisce con `QuarantineEscape` (`QUARANTINE_ESCAPE`).
+- Il runner non elimina mai una quarantena; **il canale deve eliminarla e non inviarla mai.**
 
 **Salvage** è solo un hook dell'API Python: `Runner.run(..., salvage=callable)` lo esegue su ogni processo, tranne `done`, prima dell'arresto.
 La CLI non ha la funzione Salvage.

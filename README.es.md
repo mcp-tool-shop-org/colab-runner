@@ -101,7 +101,7 @@ la celda de interrupción responde `CR_NOT_OURS` y, luego, el `<job>.run.out` de
 | 2 | error en tiempo de ejecución | cualquier finalización que no sea `done` (cualquiera que haya sido su detención), o `RUN_ERROR` | una detención que no se confirmó, o `STOP_ERROR` |
 | 3 | éxito parcial | `done`, pero la detención no se confirmó: `session_open.json` todavía está ahí | (no se utiliza) |
 
-El día 3, el resultado del trabajo se encuentra en el directorio de salida, y la sesión aún debe detenerse con `python -m colab_runner stop --out-dir D`.
+Al finalizar la tarea en la salida 3, el resultado del trabajo se encuentra en el directorio de salida y la sesión aún debe detenerse con `python -m colab_runner stop --out-dir D`.
 
 Un rechazo después del marcador no es un código de salida 1. Un `--job` reutilizado, por ejemplo, resulta en un código de salida 2: el ejecutor era el propietario de la sesión en ese momento, por lo que la detuvo, y la última línea es `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` con una pista que indica
 `--job` en stderr. No se escribe ninguna línea `REFUSED:`.
@@ -159,28 +159,27 @@ Cada línea de salida de la CLI y cada línea de error se limpian con la bibliot
 directorios descargados (incluidas las transferencias parciales) se clasifican solo por su contenido (un byte NUL o una decodificación estricta fallida UTF-8 es binario):
 - Los archivos de texto se limpian en su lugar con `scrub_colab_tokens`.
 - Los archivos binarios limpios se dejan idénticos en bytes. Los archivos ilegibles se eliminan.
-- **La regla binaria.** Un archivo binario se analiza con pares de bytes de los patrones de tokens de la biblioteca.
-- En UTF-8, los pares coinciden exactamente con lo que los patrones de texto coinciden en el texto decodificado. Cada carácter que `\s` de Python
-coincide se cuenta como un espacio, incluidos `\x1c`-`\x1f`, NBSP, NEL y EM SPACE.
+- **La regla binaria.** Un archivo binario se analiza con pares de bytes de los patrones de token de la biblioteca.
+- En UTF-8, los pares coinciden exactamente con lo que los patrones de texto coinciden en el texto decodificado. Cada carácter que `\s` de Python coincide
+se cuenta como un espacio, incluidos `\x1c`-`\x1f`, NBSP, NEL y EM SPACE.
 - La única diferencia es que está junto a una letra no ASCII, donde el par `hf_` coincide y el patrón de texto no: más,
 nunca menos.
 - Una regla es más estricta que el texto: en un archivo binario, `Bearer` solo se cuenta cuando el valor que le sigue tiene la forma de un token. Eso significa
 al menos 20 caracteres de `[A-Za-z0-9._-]`, utilizando al menos dos de minúsculas, mayúsculas y dígitos.
-- Por lo tanto, una representación cuyo mensaje es "Portador de la Llama del Norte" se transmite idéntica en bytes. Un token de portador real (un token de acceso OAuth,
-un JWT, un token de Hugging Face) se detecta.
-- Los archivos de texto conservan los patrones de la biblioteca sin cambios: el mismo texto en un archivo de texto sigue convirtiéndose en `Bearer [REDACTED] the
+- Por lo tanto, una representación cuyo mensaje dice `Flame Bearer of the North` se transmite idéntica en bytes. Se detecta un token de portador real (un token de acceso OAuth,
+un JWT, un token de Hugging Face).
+- Los archivos de texto mantienen los patrones de la biblioteca sin cambios: el mismo texto en un archivo de texto sigue siendo `Bearer [REDACTED] the
 North`.
 - **Una coincidencia nunca se reescribe.**
 - El archivo se mueve sin cambios a la cuarentena, se registra y se nombra en `runner_result.json` (`quarantined`) solo por la ruta y el nombre del patrón.
-- La descarga se rechaza con `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Esto finaliza `Runner.run` como `error` (salida de la CLI 2), y la sesión sigue deteniéndose.
-- **Una descarga de directorio** se limpia archivo por archivo, y un fallo nunca detiene el resto: una coincidencia cuyo movimiento a la cuarentena
-falla se elimina, y se anota un subdirectorio que no se puede listar. El primer error de este tipo se genera una vez que se ha limpiado cada dos
-archivos. Solo se leen los archivos regulares. Un enlace simbólico, a un archivo o a un directorio, se elimina, nunca se sigue, y cualquier otra entrada que no sea un archivo regular o un directorio (un FIFO, un socket, un dispositivo) se elimina, nunca se lee.
+- La descarga se rechaza con `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Eso finaliza `Runner.run` como `error` (salida de la CLI 2) y la sesión aún se detiene.
+- **Una descarga de directorio** se limpia de tokens archivo por archivo, y un fallo nunca detiene el resto: una coincidencia cuyo movimiento a la cuarentena
+falla se elimina, y se anota un subdirectorio que no se puede listar. El primer error de este tipo se genera una vez que se han limpiado todos los archivos restantes. Solo se leen los archivos regulares. Un enlace simbólico, a un archivo o a un directorio, se elimina, nunca se sigue, y cualquier otra entrada que no sea un archivo regular o un directorio (un FIFO, un socket, un dispositivo) se elimina, nunca se lee.
 - **Dónde está la cuarentena.**
 - A través de `Runner` (y, por lo tanto, `run`), es el directorio hermano `<out-dir>.quarantine/`. Está fuera de `--out-dir`, por lo que
-ni `salvage` ni la agrupación de out-dir lo detectan.
-- Un `Colab.download` o `scrub_local` sin `quarantine_dir` mueve el archivo a una nueva carpeta
-`colab-runner-quarantine-*` debajo del directorio temporal del sistema (`tempfile.gettempdir()`). Nunca se coloca junto al archivo, por lo que
+ni `salvage` ni el agrupamiento de out-dir lo detectan.
+- Un `Colab.download` o `scrub_local` desnudo sin `quarantine_dir` mueve el archivo a una nueva carpeta
+`colab-runner-quarantine-*` debajo del directorio temporal del sistema (`tempfile.gettempdir()`). Nunca termina junto al archivo, por lo que
 nunca está dentro de la carpeta en la que se descargó el archivo. Su ruta está en `BinaryDownloadRefused.quarantined`. Pase
 `Colab(quarantine_dir=...)` para elegir el lugar.
 - Cada ruta de cuarentena se resuelve y se comprueba para asegurarse de que permanece dentro de su carpeta de cuarentena antes del movimiento. Un archivo que

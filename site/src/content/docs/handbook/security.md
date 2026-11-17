@@ -46,7 +46,7 @@ directories (including partial transfers) are classified by content only (a NUL 
     never less.
   - One rule is stricter than text: in a binary, `Bearer` counts only when the value after it is token-shaped. That means
     at least 20 characters of `[A-Za-z0-9._-]`, using at least two of lower case, upper case and digits.
-  - So a render whose prompt says "Flame Bearer of the North" comes through byte-identical. A real bearer token (an OAuth
+  - So a render whose prompt says `Flame Bearer of the North` comes through byte-identical. A real bearer token (an OAuth
     access token, a JWT, a Hugging Face token) is caught.
   - Text files keep the library's patterns unchanged: the same prose in a text file still becomes `Bearer [REDACTED] the
     North`.
@@ -55,9 +55,9 @@ directories (including partial transfers) are classified by content only (a NUL 
     name only.
   - The download is refused with `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). That ends `Runner.run` as `error` (CLI
     exit 2), and the session is still stopped.
-- **A directory download** is scrubbed file by file, and one failure never stops the rest: a hit whose move to quarantine
-  fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once every other
-  file has been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
+- **A directory download** is scrubbed of tokens file by file, and one failure never stops the rest: a hit whose move to quarantine
+  fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once all the remaining
+  files have been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
   followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
   read.
 - **Where the quarantine is.**

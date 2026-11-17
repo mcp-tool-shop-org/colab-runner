@@ -58,7 +58,7 @@
 ## E. Identity (soft gate — does not block ship)
 
 - [x] `[all]` Logo in README header (2026-11-17) — brand `logos/colab-runner/readme.png`
-- [ ] `[all]` Translations (polyglot-mcp, 8 languages)
+- [x] `[all]` Translations (polyglot-mcp, 8 languages) (2026-11-17) — seven README translations, made locally with TranslateGemma 27B
 - [x] `[org]` Landing page (@mcptoolshop/site-theme) (2026-11-17) — https://mcp-tool-shop-org.github.io/colab-runner/
 - [ ] `[all]` GitHub repo metadata: description, homepage, topics
 

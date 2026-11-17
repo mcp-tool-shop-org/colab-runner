@@ -81,7 +81,7 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 | 2 | 运行时错误 | 任何结束，但不是 `done`（无论其停止操作如何），或者 `RUN_ERROR` | 停止操作未被确认，或者 `STOP_ERROR` |
 | 3 | 部分成功 | `done`，但停止操作未被确认：`session_open.json` 仍然存在 | （未使用） |
 
-在第 3 步中，任务的工作结果位于输出目录中，并且会话仍然需要使用 `python -m colab_runner stop --out-dir D` 停止。
+在退出代码 3 时，任务的处理结果位于输出目录中，并且仍然需要使用 `python -m colab_runner stop --out-dir D` 停止会话。
 
 在标记之后拒绝，并不意味着退出代码为 1。例如，重复使用 `--job` 会导致退出代码为 2：此时，运行器已经拥有该会话，因此它会停止该会话，并且最后一行是 `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS`，其中包含一个提示，用于命名 `--job`，并将其写入标准错误输出。不会写入任何 `REFUSED:` 行。
 
@@ -113,25 +113,26 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 - **进度：** 在设置之后，如果运行期间它能看到的内容在 `--progress-stall-s`（默认为 900）内没有发生任何变化，则运行结束 `progress_stall`。它看到的内容是每个与 `CR_PROGRESS_GLOB`（默认为 `<out>/progress/*`）匹配的文件中的第一个整数的总和，以及与 `CR_UNITS_GLOB` 匹配的文件数，以及保持心跳。
 - 如果在连续 `--unreachable-polls` 轮（默认为 10）或 `--unreachable-s`（默认为 1800）中没有有效的轮询，则运行结束 `unreachable`。
 
-**机密信息与二进制安全下载清理。** 将机密信息作为 `--env NAME` 传递，并在通道的环境中设置 NAME。`--env NAME=VALUE` 将该值放入运行器的命令行中。值会进入单元文件中的虚拟机，但不会作为参数传递给 `colab` CLI。
-每个 CLI 输出行和错误行都将使用库中的 `scrub_colab_tokens` 进行清理。下载的文件和目录（包括部分传输）仅根据内容进行分类（一个 NULL 字节或严格 UTF-8 解码失败表示二进制文件）：
-- 文本文件将使用 `scrub_colab_tokens` 进行原地清理。
+**机密信息与二进制安全下载清理。** 将机密信息作为 `--env NAME` 传递，并在通道的环境中设置 NAME。`--env NAME=VALUE` 将该值放入运行器的命令行中。这些值会进入单元文件内的虚拟机，但不会作为参数传递给 `colab` CLI。
+
+每个 CLI 输出行和错误行都会使用捆绑库的 `scrub_colab_tokens` 进行清理。下载的文件和目录（包括部分传输）仅根据内容进行分类（一个 NULL 字节或失败的严格 UTF-8 解码表示二进制）：
+- 文本文件会使用 `scrub_colab_tokens` 进行原地清理。
 - 清理后的二进制文件将保持字节级的完全一致。无法读取的文件将被删除。
-- **二进制规则。** 二进制文件将使用库中令牌模式的字节对进行扫描。
+- **二进制规则。** 二进制文件会使用库的令牌模式的字节对进行扫描。
 - 在 UTF-8 中，这些字节对与解码后的文本中文本模式匹配的内容完全相同。Python 的 `\s` 匹配的每个字符都算作一个空格，包括 `\x1c`-`\x1f`、NBSP、NEL 和 EM SPACE。
-- 唯一的区别是，在非 ASCII 字母旁边，`hf_` 字节对匹配，而文本模式不匹配：更多，而不是更少。
-- 一条规则比文本规则更严格：在二进制文件中，`Bearer` 仅在它后面的值是令牌形状时才计数。这意味着至少有 20 个 `[A-Za-z0-9._-]` 字符，并且至少使用两个小写字母、大写字母和数字。
-- 因此，如果一个渲染的提示信息是“北方之焰”，那么它将以字节级的完全一致的方式呈现。一个真实的令牌（一个 OAuth 访问令牌、一个 JWT、一个 Hugging Face 令牌）将被捕获。
-- 文本文件将保持库中的模式不变：文本文件中的相同文本仍然会变成 `Bearer [REDACTED] the North`。
-- **如果匹配，则永远不会重写。**
+- 唯一的区别是，在非 ASCII 字符旁边，`hf_` 字节对匹配，而文本模式不匹配：更多，而不是更少。
+- 一个规则比文本规则更严格：在二进制文件中，`Bearer` 仅在它后面的值为令牌形状时才计数。这意味着至少有 20 个 `[A-Za-z0-9._-]` 字符，并且至少使用两个小写字母、大写字母和数字。
+- 因此，如果渲染的提示信息是 `Flame Bearer of the North`，则会保持字节级的完全一致。真实的承载令牌（一个 OAuth 访问令牌、一个 JWT、一个 Hugging Face 令牌）将被捕获。
+- 文本文件会保持库的模式不变：文本文件中的相同文本仍然会变成 `Bearer [REDACTED] the North`。
+- **如果检测到匹配项，则绝不会重写。**
 - 该文件将以未更改的形式移动到隔离区，并仅通过路径和模式名称在 `runner_result.json` (`quarantined`) 中进行记录。
-- 下载将被 `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`) 拒绝。这将使 `Runner.run` 结束为 `error`（CLI 退出代码 2），并且会话仍然会停止。
-- **目录下载** 将逐文件进行清理，并且一次失败不会停止其余部分：如果移动到隔离区的操作失败，则该匹配项将被删除，并且无法列出的子目录将被记录。第一次出现此类错误将在清理了其他文件的之后出现。仅读取常规文件。指向文件或目录的符号链接将被删除，而不会跟踪，并且任何不是常规文件或目录的条目（FIFO、套接字、设备）也将被删除，而不会读取。
+- 下载将被拒绝，并显示 `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`)。这将导致 `Runner.run` 变为 `error`（CLI 退出代码为 2），并且会停止会话。
+- **目录下载** 将逐个文件进行令牌清理，并且一次失败不会阻止其余文件的清理：如果将匹配项移动到隔离区失败，则该匹配项将被删除，并且如果无法列出子目录，则会记录下来。在清理完所有剩余文件后，将引发第一个此类错误。仅读取常规文件。符号链接（指向文件或目录）将被删除，但绝不会跟踪。任何不是常规文件或目录的条目（FIFO、套接字、设备）也将被删除，但绝不会读取。
 - **隔离区的位置。**
-- 通过 `Runner`（因此 `run`），它是 `<out-dir>.quarantine/` 的兄弟目录。它位于 `--out-dir` 之外，因此既不会被 `salvage` 拾取，也不会被 out-dir 捆绑。
-- 一个不带 `Colab.download` 或 `scrub_local` 的简单命令，并且没有 `quarantine_dir`，会将文件移动到系统临时目录 `tempfile.gettempdir()` 下的一个新文件夹 `colab-runner-quarantine-*` 中。它永远不会与文件位于同一位置，因此也不会位于下载文件的文件夹中。其路径位于 `BinaryDownloadRefused.quarantined` 中。传递 `Colab(quarantine_dir=...)` 以选择位置。
-- 在移动之前，将解析每个隔离路径并检查其是否位于隔离文件夹内。如果文件将位于隔离文件夹之外，则该文件将被删除，并且下载将失败，并显示 `QuarantineEscape` (`QUARANTINE_ESCAPE`)。
-- 运行器永远不会删除隔离区；**通道必须删除它，并且永远不要将其发送出去。**
+- 通过 `Runner`（因此也通过 `run`），它是相邻目录 `<out-dir>.quarantine/`。它位于 `--out-dir` 之外，因此既不会被 `salvage` 拾取，也不会被 out-dir 捆绑包拾取。
+- 一个不带 `quarantine_dir` 的简单 `Colab.download` 或 `scrub_local` 会将文件移动到系统临时目录 `tempfile.gettempdir()` 下的一个新文件夹 `colab-runner-quarantine-*` 中。它绝不会与文件位于同一位置，因此绝不会位于下载文件的文件夹中。其路径位于 `BinaryDownloadRefused.quarantined` 中。传递 `Colab(quarantine_dir=...)` 以选择位置。
+- 在移动之前，将解析并检查每个隔离路径，以确保它位于隔离文件夹内。如果文件将位于隔离文件夹之外，则该文件将被删除，并且下载将失败，并显示 `QuarantineEscape` (`QUARANTINE_ESCAPE`)。
+- 运行器绝不会删除隔离区；**通道必须删除它，并且绝不能将其发送出去。**
 
 **Salvage（回收）** 仅是一个 Python API 钩子：在除了 `done` 之外的每个结束时，它都会运行 `Runner.run(..., salvage=callable)`，在停止之前。CLI 没有回收功能。
 

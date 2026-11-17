@@ -91,7 +91,7 @@ l’ensemble du débit du compte est attribué à cette instance, de sorte qu’
 | 2 | erreur d’exécution | toute sortie autre que `done` (quel que soit son arrêt), ou `RUN_ERROR` | un arrêt qui n’a pas été confirmé, ou `STOP_ERROR` |
 | 3 | succès partiel | `done`, mais l’arrêt n’a pas été confirmé : `session_open.json` est toujours présent | (non utilisé) |
 
-Le 3, le résultat du travail se trouve dans le répertoire de sortie, et la session doit encore être arrêtée avec `python -m colab_runner stop --out-dir D`.
+À la sortie 3, le résultat du travail est placé dans le répertoire de sortie, et la session doit toujours être arrêtée avec `python -m colab_runner stop --out-dir D`.
 
 Un refus après le marqueur n’est pas une sortie 1. Un `--job` réutilisé, par exemple, entraîne une sortie 2 : l’exécuteur a alors pris le contrôle de la session, l’a donc arrêtée, et la dernière ligne est `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS`, avec une indication indiquant `--job` sur stderr. Aucune ligne `REFUSED:` n’est écrite.
 
@@ -123,32 +123,29 @@ Un refus après le marqueur n’est pas une sortie 1. Un `--job` réutilisé, pa
 - **Progression :** après la configuration, une exécution se termine par `progress_stall` lorsque rien de ce qu’elle peut voir ne bouge pendant `--progress-stall-s` (par défaut 900). Ce qu’elle voit est la somme du premier entier de chaque fichier correspondant à `CR_PROGRESS_GLOB` (par défaut `<out>/progress/*`), le nombre de fichiers correspondant à `CR_UNITS_GLOB` et les pulsations d’attente.
 - Une exécution sans sondage valide pendant `--unreachable-polls` sondages consécutifs (par défaut 10), ou pendant `--unreachable-s` (par défaut 1800), se termine par `unreachable`.
 
-**Secrets et suppression des données lors du téléchargement, en tenant compte des fichiers binaires.** Passez un secret en tant que `--env NAME`, en définissant NAME dans l’environnement du processus. `--env NAME=VALUE`
-place la valeur dans la ligne de commande du processus. Les valeurs sont transmises à la VM à l’intérieur du fichier de cellule, et non en tant qu’arguments de l’interface de ligne de commande `colab`.
-Chaque ligne de sortie et chaque ligne d’erreur de l’interface de ligne de commande sont nettoyées à l’aide de la fonction `scrub_colab_tokens` de la bibliothèque fournie. Les fichiers et
-répertoires téléchargés (y compris les transferts partiels) sont classés uniquement en fonction de leur contenu (un octet NUL ou un échec de décodage strict UTF-8 indique un fichier binaire) :
+**Secrets et nettoyage des téléchargements pour assurer la sécurité binaire.** Passez un secret en tant que `--env NAME`, en définissant NAME dans l’environnement du processus. `--env NAME=VALUE`
+place la valeur dans la ligne de commande du processus. Les valeurs atteignent la VM à l’intérieur du fichier, et non en tant qu’arguments pour l’interface en ligne de commande `colab`.
+Chaque ligne de sortie et chaque ligne d’erreur de l’interface en ligne de commande sont nettoyées à l’aide de la fonction `scrub_colab_tokens` de la bibliothèque fournie. Les fichiers et
+répertoires téléchargés (y compris les transferts partiels) sont classés uniquement en fonction de leur contenu (un octet NUL ou un échec du décodage strict UTF-8 indique un fichier binaire) :
 - Les fichiers texte sont nettoyés directement à l’aide de `scrub_colab_tokens`.
 - Les fichiers binaires propres restent identiques, octet par octet. Les fichiers illisibles sont supprimés.
-- **La règle pour les fichiers binaires.** Un fichier binaire est analysé à l’aide de paires d’octets des modèles de jetons de la bibliothèque.
-- Pour UTF-8, les paires correspondent exactement à ce que les modèles de texte correspondent dans le texte décodé. Chaque caractère que `\s` de Python correspond
-est comptabilisé comme un espace, y compris `\x1c`-`\x1f`, NBSP, NEL et EM SPACE.
+- **La règle binaire.** Un fichier binaire est analysé à l’aide de paires d’octets correspondant aux modèles de jetons de la bibliothèque.
+- Sur UTF-8, les paires correspondent exactement à ce que les modèles de texte font correspondre dans le texte décodé. Chaque caractère auquel `\s` de Python
+correspond est comptabilisé comme un espace, y compris `\x1c`-`\x1f`, NBSP, NEL et EM SPACE.
 - La seule différence se trouve à côté d’une lettre non ASCII, où la paire `hf_` correspond et le modèle de texte ne correspond pas : plus,
 jamais moins.
-- Une règle est plus stricte que pour le texte : dans un fichier binaire, `Bearer` est comptabilisé uniquement lorsque la valeur qui le suit a la forme d’un jeton. Cela signifie
+- Une règle est plus stricte que pour le texte : dans un fichier binaire, `Bearer` n’est comptabilisé que lorsque la valeur qui le suit a la forme d’un jeton. Cela signifie
 au moins 20 caractères de `[A-Za-z0-9._-]`, en utilisant au moins deux minuscules, majuscules et chiffres.
-- Ainsi, un rendu dont l’invite indique « Porteur de la flamme du Nord » est transmis tel quel, octet par octet. Un véritable jeton (un jeton d’accès OAuth,
-un JWT, un jeton Hugging Face) est détecté.
+- Ainsi, un rendu dont l’invite indique `Flame Bearer of the North` est transmis tel quel. Un véritable jeton d’authentification (un jeton d’accès OAuth, un JWT, un jeton Hugging Face) est détecté.
 - Les fichiers texte conservent les modèles de la bibliothèque inchangés : le même texte dans un fichier texte devient toujours `Bearer [REDACTED] the
 North`.
 - **Une correspondance n’est jamais réécrite.**
-- Le fichier est déplacé tel quel vers la zone de quarantaine, enregistré et nommé dans `runner_result.json` (`quarantined`) uniquement par le chemin et le nom du modèle.
-- Le téléchargement est refusé avec `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Cela met fin à `Runner.run` en tant que `error` (sortie de l’interface de ligne de commande 2), et la session est toujours arrêtée.
-- **Le téléchargement d’un répertoire** est nettoyé fichier par fichier, et un échec ne stoppe jamais le reste : une correspondance dont le déplacement vers la zone de quarantaine
-échoue est supprimée, et un sous-répertoire qui ne peut pas être listé est noté. La première erreur de ce type est signalée une fois que chaque autre
-fichier a été nettoyé. Seuls les fichiers réguliers sont lus. Un lien symbolique, vers un fichier ou un répertoire, est supprimé, jamais suivi, et tout autre élément qui n’est pas un fichier ou un répertoire régulier (FIFO, socket, périphérique) est supprimé, jamais
-lu.
+- Le fichier est déplacé tel quel vers la zone de quarantaine, enregistré et nommé dans `runner_result.json` (`quarantined`) uniquement par son chemin et son nom de modèle.
+- Le téléchargement est refusé avec `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Cela met fin à `Runner.run` en tant que `error` (sortie de l’interface en ligne de commande : 2), et la session est toujours interrompue.
+- **Le téléchargement d’un répertoire** est nettoyé, fichier par fichier, et un échec n’interrompt jamais le reste : une correspondance dont le déplacement vers la zone de quarantaine
+échoue est supprimée, et un sous-répertoire qui ne peut pas être listé est noté. La première erreur de ce type est signalée une fois que tous les fichiers restants ont été nettoyés. Seuls les fichiers réguliers sont lus. Un lien symbolique, vers un fichier ou un répertoire, est supprimé, jamais suivi, et tout autre élément qui n’est pas un fichier ou un répertoire régulier (un FIFO, une prise de socket, un périphérique) est supprimé, jamais lu.
 - **Où se trouve la zone de quarantaine.**
-- Grâce à `Runner` (et donc `run`), il s’agit du répertoire frère `<out-dir>.quarantine/`. Il se trouve à l’extérieur de `--out-dir`, de sorte que
+- Grâce à `Runner` (et donc à `run`), il s’agit du répertoire frère `<out-dir>.quarantine/`. Il se trouve à l’extérieur de `--out-dir`, de sorte que
 ni `salvage` ni le regroupement out-dir ne le prennent en compte.
 - Un simple `Colab.download` ou `scrub_local` sans `quarantine_dir` déplace le fichier vers un nouveau dossier
 `colab-runner-quarantine-*` dans le répertoire temporaire du système (`tempfile.gettempdir()`). Il ne se trouve jamais à côté du fichier, donc
