@@ -2,13 +2,15 @@
 # CR_RESIDENT_MAX_S), writing <job>.poll.json every CR_POLL_EVERY_S and printing a line each time, so a kernel
 # execution is active the whole time. The rig reads the poll file with `colab download`, not with exec (a busy
 # kernel queues further cells).
+# A refused start (another run's files under this CR_JOB) touches none of them, the poll file included: the
+# refusal, stamped with this cell's run id, goes to <job>.refused.json, a file of its own.
 _started = cr_start_job()
 print(_started, flush=True)
 if _started.startswith("CR_JOB_EXISTS"):
-    _tmp = CR_POLL_FILE + ".tmp"
+    _tmp = "%s.%d.tmp" % (CR_REFUSED_FILE, os.getpid())
     with open(_tmp, "w") as _fh:
-        json.dump({"job": CR_JOB, "error": "JOB_ALREADY_EXISTS", "detail": _started}, _fh)
-    os.replace(_tmp, CR_POLL_FILE)
+        json.dump({"job": CR_JOB, "run_id": cr_run_id(), "error": "JOB_ALREADY_EXISTS", "detail": _started}, _fh)
+    os.replace(_tmp, CR_REFUSED_FILE)
 else:
     _every = float(os.environ.get("CR_POLL_EVERY_S", "30"))
     _max = float(os.environ.get("CR_RESIDENT_MAX_S", "86400"))

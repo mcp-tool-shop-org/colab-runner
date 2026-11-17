@@ -16,7 +16,10 @@
 #                       (polyglot: one summary per finished README); default none
 #   CR_POLL_LOG_OFFSET  poll cell: byte offset of the next chunk of the job log
 #   CR_KILL_GRACE_S     kill cell: seconds between SIGTERM and SIGKILL to the job's process group, default 5
-#   CR_RUN_ID           start/resident cell: unique id of the runner invocation (refuses reused CR_JOB)
+#   CR_RUN_ID           every cell: the unique id of the runner invocation. The start writes it to <job>.run_id
+#                       before the job starts; the job's status file and every poll record carry it; a start, a
+#                       resident cell or a kill for another run id never touches the files or the job (CR_JOB_EXISTS,
+#                       CR_NOT_OURS); a resident refusal goes to <job>.refused.json, never to <job>.poll.json
 import glob
 import json
 import os
@@ -32,14 +35,19 @@ CR_STATUS_FILE = os.path.join(CR_CONTENT, CR_JOB + ".status.json")
 CR_RUN_LOG = os.path.join(CR_CONTENT, CR_JOB + ".run.out")
 CR_POLL_FILE = os.path.join(CR_CONTENT, CR_JOB + ".poll.json")
 CR_RUN_ID_FILE = os.path.join(CR_CONTENT, CR_JOB + ".run_id")
+CR_REFUSED_FILE = os.path.join(CR_CONTENT, CR_JOB + ".refused.json")
+# The job's own files: if any of them exists under another run id, the job is another run's.
+CR_JOB_FILES = (CR_PID_FILE, CR_STATUS_FILE, CR_RUN_LOG, CR_POLL_FILE, CR_RUN_ID_FILE)
 CR_OUT = os.environ.get("CR_OUT_DIR") or os.path.join(CR_CONTENT, CR_JOB + "_out")
 CR_HB_FILE = os.path.join(CR_OUT, "hold_heartbeat.txt")
 CR_MAX_LOG = 65536
 
-# The wrapper runs the job, then writes the status file (rc, end time) atomically, after the job has ended.
+# The wrapper runs the job, then writes the status file (rc, end time, run id) atomically, after the job has ended.
+# Its third argument is the run id already JSON-encoded (json.dumps, ASCII only); printf's %s copies it verbatim.
 CR_WRAPPER = (
-    'log="$1"; st="$2"; shift 2; "$@" >> "$log" 2>&1; rc=$?; '
-    'printf \'{"rc": %s, "ended_at": "%s"}\\n\' "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$st.tmp" && mv "$st.tmp" "$st"'
+    'log="$1"; st="$2"; rid="$3"; shift 3; "$@" >> "$log" 2>&1; rc=$?; '
+    'printf \'{"rc": %s, "ended_at": "%s", "run_id": %s}\\n\' "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$rid" '
+    '> "$st.tmp" && mv "$st.tmp" "$st"'
 )
 
 # A heartbeat-only job: one line per interval into the heartbeat file, nothing else. Used to measure whether a VM
@@ -114,19 +122,36 @@ def cr_units():
     return len([p for p in glob.glob(pattern) if os.path.isfile(p)]) if pattern else 0
 
 
+def cr_run_id():
+    """This cell's run id (CR_RUN_ID), "" when none was given."""
+    return os.environ.get("CR_RUN_ID", "").strip()
+
+
+def cr_owner():
+    """The run id the job's files belong to: the <job>.run_id file, "" when it is missing or empty."""
+    return cr_read(CR_RUN_ID_FILE) or ""
+
+
 def cr_start_job():
-    """Start the job as its own session; idempotent. Returns the line to print."""
+    """Start the job as its own session; idempotent for its own run id. Returns the line to print.
+
+    If any of the job's files (CR_JOB_FILES) exists under another run id, the job is another run's, whether its
+    process is alive or dead and with or without a status file: the start is refused (CR_JOB_EXISTS) and nothing is
+    touched. Only the same run id gets CR_ALREADY_RUNNING (a live job, or a status file) or a restart (a dead job
+    with no status file: its own files are removed first)."""
+    want_id = cr_run_id()
     existing = cr_pid()
-    want_id = os.environ.get("CR_RUN_ID", "")
-    has_status = os.path.exists(CR_STATUS_FILE)
-    if (existing is not None and (cr_alive(existing) or has_status)) or (want_id and has_status):
-        prev_id = cr_read(CR_RUN_ID_FILE) or ""
-        if want_id and prev_id != want_id:
-            return "CR_JOB_EXISTS job=%s pid=%s" % (CR_JOB, existing if existing is not None else 0)
-        return "CR_ALREADY_RUNNING pid=%d" % existing
-    for p in (CR_STATUS_FILE, CR_RUN_LOG, CR_POLL_FILE, CR_HB_FILE, CR_RUN_ID_FILE):
+    if any(os.path.exists(p) for p in CR_JOB_FILES) and cr_owner() != want_id:
+        return "CR_JOB_EXISTS job=%s pid=%s" % (CR_JOB, existing if existing is not None else 0)
+    if os.path.exists(CR_STATUS_FILE) or (existing is not None and cr_alive(existing)):
+        return "CR_ALREADY_RUNNING pid=%s" % (existing if existing is not None else 0)
+    for p in (CR_STATUS_FILE, CR_RUN_LOG, CR_POLL_FILE, CR_HB_FILE, CR_RUN_ID_FILE, CR_PID_FILE):
         if os.path.exists(p):
             os.remove(p)
+    # the run id goes down before the job exists, so a job is never without its owner
+    with open(CR_RUN_ID_FILE + ".tmp", "w") as fh:
+        fh.write(want_id + "\n")
+    os.replace(CR_RUN_ID_FILE + ".tmp", CR_RUN_ID_FILE)
     mode = os.environ.get("CR_MODE", "script")
     if mode == "hold":
         argv = [
@@ -136,13 +161,10 @@ def cr_start_job():
     else:
         argv = ["bash", os.environ["CR_SCRIPT"]]
     proc = subprocess.Popen(
-        ["nohup", "bash", "-c", CR_WRAPPER, "crwrap", CR_RUN_LOG, CR_STATUS_FILE] + argv,
+        ["nohup", "bash", "-c", CR_WRAPPER, "crwrap", CR_RUN_LOG, CR_STATUS_FILE, json.dumps(want_id)] + argv,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env=dict(os.environ), start_new_session=True, close_fds=True,
     )
-    with open(CR_RUN_ID_FILE + ".tmp", "w") as fh:
-        fh.write(want_id + "\n")
-    os.replace(CR_RUN_ID_FILE + ".tmp", CR_RUN_ID_FILE)
     with open(CR_PID_FILE + ".tmp", "w") as fh:
         fh.write("%d\n" % proc.pid)
     os.replace(CR_PID_FILE + ".tmp", CR_PID_FILE)
@@ -159,7 +181,11 @@ def cr_group_alive(pgid):
 
 def cr_kill_job(grace_s):
     """Terminate the job's whole process group: SIGTERM, then SIGKILL after `grace_s`. cr_start_job started the job
-    as its own session, so the group id is the pid in the pid file. Touches nothing else."""
+    as its own session, so the group id is the pid in the pid file. Touches nothing else, and never another run's
+    job: with a CR_RUN_ID that is not the job's owner it answers CR_NOT_OURS."""
+    want_id = cr_run_id()
+    if want_id and cr_owner() != want_id:
+        return "CR_NOT_OURS job=%s" % CR_JOB
     pid = cr_pid()
     if pid is None:
         return "CR_NO_JOB"
@@ -228,6 +254,8 @@ def cr_collect(offset):
         pass
     rec = {
         "job": CR_JOB,
+        "run_id": cr_owner(),  # the run whose files these are, never the asker's
+        "status_run_id": None if status is None else status.get("run_id"),
         "pid": pid,
         "alive": alive,
         "rc": None if status is None else status.get("rc"),

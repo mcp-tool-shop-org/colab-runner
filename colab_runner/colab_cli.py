@@ -7,8 +7,10 @@
 - Every `out` and `err` is passed through the vendored library's token scrub (`launch_guards.scrub_colab_tokens`)
   before any caller sees it. Every downloaded file is checked by content: text is scrubbed in place with
   `launch_guards.scrub_colab_tokens`; binary files (containing NUL or failing strict UTF-8 decoding) are never
-  rewritten — clean binaries stay byte-identical, while a token match moves the file to quarantine and raises
-  `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`).
+  rewritten — clean binaries stay byte-identical, while a token match (`binary_token_hit`) moves the file to
+  quarantine and raises `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). The quarantine is the caller's
+  `quarantine_dir` (the Runner binds `<out-dir>.quarantine`); with none given, a new folder under the system temp
+  dir (`bare_quarantine_dir`), never next to the downloaded file.
 - A cell's environment travels inside the cell file, written owner-only (0600) where the OS has file modes, never
   as `colab exec --env` arguments, so no value reaches a command line.
 
@@ -42,11 +44,123 @@ def _pattern_name(pattern: re.Pattern[str], idx: int) -> str:
     return m.group(0) if m else "pattern_%d" % idx
 
 
-# Byte regexes compiled directly from the vendored library's TOKEN_SCRUB_PATTERNS (never copied).
+# Every character a str pattern's `\s` matches. They all lie below U+3001 (the tests check the whole code space).
+_STR_SPACES = [chr(c) for c in range(0x3001) if re.fullmatch(r"\s", chr(c))]
+
+
+def _hex(data: bytes) -> bytes:
+    return b"".join(b"\\x%02x" % b for b in data)
+
+
+_SPACE_ONE = b"".join(_hex(ch.encode("utf-8")) for ch in _STR_SPACES if len(ch.encode("utf-8")) == 1)
+_SPACE_MULTI = b"|".join(_hex(ch.encode("utf-8")) for ch in _STR_SPACES if len(ch.encode("utf-8")) > 1)
+_SPACE_ANY = b"(?:[" + _SPACE_ONE + b"]|" + _SPACE_MULTI + b")"  # str `\s`, as UTF-8 bytes
+
+
+def _byte_twin_source(src: str) -> bytes:
+    r"""A str pattern's source as a bytes pattern that matches, on UTF-8 input, exactly what the str pattern matches
+    on the decoded text. `\s` (outside or inside a class) becomes the str class in UTF-8 (`_SPACE_ANY`: \x1c-\x1f,
+    NEL, NBSP, U+1680, U+2000-U+200A, U+2028/9, U+202F, U+205F, U+3000 included). `\b` is kept: over bytes it
+    sees a non-ASCII character as a non-word byte, so next to a non-ASCII letter it matches where the str `\b` does
+    not (a superset, never a miss). Any other class shorthand is refused, so a library change cannot slip through."""
+    out: list[bytes] = []
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == "\\":
+            esc = src[i:i + 2]
+            if esc == "\\s":
+                out.append(_SPACE_ANY)
+            elif esc[1:] in ("S", "w", "W", "d", "D"):
+                raise ValueError("no byte twin for %r in %r" % (esc, src))
+            else:
+                out.append(esc.encode("ascii"))
+            i += 2
+            continue
+        if c == "[":
+            j = i + 1
+            neg = j < n and src[j] == "^"
+            j += 1 if neg else 0
+            items: list[str] = []
+            if j < n and src[j] == "]":  # a leading ] is a literal
+                items.append("\\]")
+                j += 1
+            has_space = False
+            while j < n and src[j] != "]":
+                if src[j] == "\\":
+                    esc = src[j:j + 2]
+                    if esc == "\\s":
+                        has_space = True
+                    elif esc[1:] in ("S", "w", "W", "d", "D"):
+                        raise ValueError("no byte twin for %r in %r" % (esc, src))
+                    else:
+                        items.append(esc)
+                    j += 2
+                    continue
+                if ord(src[j]) > 0x7F:
+                    raise ValueError("no byte twin for a non-ASCII class member in %r" % src)
+                items.append(src[j])
+                j += 1
+            body = "".join(items).encode("ascii")
+            if not has_space:
+                out.append(b"[" + (b"^" if neg else b"") + body + b"]")
+            elif neg:  # none of the members, and no str space (one byte, or a whole multi-byte one)
+                out.append(b"(?:(?!" + _SPACE_MULTI + b")[^" + body + _SPACE_ONE + b"])")
+            else:
+                out.append(b"(?:[" + body + _SPACE_ONE + b"]|" + _SPACE_MULTI + b")")
+            i = j + 1
+            continue
+        out.append(c.encode("utf-8"))
+        i += 1
+    return b"".join(out)
+
+
+# The byte twins of the vendored library's TOKEN_SCRUB_PATTERNS, derived from their sources (never copied).
 BYTE_TOKEN_PATTERNS: list[tuple[str, re.Pattern[bytes]]] = [
-    (_pattern_name(p, i), re.compile(p.pattern.encode("utf-8"), p.flags & ~re.UNICODE))
+    (_pattern_name(p, i), re.compile(_byte_twin_source(p.pattern), p.flags & ~re.UNICODE))
     for i, (p, _) in enumerate(lg.TOKEN_SCRUB_PATTERNS)
 ]
+
+# The binary scan's one departure from the twins: `Bearer` + space + a word is ordinary prose ("Flame Bearer of the
+# North"), and a render's metadata carries its prompt. In a binary, a Bearer hit counts only when the run after the
+# spaces is token-shaped: at least BEARER_TOKEN_MIN characters of the pattern's own class [A-Za-z0-9._-], using at
+# least two of lower case, upper case and digits. Every bearer credential the runner can meet is that shape: a
+# Google OAuth access token (`ya29.` and well over 100 characters), a JWT (`eyJ`..., three base64url parts), a
+# Hugging Face token (`hf_` and 34 mixed-case letters, also caught by the `hf_` pattern on its own). Text files
+# keep the library's scrub unchanged.
+BEARER_NAME = "Bearer"
+BEARER_TOKEN_MIN = 20
+_LOWER, _UPPER, _DIGIT = re.compile(rb"[a-z]"), re.compile(rb"[A-Z]"), re.compile(rb"[0-9]")
+
+
+def token_shaped(run: bytes) -> bool:
+    """A Bearer value that looks like a credential, not a word (see BEARER_TOKEN_MIN)."""
+    if len(run) < BEARER_TOKEN_MIN:
+        return False
+    return sum(1 for kind in (_LOWER, _UPPER, _DIGIT) if kind.search(run)) >= 2
+
+
+def _bearer_hit(bpat: re.Pattern[bytes], data: bytes) -> bool:
+    pos = 0
+    while True:
+        m = bpat.search(data, pos)
+        if m is None:
+            return False
+        if token_shaped(data[m.end(1):m.end()]):
+            return True
+        pos = m.start() + 1  # a later Bearer inside this match is tried too
+
+
+def binary_token_hit(data: bytes) -> Optional[str]:
+    """The name of the first token pattern a binary file's bytes match, or None: every byte twin, with the Bearer
+    twin's value required to be token-shaped."""
+    for name, bpat in BYTE_TOKEN_PATTERNS:
+        if name == BEARER_NAME:
+            if _bearer_hit(bpat, data):
+                return name
+        elif bpat.search(data):
+            return name
+    return None
 
 
 class BinaryDownloadRefused(RuntimeError):
@@ -60,11 +174,21 @@ class BinaryDownloadRefused(RuntimeError):
 
 
 def default_quarantine_dir(target: Path) -> Path:
-    """Sibling `<target>.quarantine` directory, outside `target` itself."""
+    """Sibling `<target>.quarantine` directory, outside `target` itself (the Runner's, for its out dir)."""
     p = Path(target)
     if not p.name:  # pragma: no cover - empty path resolved to concrete name
         p = p.resolve()
     return p.parent / (p.name + ".quarantine")
+
+
+QUARANTINE_PREFIX = "colab-runner-quarantine-"
+
+
+def bare_quarantine_dir() -> Path:
+    """The quarantine of a download with no quarantine_dir (a bare `Colab.download` or `scrub_local`): a new folder
+    `colab-runner-quarantine-*` under the system temp dir (`tempfile.mkdtemp`, owner-only), made at the first refused
+    file. Never next to the file, so never inside the folder it was downloaded into."""
+    return Path(tempfile.mkdtemp(prefix=QUARANTINE_PREFIX))
 
 
 def is_binary_bytes(data: bytes) -> bool:
@@ -368,12 +492,14 @@ def scrub_local(
 
     Text vs binary is decided by content (NUL byte or failed strict UTF-8 decode). Text files are scrubbed in place
     with `launch_guards.scrub_colab_tokens`; binary files are never rewritten (clean binaries stay byte-identical, while
-    a token match moves the file to quarantine and raises `BinaryDownloadRefused`). Unreadable files are removed."""
+    a token match, `binary_token_hit`, moves the file to quarantine and raises `BinaryDownloadRefused`). The
+    quarantine is `quarantine_dir`, or with none a new `bare_quarantine_dir()` under the system temp dir. Unreadable
+    files are removed."""
     root = Path(local)
     files = _iter_files(root)
     if not files:
         return
-    qdir = Path(quarantine_dir) if quarantine_dir is not None else default_quarantine_dir(root)
+    qdir = Path(quarantine_dir) if quarantine_dir is not None else None
     quarantined: list[dict[str, str]] = []
     for p in files:
         try:
@@ -390,9 +516,11 @@ def scrub_local(
                 except OSError:
                     _unlink_quiet(p)
             continue
-        hit = next((name for name, bpat in BYTE_TOKEN_PATTERNS if bpat.search(data)), None)
+        hit = binary_token_hit(data)
         if hit is None:
             continue
+        if qdir is None:
+            qdir = bare_quarantine_dir()
         dest = _quarantine_dest(p, root, qdir, base_dir)
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -418,7 +546,8 @@ def cli_from_env() -> Colab:
 
 
 __all__ = [
-    "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult", "KILL_WAIT_S",
-    "TIMEOUT_RC", "cli_from_env", "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout",
-    "kill_group", "scrub", "scrub_local", "write_cell",
+    "BEARER_TOKEN_MIN", "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult",
+    "KILL_WAIT_S", "TIMEOUT_RC", "bare_quarantine_dir", "binary_token_hit", "cli_from_env", "default_quarantine_dir",
+    "env_preamble", "is_binary_bytes", "kernel_timeout", "kill_group", "scrub", "scrub_local", "token_shaped",
+    "write_cell",
 ]

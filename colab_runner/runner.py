@@ -14,6 +14,11 @@ confirmed stop, and a stop that failed leaves `stop_pending.json`, never `stop_c
 Every step is bounded by the wall and by the cap's ceiling: each sleep and each call timeout is clamped to the time
 left to the nearer of the two, and start retries stop when the next attempt could pass it.
 
+Every run has its own id (CR_RUN_ID). The VM stamps it on the job's files, its status file and every poll record;
+the runner accepts only records stamped with its own id, so a record another run left under the same `--job` never
+ends this run, and the VM never touches another run's files or job (a `--job` held by another run is refused,
+JOB_ALREADY_EXISTS).
+
 Kits supply: the job script (or hold seconds), a progress counter (CR_PROGRESS_GLOB / CR_UNITS_GLOB, see vm/lib.py),
 and a phase file (`<out>/phase.txt`: "setup" while installing, anything else once running)."""
 
@@ -238,13 +243,34 @@ class Runner:
         self._download_refusal: Optional[BinaryDownloadRefused] = None
         self._run_id = ""
         self._job_reused = False
+        self._own_seen = False  # a record of this run (its own run id) has been seen, or its start confirmed
+        self._foreign_id: Optional[str] = None  # the run id of the last record refused as another run's
         self._t0, self._wall_s, self._guard = 0.0, 0.0, None
 
     # -- environment the cells read -------------------------------------------------------------------------------
     def _env(self, extra: Mapping[str, str] | None = None) -> dict:
         env = {"CR_CONTENT": self.content, "CR_JOB": self.job}
+        if self._run_id:
+            env["CR_RUN_ID"] = self._run_id  # every cell: the VM answers for this run only
         env.update(extra or {})
         return env
+
+    # -- whose record is it -----------------------------------------------------------------------------------------
+    def _other_run(self, rec: Mapping[str, Any]) -> Optional[str]:
+        """None if `rec` is this run's (its run_id, and for a record with an rc its status_run_id, are this run's
+        id); else the other run id it carries. A runner with no run id yet (poll() before any start) checks nothing."""
+        if not self._run_id:
+            return None
+        mine = self._run_id.strip()
+        if str(rec.get("run_id")) != mine:
+            return str(rec.get("run_id"))
+        if rec.get("rc") is not None and str(rec.get("status_run_id")) != mine:
+            return str(rec.get("status_run_id"))
+        return None
+
+    def _refuse_record(self, other: str, where: str) -> None:
+        self._foreign_id = other
+        self.log("%s: a record of another run (run_id %s) refused: it is never this run's" % (where, other))
 
     def _record_quarantine(self, entry: dict[str, str]) -> None:
         item = {"path": entry["path"], "source": entry["source"], "pattern": entry["pattern"]}
@@ -315,6 +341,8 @@ class Runner:
         min(start_timeout_s, left - pause); the retries stop when that is under MIN_CALL_S."""
         full = dict(env)
         full.setdefault("CR_RUN_ID", self._run_id or uuid.uuid4().hex)
+        if not self._run_id:
+            self._run_id = full["CR_RUN_ID"]
         delay, last = 2.0, ""
         for attempt in range(1, self.start_attempts + 1):
             pause = delay if attempt > 1 else 0.0
@@ -360,11 +388,18 @@ class Runner:
 
     # -- poll -----------------------------------------------------------------------------------------------------
     def poll(self, offset: int, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
+        """One poll cell. A record of another run is refused: it counts as a failed poll, never as this job's."""
         res = self._clean(self.colab.exec_cell(
             self.session, cell_source("poll"), self._env({"CR_POLL_LOG_OFFSET": str(offset)}),
             self.poll_timeout_s if timeout is None else timeout,
         ))
-        return parse_poll(res.out) if res.ok else None
+        got = parse_poll(res.out) if res.ok else None
+        if got is not None:
+            other = self._other_run(got[0])
+            if other is not None:
+                self._refuse_record(other, "poll")
+                return None
+        return got
 
     def _read_usage(self) -> tuple[Optional[CliResult], bool]:
         """One `colab usage` reading: a failed read is retried up to `usage_retries` times, each attempt (and the
@@ -409,19 +444,41 @@ class Runner:
     def _download(self, remote: str, local: Path, timeout: float) -> CliResult:
         return self.download(remote, local, timeout)
 
-    def poll_resident(self, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
-        local = self.out_dir / ("%s.poll.json" % self.job)
-        res = self._download(
-            "%s/%s.poll.json" % (self.content.rstrip("/"), self.job), local,
-            self.poll_timeout_s if timeout is None else timeout,
-        )
+    def _fetch_record(self, name: str, timeout: float) -> Optional[dict]:
+        """`<content>/<job>.<name>` downloaded into the out dir and read as a JSON object, or None."""
+        local = self.out_dir / ("%s.%s" % (self.job, name))
+        res = self._download("%s/%s.%s" % (self.content.rstrip("/"), self.job, name), local, timeout)
         if not res.ok or not local.is_file():
             return None
         try:
             rec = json.loads(local.read_text(encoding="utf-8"))
         except ValueError:
             return None
-        return (rec, []) if isinstance(rec, dict) else None
+        return rec if isinstance(rec, dict) else None
+
+    def poll_resident(self, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
+        """The resident cell's poll file, if it is this run's. A poll file another run left under this `--job` is
+        refused (it is "not yet seen", and its local copy is removed); then this run's own refusal record, if its
+        cell has written one, `<job>.refused.json` stamped with this run's id. Both downloads share `timeout`."""
+        budget = self.poll_timeout_s if timeout is None else timeout
+        t0 = self.clock()
+        rec = self._fetch_record("poll.json", budget)
+        if rec is not None:
+            other = self._other_run(rec)
+            if other is None:
+                return rec, []
+            self._refuse_record(other, "resident poll file")
+            (self.out_dir / ("%s.poll.json" % self.job)).unlink(missing_ok=True)
+        left = budget - (self.clock() - t0)
+        if left < MIN_CALL_S:
+            return None
+        ref = self._fetch_record("refused.json", left)
+        if ref is None:
+            return None
+        if ref.get("error") == "JOB_ALREADY_EXISTS" and self._run_id and str(ref.get("run_id")) == self._run_id.strip():
+            return ref, []
+        (self.out_dir / ("%s.refused.json" % self.job)).unlink(missing_ok=True)  # another run's refusal
+        return None
 
     def _collect_resident_log(self, timeout: float) -> bool:
         """Resident mode: the job's whole run log, downloaded (and scrubbed) into the out dir."""
@@ -476,6 +533,7 @@ class Runner:
         self._download_refusal = None
         self._run_id = kit_env["CR_RUN_ID"]
         self._job_reused = False
+        self._own_seen, self._foreign_id = False, None
         self._cleanup_signals: list[int] = []
         self._phase = "run"
         handlers: Optional[dict] = None
@@ -524,7 +582,8 @@ class Runner:
         kit_env = dict(env or {})
         if resident and "CR_RESIDENT_MAX_S" in kit_env:
             _parse_resident_max_s(kit_env["CR_RESIDENT_MAX_S"])
-        kit_env.setdefault("CR_RUN_ID", uuid.uuid4().hex)
+        if not str(kit_env.get("CR_RUN_ID", "")).strip():
+            kit_env["CR_RUN_ID"] = uuid.uuid4().hex  # one id per run: an empty one would turn the --job refusal off
         if hold_s is not None:
             require_number("HOLD_INVALID", "hold_s", hold_s)
             # a heartbeat-only job with no pause between beats spins writes on the VM; 0 has no meaning here
@@ -558,6 +617,7 @@ class Runner:
             if not started:
                 detail = last if last.startswith("JOB_ALREADY_EXISTS:") else "start not confirmed: %s" % last
                 return self._end_as("start_failed", detail)
+            self._own_seen = True  # the start cell answered for this run id: the job is this run's
         self._loop(wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
                    unreachable_polls, unreachable_s)
 
@@ -607,6 +667,15 @@ class Runner:
             left, bound = self._budget(until)
             if left < REACHED_EPS_S:
                 if bound == "setup":
+                    if self._foreign_id is not None:
+                        # only another run's records under this --job: this run's cell never ran its start
+                        self._job_reused = True
+                        return self._end_as(
+                            "start_failed",
+                            "JOB_ALREADY_EXISTS: --job %r in %s holds another run's records (run_id %s); this run's "
+                            "own record did not appear within %.0fs; pass a distinct --job for each step"
+                            % (self.job, self.content, self._foreign_id, setup_stall_s),
+                        )
                     return self._end_as("start_failed", "the resident poll file did not appear within %.0fs"
                                         % setup_stall_s)
                 return self._end_as(bound, "the %s was reached" % bound)
@@ -634,7 +703,7 @@ class Runner:
                     "JOB_ALREADY_EXISTS: --job %r already exists in %s (%s); pass a distinct --job for each step"
                     % (self.job, self.content, rec.get("detail", "")),
                 )
-            file_seen = True
+            file_seen = self._own_seen = True
             res.polls_ok += 1
             failed_run, delay, last_good_t = 0, self.poll_s, now
             res.last = scrub_obj(rec)
@@ -701,9 +770,11 @@ class Runner:
         run's own session, always. Nothing here is clamped to the wall: the cap's cleanup reserve pays for it."""
         if self._resident is not None:
             self._step("resident child", self._resident.kill)
-        if res.reason in TRIPS and not self._job_reused:
+        # a job this run never owned (refused, or only another run's records seen) is never killed or collected
+        not_ours = self._job_reused or (self._foreign_id is not None and not self._own_seen)
+        if res.reason in TRIPS and not not_ours:
             self._step("kill", lambda: self._kill_job(res, resident))
-        if resident and not self._log_collected and not self._job_reused:
+        if resident and not self._log_collected and not not_ours:
             self._step("run log", lambda: self._collect_resident_log(self.log_timeout_s))
             if self._download_refusal is not None:
                 self._end_as("error", "%s: %s" % (type(self._download_refusal).__name__, self._download_refusal))
