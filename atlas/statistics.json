@@ -76,22 +76,187 @@
     "files": [
       {
         "commits": 1,
+        "lines": 1,
+        "path": ".gitattributes"
+      },
+      {
+        "commits": 1,
+        "lines": 72,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 9,
+        "path": ".gitignore"
+      },
+      {
+        "commits": 1,
+        "lines": 6,
+        "path": "CHANGELOG.md"
+      },
+      {
+        "commits": 1,
         "lines": 21,
         "path": "LICENSE"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "README.md"
+      },
+      {
+        "commits": 3,
+        "lines": 106,
+        "path": "atlas/README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 18,
+        "path": "atlas/boundaries.yaml"
+      },
+      {
+        "commits": 3,
+        "lines": 258,
+        "path": "atlas/page.json"
+      },
+      {
+        "commits": 3,
+        "lines": 323,
+        "path": "atlas/statistics.json"
+      },
+      {
+        "commits": 3,
+        "lines": 861,
+        "path": "atlas/structure.json"
+      },
+      {
+        "commits": 1,
+        "lines": 12,
+        "path": "codecov.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "colab_runner/__init__.py"
+      },
+      {
+        "commits": 3,
+        "lines": 101,
+        "path": "colab_runner/__main__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 82,
+        "path": "colab_runner/colab_cli.py"
+      },
+      {
+        "commits": 1,
+        "lines": 274,
+        "path": "colab_runner/runner.py"
+      },
+      {
+        "commits": 2,
+        "lines": 72,
+        "path": "colab_runner/spend.py"
+      },
+      {
+        "commits": 1,
+        "lines": 186,
+        "path": "colab_runner/vm/lib.py"
+      },
+      {
+        "commits": 1,
+        "lines": 4,
+        "path": "colab_runner/vm/poll.py"
+      },
+      {
+        "commits": 1,
+        "lines": 19,
+        "path": "colab_runner/vm/resident.py"
+      },
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": "colab_runner/vm/start.py"
+      },
+      {
+        "commits": 1,
+        "lines": 18,
+        "path": "colab_runner/window_lib/PROVENANCE.md"
+      },
+      {
+        "commits": 1,
+        "lines": 4139,
+        "path": "colab_runner/window_lib/colab_window.sh"
+      },
+      {
+        "commits": 1,
+        "lines": 1391,
+        "path": "colab_runner/window_lib/launch_guards.py"
+      },
+      {
+        "commits": 1,
+        "lines": 177,
+        "path": "colab_runner/window_lib/remote_runner.py"
+      },
+      {
+        "commits": 3,
+        "lines": 36,
+        "path": "pyproject.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "tests/__init__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 83,
+        "path": "tests/fake_colab.py"
+      },
+      {
+        "commits": 1,
+        "lines": 91,
+        "path": "tests/fakes.py"
+      },
+      {
+        "commits": 2,
+        "lines": 372,
+        "path": "tests/test_runner.py"
+      },
+      {
+        "commits": 1,
+        "lines": 31,
+        "path": "tests/test_scaffold.py"
+      },
+      {
+        "commits": 2,
+        "lines": 238,
+        "path": "tests/test_vm_cells.py"
+      },
+      {
+        "commits": 1,
+        "lines": 30,
+        "path": "tests/test_window_lib.py"
+      },
+      {
+        "commits": 1,
+        "lines": 10,
+        "path": "verify.sh"
       }
     ]
   },
   "confidence": {
     "level": "low",
-    "reason": "fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions"
+    "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-12T19:59:32.761Z",
+  "generatedAt": "2026-11-12T20:56:07.709Z",
   "generatedFrom": {
-    "commit": "8bb60e377208dc77edfcff2b57d5221ba9ae92e7"
+    "commit": "cc633abb7abd43fd4544ca8a309269d9a64fe34e"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 3.5,
+    "appliedChangesetLimit": 8.75,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -100,16 +265,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-12T14:55:34-05:00",
-    "inScopeFiles": 14,
+    "headDate": "2026-11-12T15:52:34-05:00",
+    "inScopeFiles": 35,
     "pinnedStart": null,
-    "priorFloor": null,
+    "priorFloor": "fallen",
     "qualifyingCommits": 1,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-16T19:55:34.000Z",
+    "since": "2026-05-16T20:52:34.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

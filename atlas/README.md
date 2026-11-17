@@ -1,14 +1,18 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-12 from commit 8bb60e3 by Atlas 1.26.0.
+Mapped at 2026-11-12 from commit cc633ab by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (4 files) and shell (1). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
+4 parts, mostly Python (19 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
 
-## What changed since the last map
+## What changed since 2026-11-12 (ba58165)
 
-This is the first map.
+- colab_runner/vm/lib.py is now also read by tests/test_window_lib.py.
+- colab_runner/vm/poll.py is now read by tests/test_window_lib.py.
+- colab_runner/window_lib/PROVENANCE.md is now read by tests/test_window_lib.py.
+- And 3 more new writers and readers of places.
+- 1 file added and 2 changed content, across 3 parts.
 
 ## What comes in
 
@@ -56,16 +60,16 @@ Nothing in this repository writes to a tracked place this map can see.
 
 ## Hand-authored
 
-People write .github/ and the repository root. Nothing in this repository writes to them.
+People write .github/ and the repository root; 4 writes with paths built at run time may land here.
 
 ## Where to start
 
-.github/workflows/ci.yml → colab_runner/__main__.py
-
-Read those in order to follow one pull request end to end.
+CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.
 
 ## What this map cannot see
 
-- Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions.
+- 4 writes and 2 reads use paths built at run time and are not named here.
+- 7 writes and 13 reads go to a path their caller passes, not to this repository.
+- Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
