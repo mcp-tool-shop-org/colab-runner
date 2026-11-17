@@ -1,35 +1,32 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-17 from commit 71aaee4 by Atlas 1.26.0.
+Mapped at 2026-11-17 from commit 5a80108 by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (30 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
+4 parts, mostly Python (30 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-17 (d5a5373)
+## What changed since 2026-11-17 (71aaee4)
 
-- CI's push trigger now also names `.github/audit-allowlist.json`, `scripts/**` and `site/**`.
-- CI now also runs site/astro.config.mjs and site/src/.
-- Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.
-- site/audit-report.json is now written by .github/workflows/ci.yml.
-- site/package-lock.json is now read by .github/workflows/ci.yml.
-- site/src/content/docs/ is now read by site/astro.config.mjs.
-- And 1 more new writer or reader of a place.
-- site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
-- site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.
-- site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.
-- And 11 more new files that belong to no part.
-- 19 files added and 9 changed content, across 4 parts.
+- CI now also runs scripts/check-audit-allowlist.mjs and scripts/check-audit-allowlist.test.mjs.
+- .github/audit-allowlist.json is now read by .github/workflows/ci.yml and scripts/check-audit-allowlist.test.mjs.
+- .github/workflows/ci.yml is now read by scripts/check-audit-allowlist.test.mjs.
+- scripts/check-audit-allowlist.mjs is now read by scripts/check-audit-allowlist.test.mjs.
+- scripts/check-audit-allowlist.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
+- scripts/check-audit-allowlist.test.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
+- site/src/content/docs/handbook/lanes.md is new and belongs to no part, so atlas check fails on it against the previous map.
+- And 1 more new file that belongs to no part.
+- 13 files added, across 2 parts.
 
 ## What comes in
 
-1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs verify.sh, site/astro.config.mjs, site/src/ and 16 more; checks colab_runner/.
+1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, verify.sh and 19 more; checks colab_runner/.
 2. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 3. **colab_runner** (the package's entry, not published from here). Loads colab_runner/__init__.py.
 
 ## What happens through CI
 
-1. The workflow runs verify.sh in the repository root, tests/ in tests, site/astro.config.mjs and site/src/; it checks colab_runner/ in colab_runner.
+1. The workflow runs verify.sh in the repository root, tests/ in tests, scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, site/astro.config.mjs and site/src/; it checks colab_runner/ in colab_runner.
 2. It writes to site/audit-report.json, which is not tracked.
 3. It uploads coverage to Codecov.
 
@@ -83,7 +80,7 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 - 1 write goes to places this repository does not track, so it is not listed as generated.
 - 9 writes and 15 reads go to a path their caller passes, not to this repository.
 - 1 write goes to a temporary directory or a path its caller passes, not to this repository.
-- 14 files belong to no part: site/astro.config.mjs, site/package-lock.json, site/package.json and 11 more.
+- 18 files belong to no part: scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, site/astro.config.mjs and 15 more.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

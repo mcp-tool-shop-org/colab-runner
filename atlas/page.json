@@ -17,102 +17,82 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 19,
-      "changed": 9,
+      "added": 13,
+      "changed": 0,
       "moved": 0,
-      "parts": 4,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "door",
-        "sentence": "CI's push trigger now also names `.github/audit-allowlist.json`, `scripts/**` and `site/**`.",
-        "subjects": [
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "CI now also runs site/astro.config.mjs and site/src/.",
+        "sentence": "CI now also runs scripts/check-audit-allowlist.mjs and scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
           ".github/workflows/ci.yml",
-          "site/astro.config.mjs",
-          "site/src/"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.",
-        "subjects": [
-          ".github/workflows/pages.yml",
-          "site/astro.config.mjs",
-          "site/src/"
+          "scripts/check-audit-allowlist.mjs",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "site/audit-report.json is now written by .github/workflows/ci.yml.",
+        "sentence": ".github/audit-allowlist.json is now read by .github/workflows/ci.yml and scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "site/audit-report.json",
-          ".github/workflows/ci.yml"
+          ".github/audit-allowlist.json",
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "site/package-lock.json is now read by .github/workflows/ci.yml.",
+        "sentence": ".github/workflows/ci.yml is now read by scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "site/package-lock.json",
-          ".github/workflows/ci.yml"
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "site/src/content/docs/ is now read by site/astro.config.mjs.",
+        "sentence": "scripts/check-audit-allowlist.mjs is now read by scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "site/src/content/docs/",
-          "site/astro.config.mjs"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "And 1 more new writer or reader of a place.",
-        "subjects": []
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "site/astro.config.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "site/astro.config.mjs"
+          "scripts/check-audit-allowlist.mjs",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "unassigned",
-        "sentence": "site/package-lock.json is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "sentence": "scripts/check-audit-allowlist.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
         "subjects": [
-          "site/package-lock.json"
+          "scripts/check-audit-allowlist.mjs"
         ]
       },
       {
         "kind": "unassigned",
-        "sentence": "site/package.json is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "sentence": "scripts/check-audit-allowlist.test.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
         "subjects": [
-          "site/package.json"
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "unassigned",
-        "sentence": "And 11 more new files that belong to no part.",
+        "sentence": "site/src/content/docs/handbook/lanes.md is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "site/src/content/docs/handbook/lanes.md"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "And 1 more new file that belongs to no part.",
         "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "19 files added and 9 changed content, across 4 parts.",
+        "sentence": "13 files added, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "d5a53737449f1b9d76677dbc7ca888cd0669813d",
-      "generatedAt": "2026-11-17T20:25:03.555Z"
+      "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
+      "generatedAt": "2026-11-17T21:38:18.287Z"
     },
     "unchanged": false
   },
@@ -121,9 +101,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
+  "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (30 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
+  "derived": "4 parts, mostly Python (30 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
     {
       "checks": [
@@ -154,13 +134,15 @@
         }
       ],
       "runs": [
+        "scripts/check-audit-allowlist.mjs",
+        "scripts/check-audit-allowlist.test.mjs",
         "verify.sh",
         "site/astro.config.mjs",
         "site/src/",
         "tests/"
       ],
-      "runsCount": 4,
-      "runsMore": 16,
+      "runsCount": 6,
+      "runsMore": 19,
       "sends": [
         "uploads coverage to Codecov"
       ],
@@ -231,13 +213,13 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-17T21:38:18.287Z",
+  "generatedAt": "2026-11-17T21:43:26.878Z",
   "limits": [
     "7 writes and 6 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "9 writes and 15 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
-    "14 files belong to no part: site/astro.config.mjs, site/package-lock.json, site/package.json and 11 more.",
+    "18 files belong to no part: scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, site/astro.config.mjs and 15 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -256,7 +238,7 @@
   "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 16,
+  "testFiles": 17,
   "testedBy": {
     "colab_runner": 13
   },

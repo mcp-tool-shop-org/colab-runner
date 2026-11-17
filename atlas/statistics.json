@@ -35,7 +35,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "colab_runner",
-      "qualifyingSourceCommits": 2,
+      "qualifyingSourceCommits": 3,
       "rebaseline": null
     },
     {
@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 2,
       "rebaseline": null
     }
   ],
@@ -80,8 +80,13 @@
         "path": ".gitattributes"
       },
       {
-        "commits": 3,
-        "lines": 96,
+        "commits": 1,
+        "lines": 15,
+        "path": ".github/audit-allowlist.json"
+      },
+      {
+        "commits": 4,
+        "lines": 117,
         "path": ".github/workflows/ci.yml"
       },
       {
@@ -90,13 +95,13 @@
         "path": ".github/workflows/pages.yml"
       },
       {
-        "commits": 2,
-        "lines": 13,
+        "commits": 3,
+        "lines": 14,
         "path": ".gitignore"
       },
       {
-        "commits": 5,
-        "lines": 289,
+        "commits": 6,
+        "lines": 304,
         "path": "CHANGELOG.md"
       },
       {
@@ -105,28 +110,63 @@
         "path": "LICENSE"
       },
       {
-        "commits": 5,
-        "lines": 343,
+        "commits": 1,
+        "lines": 236,
+        "path": "README.es.md"
+      },
+      {
+        "commits": 1,
+        "lines": 207,
+        "path": "README.fr.md"
+      },
+      {
+        "commits": 1,
+        "lines": 210,
+        "path": "README.hi.md"
+      },
+      {
+        "commits": 1,
+        "lines": 217,
+        "path": "README.it.md"
+      },
+      {
+        "commits": 1,
+        "lines": 175,
+        "path": "README.ja.md"
+      },
+      {
+        "commits": 6,
+        "lines": 427,
         "path": "README.md"
       },
       {
         "commits": 1,
-        "lines": 49,
+        "lines": 242,
+        "path": "README.pt-BR.md"
+      },
+      {
+        "commits": 1,
+        "lines": 175,
+        "path": "README.zh.md"
+      },
+      {
+        "commits": 2,
+        "lines": 103,
         "path": "SCORECARD.md"
       },
       {
-        "commits": 1,
-        "lines": 37,
+        "commits": 2,
+        "lines": 85,
         "path": "SECURITY.md"
       },
       {
-        "commits": 1,
-        "lines": 84,
+        "commits": 2,
+        "lines": 154,
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 4,
-        "lines": 139,
+        "commits": 5,
+        "lines": 178,
         "path": "atlas/README.md"
       },
       {
@@ -135,18 +175,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 4,
-        "lines": 319,
+        "commits": 5,
+        "lines": 448,
         "path": "atlas/page.json"
       },
       {
-        "commits": 4,
-        "lines": 562,
+        "commits": 5,
+        "lines": 776,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 4,
-        "lines": 2422,
+        "commits": 5,
+        "lines": 2958,
         "path": "atlas/structure.json"
       },
       {
@@ -241,6 +281,16 @@
       },
       {
         "commits": 1,
+        "lines": 296,
+        "path": "scripts/check-audit-allowlist.mjs"
+      },
+      {
+        "commits": 1,
+        "lines": 317,
+        "path": "scripts/check-audit-allowlist.test.mjs"
+      },
+      {
+        "commits": 1,
         "lines": 36,
         "path": "site/astro.config.mjs"
       },
@@ -270,19 +320,29 @@
         "path": "site/src/content.config.ts"
       },
       {
-        "commits": 1,
-        "lines": 21,
+        "commits": 2,
+        "lines": 70,
         "path": "site/src/content/docs/handbook/getting-started.md"
       },
       {
-        "commits": 1,
-        "lines": 16,
+        "commits": 2,
+        "lines": 46,
         "path": "site/src/content/docs/handbook/index.md"
       },
       {
         "commits": 1,
-        "lines": 14,
+        "lines": 86,
+        "path": "site/src/content/docs/handbook/lanes.md"
+      },
+      {
+        "commits": 2,
+        "lines": 207,
         "path": "site/src/content/docs/handbook/reference.md"
+      },
+      {
+        "commits": 1,
+        "lines": 72,
+        "path": "site/src/content/docs/handbook/security.md"
       },
       {
         "commits": 1,
@@ -290,8 +350,8 @@
         "path": "site/src/pages/index.astro"
       },
       {
-        "commits": 1,
-        "lines": 48,
+        "commits": 2,
+        "lines": 135,
         "path": "site/src/site-config.ts"
       },
       {
@@ -391,6 +451,11 @@
       },
       {
         "commits": 1,
+        "lines": 168,
+        "path": "uv.lock"
+      },
+      {
+        "commits": 1,
         "lines": 10,
         "path": "verify.sh"
       }
@@ -400,13 +465,13 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-17T21:38:18.287Z",
+  "generatedAt": "2026-11-17T21:43:26.878Z",
   "generatedFrom": {
-    "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93"
+    "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 16,
+    "appliedChangesetLimit": 19.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -415,16 +480,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-17T16:17:17-05:00",
-    "inScopeFiles": 64,
+    "headDate": "2026-11-17T16:38:42-05:00",
+    "inScopeFiles": 77,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 3,
+    "qualifyingCommits": 5,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-21T21:17:17.000Z",
+    "since": "2026-05-21T21:38:42.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

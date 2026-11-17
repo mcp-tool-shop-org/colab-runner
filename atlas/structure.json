@@ -9,6 +9,10 @@
       "externals": 0,
       "files": [
         {
+          "hash": "6eb567f99daedc21f8d0a326018ecd9469c92469f30b25d5de8d77ebd378d40e",
+          "path": ".github/audit-allowlist.json"
+        },
+        {
           "hash": "5445689929cb3624a5991aa43162c6565048434d991a9fa1a650c1648f2a7605",
           "path": ".github/workflows/ci.yml"
         },
@@ -757,8 +761,36 @@
           "path": "LICENSE"
         },
         {
+          "hash": "f15e9c6494e4ed80be96ea72b66bb76f8e88e6f1a6f25f08689d8530b14b4ea7",
+          "path": "README.es.md"
+        },
+        {
+          "hash": "7428bcbc0999f0bd6ace4bd18ff283ea1a872e947ca5e07f8136573809a97d6f",
+          "path": "README.fr.md"
+        },
+        {
+          "hash": "7fad672f6bca4643820837b07992fc3f53c15a7282d9bf1f697de5f89f453504",
+          "path": "README.hi.md"
+        },
+        {
+          "hash": "c05d8ee85e99fe20d1843da4cc89aef30cbafa2ce5fc029bc7aff3a2b4a7b2e5",
+          "path": "README.it.md"
+        },
+        {
+          "hash": "28bf34cb31c58655e7ef32eac329ccb04256f40cdef46714435a3c146f550b6a",
+          "path": "README.ja.md"
+        },
+        {
           "hash": "4275e0ebe632d79845b07f60182bef3e1f23c888d53be5dab2dcff6907df1aed",
           "path": "README.md"
+        },
+        {
+          "hash": "4f64d841c47f23e30600376dd0738fd6800d7b7d870afcab631ecbd4043ac62b",
+          "path": "README.pt-BR.md"
+        },
+        {
+          "hash": "2334ca1012f6350efe3364e58978f4426cf77ca326f979400897848caec57b8b",
+          "path": "README.zh.md"
         },
         {
           "hash": "5dd4e9ee7ee5b1abab153da8abc339bcae1b7e0278da341051f8477d577c53c7",
@@ -779,6 +811,10 @@
         {
           "hash": "9050d4947d3e11be7f8e029d98bb200c7c4da25f5c1edb63dc8cf78d0ceaaf84",
           "path": "pyproject.toml"
+        },
+        {
+          "hash": "2501c269fdba2aa9a8e7fe28a3886bcbcd661f49237c9030c408c84befc3c569",
+          "path": "uv.lock"
         },
         {
           "hash": "7bce6544cc29b98892eb2f20fe095ca7cbe80018981e6db99ed6da86acb8c1fc",
@@ -1223,6 +1259,10 @@
       "mentions": [
         {
           "job": "ci",
+          "path": ".github/audit-allowlist.json"
+        },
+        {
+          "job": "ci",
           "path": "site/package-lock.json"
         }
       ],
@@ -1261,6 +1301,16 @@
         },
         {
           "job": "ci",
+          "path": "scripts/check-audit-allowlist.mjs",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
+          "path": "scripts/check-audit-allowlist.test.mjs",
+          "runKind": "executes"
+        },
+        {
+          "job": "ci",
           "matched": true,
           "path": "site/astro.config.mjs",
           "runKind": "executes",
@@ -1288,7 +1338,7 @@
           "runKind": "executes"
         }
       ],
-      "runsCount": 5,
+      "runsCount": 7,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -1322,7 +1372,7 @@
         },
         {
           "dir": "site",
-          "files": 0,
+          "files": 1,
           "job": "ci",
           "runner": "node --test",
           "step": "Site build"
@@ -1576,10 +1626,38 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
-    "tracked": 59
+    "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
+    "tracked": 72
   },
   "landings": [
+    {
+      "readers": [
+        {
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
+        },
+        {
+          "by": "scripts/check-audit-allowlist.test.mjs",
+          "call": "readFileSync",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": ".github/audit-allowlist.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "scripts/check-audit-allowlist.test.mjs",
+          "call": "readFileSync",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": ".github/workflows/ci.yml",
+      "writers": []
+    },
     {
       "readers": [
         {
@@ -1769,6 +1847,18 @@
       "writers": []
     },
     {
+      "readers": [
+        {
+          "by": "scripts/check-audit-allowlist.test.mjs",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "scripts/check-audit-allowlist.mjs",
+      "writers": []
+    },
+    {
       "readers": [],
       "target": "site/audit-report.json",
       "tracked": false,
@@ -1827,8 +1917,44 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 16,
+  "testFiles": 17,
   "unassigned": [
+    {
+      "entry": "failClosed",
+      "entryRule": 1,
+      "failurePaths": [
+        {
+          "kind": "catch",
+          "line": 69
+        },
+        {
+          "kind": "catch",
+          "line": 78
+        },
+        {
+          "kind": "catch",
+          "line": 112
+        },
+        {
+          "kind": "catch",
+          "line": 211
+        }
+      ],
+      "hash": "7e16a8c0c9b4fa3990b16826768cf1260732089401db756e9c741935f90a0029",
+      "path": "scripts/check-audit-allowlist.mjs",
+      "sequences": []
+    },
+    {
+      "entry": "run",
+      "entryRule": 1,
+      "hash": "e5d8ad97f7d9427c8d87002d7a29d189c464ec432d3c7c4814138877396b5d00",
+      "path": "scripts/check-audit-allowlist.test.mjs",
+      "sequences": [],
+      "spawns": [
+        "scripts/check-audit-allowlist.mjs"
+      ],
+      "testFramework": "node --test"
+    },
     {
       "hash": "ccf07a3ca23dfc6c13f4cc7c572015998ac1de136033b6d7a40af93b28cdf121",
       "path": "site/astro.config.mjs"
@@ -1863,8 +1989,16 @@
       "path": "site/src/content/docs/handbook/index.md"
     },
     {
+      "hash": "5cfed6bba750cf567a4a1861e59d6038ea0b02f3d7a9bf8295ef119934437568",
+      "path": "site/src/content/docs/handbook/lanes.md"
+    },
+    {
       "hash": "1ad610ea3327e3c69480627172ba593d85f82e81f25440f12cd4f5cbac1f2eec",
       "path": "site/src/content/docs/handbook/reference.md"
+    },
+    {
+      "hash": "50773047329beba2602b8e1e4f8b26da785e4a7585d595cf47fac3d879d36a8a",
+      "path": "site/src/content/docs/handbook/security.md"
     },
     {
       "hash": "4fb84a646c4d833c33f4058e1ed1775849e855c65e5adb7e45d2a633674bd603",
