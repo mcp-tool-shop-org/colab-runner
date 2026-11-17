@@ -56,7 +56,10 @@ CODES: dict[str, Code] = {
     "RESIDENT_MAX_INVALID": Code("pass CR_RESIDENT_MAX_S as a finite number of seconds greater than 0, or leave it "
                                  "out (the window's length is the default)", _FIX),
     "OUT_DIR_NOT_EMPTY": Code("pass an --out-dir that does not exist yet, or is empty: a new one for each run", _FIX),
-    "OUT_DIR_INVALID": Code("pass an --out-dir below a filesystem root: its quarantine is a sibling folder", _FIX),
+    "OUT_DIR_INVALID": Code("pass an --out-dir that can be created and listed, below a filesystem root (its quarantine "
+                            "is a sibling folder)", _FIX),
+    "CLI_INVALID": Code("fix COLAB_RUNNER_CLI: it is split with POSIX shell quoting, so close every quote (or unset "
+                        "it to use `colab`)", _FIX),
     "ENV_INVALID": Code("pass --env as NAME=VALUE or NAME, with NAME a variable name", _FIX),
     "ENV_UNSET": Code("set the variable in this environment before the run, or pass --env NAME=VALUE", _FIX),
     "RUN_ID_RESERVED": Code("drop CR_RUN_ID from --env: the runner gives every run its own id", _FIX),
@@ -70,6 +73,9 @@ CODES: dict[str, Code] = {
     "BINARY_DOWNLOAD_TOKEN": Code(
         "keep tokens out of the job's binary outputs; delete the quarantine named in runner_result.json and never "
         "ship it", _FIX),
+    "QUARANTINE_ESCAPE": Code(
+        "report it: the file was removed rather than moved outside its quarantine; pass a plain --out-dir (or a "
+        "download path) without `..`", _FIX),
     "UNEXPECTED_ERROR": Code(
         "read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop "
         "--out-dir D`; rerun with --debug for the traceback", _FIX),

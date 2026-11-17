@@ -2,10 +2,10 @@
 
 ## 0.1.0 (2026-11-17)
 
-The first release for lanes to vendor. The v0.1.0 tag goes on the merge of the ship-gate pull request, and carries PR #1
-(the detached runner, merged as b3703db0), PR #2 (this version and changelog), PR #3 (the binary-safe download scrub, the
-`--job` refusal and the 0.1.0 follow-ups) and the ship gate (structured errors, the org's exit codes, log levels, pip-audit
-in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Using it from a lane".
+The first release for lanes to vendor. The v0.1.0 tag goes on the merge of PR #4, and carries PR #1 (the detached runner,
+merged as b3703db0), PR #2 (this version and changelog), PR #3 (the binary-safe download scrub, the `--job` refusal and the
+0.1.0 follow-ups) and PR #4 (the ship gate: structured errors, the org's exit codes, log levels, pip-audit in CI, and the
+reviews' follow-ups). How a lane calls it is in the README, "Using it from a lane".
 
 - **The detached runner.** `python -m colab_runner run` starts a job on a Colab session the lane has already opened, in a process
   that keeps running on the VM if the rig-side process dies. It polls with backoff and follows the job's log (`<job>.run.out`,
@@ -13,11 +13,13 @@ in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Usin
   `unreachable` (a sustained poll blackout), `start_failed`, `interrupted` (SIGINT/SIGTERM) or `error`. There is a hold job
   (`--hold-s`), and a kernel-resident fallback (`--resident`, using `math.ceil(left)` for its default `CR_RESIDENT_MAX_S`) that
   polls the job's `<job>.poll.json` by download and collects the job's log when the job has ended, or at the end of a run that
-  tripped. `COLAB_RUNNER_CLI` is split with `shlex.split`, POSIX quoting (on Windows, forward slashes or a quoted path).
+  tripped. `COLAB_RUNNER_CLI` is split with `shlex.split`, POSIX quoting (on Windows, forward slashes or a quoted path);
+  one that cannot be split is refused (`CLI_INVALID`).
 - **The `--job` refusal, by run id.**
   - Every run has its own id, `CR_RUN_ID`, a fresh one each time; every cell carries it. The name is reserved: a lane's
-    `--env CR_RUN_ID=…` is refused (`RUN_ID_RESERVED`). A record's run id is compared as a string, so a JSON `null` never
-    matches, and `Runner.start` strips the id it stores, as `run` does.
+    `--env CR_RUN_ID=…` is refused (`RUN_ID_RESERVED`), and so is `CR_RUN_ID` in `Runner.run(env=...)`. A record's run id
+    is compared as a string, so a JSON `null` never matches. `Runner.start`, called directly, strips the id it is given
+    and makes a fresh one for a blank or missing (`None`) id.
   - The VM writes it to `<job>.run_id` before the job starts. The job's status file and every poll record carry it.
   - If any of the job's files (`<job>.pid`, `.status.json`, `.run.out`, `.poll.json`, `.run_id`) is there under another run
     id (or under none), the start is refused and the run ends `start_failed` with `JOB_ALREADY_EXISTS`. That holds whether the other job's
@@ -45,8 +47,9 @@ in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Usin
 - **Structured errors.** Every refusal and error has a code, a message, a one-line hint and `retryable` (`CODES` in
   `colab_runner/errors.py`; a test reads every code from the source and checks each has its entry).
   - A refusal prints `REFUSED: CODE: message`, then `hint: …`, on stderr. An error during a run prints
-    `RUN_ERROR: CODE: message` (`BINARY_DOWNLOAD_TOKEN`, or `UNEXPECTED_ERROR` with the exception's type), then `hint: …`;
-    `stop` prints `STOP_ERROR: …` the same way. Every line is scrubbed.
+    `RUN_ERROR: CODE: message` (`BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`, or `UNEXPECTED_ERROR` with the exception's
+    type), then `hint: …`, and the stop hint too when `session_open.json` is still there; `stop` prints `STOP_ERROR: …`
+    the same way. Every line is scrubbed.
   - A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`) records
     `refusal: {code, message, hint, retryable}` in `runner_result.json`, and its `RUN_END` line ends ` code=CODE`.
   - A binary download refused during cleanup turns the end into `error` and keeps the end it replaced (`prior_reason`).
@@ -62,7 +65,8 @@ in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Usin
   - a cleanup bound below the runner's own;
   - a cap too small for the margin plus the cleanup reserve (the library's budget rule);
   - pre-open values given one without the other;
-  - an out dir that is a filesystem root (`OUT_DIR_INVALID`).
+  - an out dir that is a filesystem root, or that cannot be created or listed (`OUT_DIR_INVALID`);
+  - a `COLAB_RUNNER_CLI` that cannot be split (`CLI_INVALID`).
 
   A missing `--wall-s` is a usage error (exit 1, from argparse), not a named refusal.
 - **Tokens and binary-safe download scrub.** Every `colab` CLI output and error line is scrubbed with the library's
@@ -70,16 +74,16 @@ in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Usin
   binary by content (NUL byte or failed strict UTF-8 decode).
   - Text files are scrubbed in place with `scrub_colab_tokens`. Clean binaries are left byte-identical. Unreadable files are
     removed.
-  - A downloaded symlink is unlinked, never followed (the vendored `scrub_file_in_place` followed it and rewrote its
-    target). Only regular files are read: a FIFO, a socket or a device is unlinked, never read.
+  - A downloaded symlink, to a file or to a directory, is unlinked, never followed (the vendored `scrub_file_in_place`
+    followed it and rewrote its target). Only regular files are read: a FIFO, a socket or a device is unlinked, never read.
   - A directory is scrubbed file by file, and one failure never stops the rest: a hit whose move to quarantine fails is
     removed, and a subdirectory that cannot be listed is noted; the first such error is raised once the other files are
     scrubbed.
   - A binary is scanned with `BYTE_TOKEN_PATTERNS`, byte twins derived from the sources of `TOKEN_SCRUB_PATTERNS`. On UTF-8
     they match exactly what the text patterns match, with every str `\s` character as a space (`\x1c`-`\x1f`, NBSP, NEL, EM
     SPACE and the rest); next to a non-ASCII letter the `hf_` twin matches more, never less. The derivation refuses what it
-    cannot translate span for span: a negated class not quantified with `+` or `*`, an unescaped `.`, `\S`/`\w`/`\d` and
-    their negations, and a non-ASCII class member.
+    cannot translate span for span: a negated class not quantified with a greedy `+` or `*` (a reluctant `+?` or `*?`
+    included), an unescaped `.`, `\S`/`\w`/`\d` and their negations, a non-ASCII class member, and a non-ASCII literal.
   - In a binary, `Bearer` counts only with a token-shaped value: at least 20 characters of `[A-Za-z0-9._-]`, using at least two of
     lower case, upper case and digits (`binary_token_hit`). A render whose prompt says "Flame Bearer of the North" comes
     through byte-identical.
@@ -90,7 +94,9 @@ in CI, and the reviews' follow-ups). How a lane calls it is in the README, "Usin
   - Through `Runner` the quarantine is `<out-dir>.quarantine/`, named from the resolved out dir (so an out dir ending in
     `..` gets its real folder's sibling), outside `--out-dir`, so `salvage` and bundles never see it. A
     bare `Colab.download` or `scrub_local` with no `quarantine_dir` uses a new `colab-runner-quarantine-*` folder under the
-    system temp dir, never next to the file. The lane must delete a quarantine and never ship it.
+    system temp dir, never next to the file. Every quarantine path is resolved and checked to stay inside its folder
+    before the move; a file that would land outside it is removed instead (`QuarantineEscape`, `QUARANTINE_ESCAPE`). The
+    lane must delete a quarantine and never ship it.
   - `--env` values reach the VM inside the cell file, never as arguments to the `colab` CLI. A lane should pass a secret as
     `--env NAME` with NAME set in its environment: `--env NAME=VALUE` puts the value in the runner's own command line.
 - **The window library is vendored byte for byte** (`colab_runner/window_lib/`, see its `PROVENANCE.md`), from the aspire-colab

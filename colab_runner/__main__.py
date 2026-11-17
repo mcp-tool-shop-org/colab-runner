@@ -212,7 +212,10 @@ def run_command(argv: list[str]) -> int:
     except Refused as exc:
         return _refused(exc)
     except (Exception, KeyboardInterrupt) as exc:  # the run has stopped its session already (or left the marker)
-        return _error("RUN_ERROR", exc, args.level)
+        exit_code = _error("RUN_ERROR", exc, args.level)
+        if (Path(args.out_dir) / "session_open.json").is_file():  # the run's stop was not confirmed
+            _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)
+        return exit_code
     code = (" code=%s" % result.refusal["code"]) if result.refusal else ""
     _out("RUN_END reason=%s rc=%s stopped=%s%s" % (result.reason, result.rc, result.stopped, code))
     if result.refusal:

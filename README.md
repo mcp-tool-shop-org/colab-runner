@@ -30,7 +30,8 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
 **Required flags of `run`:** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C
 --cleanup-bound-s N`.
 - `--out-dir` must not exist yet, or be empty (`OUT_DIR_NOT_EMPTY` otherwise). A filesystem root is refused
-  (`OUT_DIR_INVALID`): the quarantine is a sibling of the out dir, named from its resolved path.
+  (`OUT_DIR_INVALID`): the quarantine is a sibling of the out dir, named from its resolved path. So is an out dir that
+  cannot be created or listed.
 - `--cleanup-bound-s` must be at least the runner's own cleanup bound (`CLEANUP_BOUND_TOO_SMALL` otherwise). At the default
   call timeouts that bound is 466 s, or 986 s with `--resident` (`Runner.own_cleanup_bound_s`).
 - Pass `--pre-open-rate` and `--pre-open-assignments` together, read just before the session opened, or neither. Without them
@@ -69,23 +70,23 @@ On 3 the job's work is in the out dir, and the session must still be stopped wit
 **Refusals and errors** have a code, a message and a hint, and every line is scrubbed:
 - A refusal writes `REFUSED: CODE: message` as the first line on stderr, then `hint: …` (what to change).
 - An error during a run writes `RUN_ERROR: CODE: message`, then `hint: …`. The code is the error's own
-  (`BINARY_DOWNLOAD_TOKEN`), or `UNEXPECTED_ERROR` with the exception's type in the message. `stop` writes `STOP_ERROR: …`
+  (`BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`), or `UNEXPECTED_ERROR` with the exception's type in the message. `stop` writes `STOP_ERROR: …`
   the same way.
 - A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`) records it in
   `runner_result.json` as `refusal: {code, message, hint, retryable}`. `retryable` is false for every refusal of the
   caller's input: the same call fails the same way again.
 - Every code and its hint is in `colab_runner/errors.py` (`CODES`).
 
-**Log levels** (`run` and `stop`): `--quiet` writes only the end lines (`RUN_END` / `STOP_END`, and a refusal or an error
-with its hint). The default adds the runner's log on stderr. `--verbose` adds one line per poll. `--debug` adds an error's
+**Log levels** (`run` and `stop`): `--quiet` writes only the end lines (`RUN_END`, `STOP_END` or `STOP_NOTHING`, and a
+refusal or an error with its hint). The default adds the runner's log on stderr. `--verbose` adds one line per poll. `--debug` adds an error's
 traceback. A token is scrubbed at every level, the traceback included.
 
 **How a run ends:** `done`, `failed` (non-zero exit), `oom`, `wall`, `cap`, `setup_stall`, `progress_stall`, `dead`,
 `unreachable`, `start_failed`, `interrupted` or `error`.
 - Every end but `error` writes `RUN_END reason=… rc=… stopped=…` as the last line on stdout, with ` code=CODE` added when
   the run ended on a named refusal. A hint follows on stderr for such a refusal, and for a stop that was not confirmed.
-- An `error` end writes `RUN_ERROR: …` on stderr and no `RUN_END` line. A refusal or a usage error (exit 1) writes to
-  stderr only.
+- An `error` end writes `RUN_ERROR: …` on stderr and no `RUN_END` line; when `session_open.json` is still in the out dir,
+  the hint for a stop that was not confirmed follows. A refusal or a usage error (exit 1) writes to stderr only.
 - `runner_result.json` in the out dir records every end after the marker was written, `error` included. A binary download
   refused during cleanup turns the end into `error` and keeps the end it replaced in `prior_reason` (and in the detail).
 
@@ -94,13 +95,14 @@ traceback. A token is scrubbed at every level, the traceback included.
 - `runner_result.json`, the run's end. Its `quarantined` lists each binary download quarantined during the run, and a
   quarantine from a later `Runner.download` through the same `Runner` rewrites the file with it;
 - `<job>.run.out`, the job's log (appears only once the job has written log lines, or once `--resident` has collected it);
-- with `--resident`, `<job>.poll.json` (the job's latest poll record, as downloaded) and, on a `JOB_ALREADY_EXISTS`
-  refusal, `<job>.refused.json` (this run's own refusal record);
+- with `--resident`, `<job>.poll.json` (the job's latest poll record, as downloaded) and `<job>.refused.json`, this run's
+  own refusal record, when its refused resident cell wrote one (a `JOB_ALREADY_EXISTS` that only timed out on another
+  run's records has none);
 - `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
 
 **The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line. It is split with `shlex.split`,
 which uses POSIX quoting: on Windows, write the path with forward slashes or quote it (`"C:\tools\colab.exe"`), since an
-unquoted backslash is dropped.
+unquoted backslash is dropped. One that cannot be split (an unclosed quote) is refused (`CLI_INVALID`, exit 1).
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
@@ -136,8 +138,9 @@ directories (including partial transfers) are classified by content only (a NUL 
     exit 2), and the session is still stopped.
 - **A directory download** is scrubbed file by file, and one failure never stops the rest: a hit whose move to quarantine
   fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once every other
-  file has been scrubbed. Only regular files are read. A symlink is unlinked, never followed, and any other entry that is
-  not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never read.
+  file has been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
+  followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
+  read.
 - **Where the quarantine is.**
   - Through `Runner` (and so `run`), it is the sibling directory `<out-dir>.quarantine/`. It is outside `--out-dir`, so
     neither `salvage` nor out-dir bundling picks it up.
@@ -145,6 +148,8 @@ directories (including partial transfers) are classified by content only (a NUL 
     `colab-runner-quarantine-*` under the system temp dir (`tempfile.gettempdir()`). It never lands next to the file, so
     never inside the folder the file was downloaded into. Its path is in `BinaryDownloadRefused.quarantined`. Pass
     `Colab(quarantine_dir=...)` to choose the place.
+  - Every quarantine path is resolved and checked to stay inside its quarantine folder before the move. A file that
+    would land outside it is removed instead, and the download fails with `QuarantineEscape` (`QUARANTINE_ESCAPE`).
   - The runner never deletes a quarantine; **the lane must delete it and never ship it.**
 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The

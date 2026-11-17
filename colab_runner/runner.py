@@ -42,6 +42,7 @@ from colab_runner.colab_cli import (
     EXEC_REPORT_S,
     KILL_WAIT_S,
     BinaryDownloadRefused,
+    QuarantineEscape,
     CliResult,
     Colab,
     default_quarantine_dir,
@@ -59,6 +60,9 @@ REACHED_EPS_S = 1e-6  # less than this left: the wall or the ceiling has been re
 TRIPS = frozenset(
     {"wall", "cap", "setup_stall", "progress_stall", "dead", "unreachable", "start_failed", "interrupted", "error"}
 )
+
+# The kill cell's answers for a job that is this run's own (vm/lib.py cr_kill_job checks the owner first).
+OWN_KILL_ANSWERS = ("CR_KILLED", "CR_NOT_RUNNING", "CR_NO_JOB")
 
 # A fresh `colab exec` kernel handshake can be slower than the CLI's default request timeout, so a start or poll that
 # fails is retried with backoff rather than read as a dead job.
@@ -239,7 +243,8 @@ class Runner:
         self._cleanup_signals: list[int] = []
         self._phase = "idle"
         self._res = RunResult("error")
-        self._download_refusal: Optional[BinaryDownloadRefused] = None
+        # a download refused in cleanup (BinaryDownloadRefused, or QuarantineEscape): it ends the run as `error`
+        self._download_refusal: Optional[BaseException] = None
         self._run_id = ""
         self._job_reused = False
         self._own_seen = False  # a record of this run (its own run id) has been seen, or its start confirmed
@@ -345,7 +350,9 @@ class Runner:
         min(start_timeout_s, left - pause); the retries stop when that is under MIN_CALL_S."""
         full = dict(env)
         # stripped as run() strips it: a blank id would leave cr_run_id() empty on the VM and turn the refusal off
-        full["CR_RUN_ID"] = str(full.get("CR_RUN_ID", "")).strip() or self._run_id.strip() or uuid.uuid4().hex
+        given = full.get("CR_RUN_ID")
+        given = str(given).strip() if given is not None else ""  # None never becomes the string "None"
+        full["CR_RUN_ID"] = given or self._run_id.strip() or uuid.uuid4().hex
         if not self._run_id.strip():
             self._run_id = full["CR_RUN_ID"]
         delay, last = 2.0, ""
@@ -559,7 +566,7 @@ class Runner:
             except BaseException as exc:  # any crash, KeyboardInterrupt included: stop first, then let it go on
                 self._end_as("interrupted" if isinstance(exc, KeyboardInterrupt) else "error",
                              "%s: %s" % (type(exc).__name__, exc))
-                if isinstance(exc, BinaryDownloadRefused):
+                if isinstance(exc, (BinaryDownloadRefused, QuarantineEscape)):
                     self._res.refusal = error_record(exc.code, scrub(exc.message))
                 crash = exc
             finally:
@@ -611,11 +618,15 @@ class Runner:
             raise Refused("CLEANUP_BOUND_TOO_SMALL", "cleanup_bound_s %g is below the runner's own cleanup bound %g s "
                           "(kill, %sstop attempts)" % (bound, self.own_cleanup_bound_s(resident),
                                                        "kernel restart, run log, " if resident else ""))
-        if self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
-            # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
-            # refuses the same: colab_refuse_nonempty_out_dir)
-            raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
+                # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
+                # refuses the same: colab_refuse_nonempty_out_dir)
+                raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # refused by name before the marker, so exit 1 keeps meaning "no session was owned"
+            raise Refused("OUT_DIR_INVALID", "%s cannot be created or listed (%s: %s)"
+                          % (self.out_dir, type(exc).__name__, exc)) from None
         return kit_env
 
     def _run_body(self, kit_env, wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
@@ -652,7 +663,8 @@ class Runner:
             self._res.prior_reason, self._prior_detail = self._res.reason, self._res.detail
         detail = "%s: %s" % (type(exc).__name__, exc)
         if self._res.prior_reason is not None:
-            detail += " (the run had ended %s: %s)" % (self._res.prior_reason, self._prior_detail)
+            prior = self._res.prior_reason + (": %s" % self._prior_detail if self._prior_detail else "")
+            detail += " (the run had ended %s)" % prior
         self._end_as("error", detail)
         self._res.refusal = error_record(exc.code, scrub(exc.message))
 
@@ -788,10 +800,10 @@ class Runner:
         """One cleanup step; whatever it raises is logged, and the next step (the stop above all) still runs."""
         try:
             return fn()
-        except BinaryDownloadRefused as exc:
+        except (BinaryDownloadRefused, QuarantineEscape) as exc:
             if self._download_refusal is None:
                 self._download_refusal = exc
-            for entry in exc.quarantined:
+            for entry in getattr(exc, "quarantined", []):
                 self._record_quarantine(entry)
             self.log("cleanup step %s failed: %s: %s" % (name, type(exc).__name__, exc))
             return None
@@ -813,7 +825,12 @@ class Runner:
                 # run log is never collected into this run's out dir
                 not_ours = True
                 self.log("the job under --job %r is another run's: its run log is not collected" % self.job)
-        if resident and not self._log_collected and not not_ours:
+        # the job is known to be this run's: a record of its own was seen, or the kill cell answered for this run id
+        # (it answers CR_NOT_OURS for another run's job); a kill cell that failed outright proves nothing
+        owned = self._own_seen or (res.killed or "").startswith(OWN_KILL_ANSWERS)
+        if resident and not self._log_collected and not not_ours and not owned:
+            self.log("the job under --job %r was never shown to be this run's: its run log is not collected" % self.job)
+        if resident and not self._log_collected and not not_ours and owned:
             self._step("run log", lambda: self._collect_resident_log(self.log_timeout_s))
             if self._download_refusal is not None:
                 self._end_on_download_refusal()

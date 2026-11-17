@@ -79,6 +79,7 @@ class CodeTableTest(unittest.TestCase):
                 self.assertIn(code, CODES)
                 self.assertIsInstance(CODES[code].hint, str)
                 self.assertTrue(CODES[code].hint.strip())
+                self.assertNotIn("\n", CODES[code].hint)  # one line: the CLI prints it as `hint: ...`
                 self.assertIsInstance(CODES[code].retryable, bool)
 
     def test_the_one_dynamic_refusal_is_the_librarys_budget_and_its_codes_are_in_the_table(self):
