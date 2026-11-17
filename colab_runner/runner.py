@@ -48,7 +48,7 @@ from colab_runner.colab_cli import (
     default_quarantine_dir,
     scrub_local,
 )
-from colab_runner.errors import Refused, error_record
+from colab_runner.errors import Refused, cap_trip_record, error_record
 from colab_runner.window_lib import launch_guards as lg
 
 VM_DIR = Path(__file__).parent / "vm"
@@ -170,10 +170,14 @@ class RunResult:
     salvaged: Optional[bool] = None
     stopped: Optional[bool] = None
     quarantined: list[dict[str, str]] = field(default_factory=list)
-    # a run that ended on a named refusal (JOB_ALREADY_EXISTS, BINARY_DOWNLOAD_TOKEN): {code, message, hint, retryable}
+    # a run that ended on a named refusal (JOB_ALREADY_EXISTS, BINARY_DOWNLOAD_TOKEN, QUARANTINE_ESCAPE):
+    # {code, message, hint, retryable}
     refusal: Optional[dict] = None
     # the end that a refusal during cleanup replaced with `error` (wall, cap, ...), else None
     prior_reason: Optional[str] = None
+    # a `cap` end: {code, message, hint, retryable}, the code read from the trip's leading `CODE:` (see
+    # errors.cap_trip_record); None on every other end. `detail` keeps the trip string as it was
+    cap_trip: Optional[dict] = None
 
 
 class RunInterrupted(Exception):
@@ -498,7 +502,7 @@ class Runner:
         local = self.out_dir / ("%s.run.out" % self.job)
         try:
             res = self._download("%s/%s.run.out" % (self.content.rstrip("/"), self.job), local, timeout)
-        except BinaryDownloadRefused:
+        except (BinaryDownloadRefused, QuarantineEscape):  # refused either way: never downloaded again in _end
             self._log_collected = True
             raise
         if res.ok and local.is_file():
@@ -577,6 +581,8 @@ class Runner:
                 finally:
                     self._phase = "idle"
                     self._disarm_signals(handlers)
+                    if self._res.reason != "cap":  # an end that replaced a cap (a refused download) has no cap_trip
+                        self._res.cap_trip = None
                     write_json_atomic(self.out_dir / "runner_result.json", asdict(self._res))
                     self._result_written = True
         if crash is None and self._download_refusal is not None:
@@ -704,7 +710,10 @@ class Runner:
                 trip = guard.check(self.clock() - self._t0)
                 if trip:
                     usage_cut = usage_skipped or (u is not None and not u.ok and left_now < MIN_CALL_S)
-                    return self._end_as(nearer if usage_cut else "cap", trip)
+                    reason = nearer if usage_cut else "cap"
+                    if reason == "cap":
+                        self._res.cap_trip = cap_trip_record(scrub(trip))
+                    return self._end_as(reason, trip)
             # resident mode: until its poll file has appeared, the start is unverified and has the setup window
             until = loop_t0 + setup_stall_s if resident and not file_seen else None
             left, bound = self._budget(until)
@@ -721,6 +730,8 @@ class Runner:
                         )
                     return self._end_as("start_failed", "the resident poll file did not appear within %.0fs"
                                         % setup_stall_s)
+                if bound == "cap":  # the ceiling reached by the clock at the priced rate, before the guard tripped
+                    self._res.cap_trip = error_record("CAP_CEILING_REACHED", "the cap was reached")
                 return self._end_as(bound, "the %s was reached" % bound)
             if left < MIN_CALL_S:
                 self.sleep(left)
@@ -834,7 +845,7 @@ class Runner:
             self._step("run log", lambda: self._collect_resident_log(self.log_timeout_s))
             if self._download_refusal is not None:
                 self._end_on_download_refusal()
-            elif res.reason == "done" and self._oom_seen:
+            elif res.reason in ("done", "failed") and self._oom_seen:  # `oom` whatever the rc, as _finished
                 res.reason, res.detail = "oom", "the job was OOM-killed: an OOM kill line in the job log (OOM_KILL_RE)"
         if res.reason != "done" and salvage is not None:
             if self._skip_salvage:

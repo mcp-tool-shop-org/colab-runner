@@ -472,6 +472,13 @@ def _unlink_link(path: Path) -> None:
             pass
 
 
+def _is_link(path: Path) -> bool:
+    """A symlink or an NTFS junction, live or broken: removed with `_unlink_link`, never followed. `Path.is_symlink()`
+    is False for a junction, so `os.path.isjunction` (Python 3.12+; always False off Windows) is asked too."""
+    isjunction = getattr(os.path, "isjunction", None)
+    return path.is_symlink() or (isjunction is not None and isjunction(path))
+
+
 class QuarantineEscape(OSError):
     """A quarantine path that would land outside its quarantine directory: refused, the file is removed instead."""
 
@@ -483,11 +490,12 @@ class QuarantineEscape(OSError):
 
 
 def _iter_files(root: Path, errors: list[OSError]) -> list[Path]:
-    """The regular files under `root` (or `root` itself), to be read. Symlinks are unlinked, never followed; any other
-    entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never read (a FIFO
-    would block the read). A directory that cannot be listed is added to `errors`, never skipped in silence."""
-    if root.is_symlink():
-        _unlink_quiet(root)
+    """The regular files under `root` (or `root` itself), to be read. Symlinks and NTFS junctions are unlinked (the
+    link only), never followed; any other entry that is not a regular file or a directory (a FIFO, a socket, a device)
+    is unlinked, never read (a FIFO would block the read). A directory that cannot be listed is added to `errors`,
+    never skipped in silence."""
+    if _is_link(root):
+        _unlink_link(root)
         return []
     if not root.exists():
         return []
@@ -501,14 +509,16 @@ def _iter_files(root: Path, errors: list[OSError]) -> list[Path]:
         parent = Path(dirpath)
         keep = []
         for d in sorted(dirnames):
-            if (parent / d).is_symlink():  # os.walk lists a link to a directory here: unlinked, never followed
+            if _is_link(parent / d):  # os.walk lists a link or junction to a directory here: unlinked, never followed
                 _unlink_link(parent / d)
             else:
                 keep.append(d)
         dirnames[:] = keep
         for name in sorted(filenames):
             p = parent / name
-            if p.is_symlink() or not p.is_file():
+            if _is_link(p):  # a link to a file, or a broken link or junction
+                _unlink_link(p)
+            elif not p.is_file():
                 _unlink_quiet(p)
             else:
                 files.append(p)

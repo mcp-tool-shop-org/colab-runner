@@ -220,6 +220,8 @@ def run_command(argv: list[str]) -> int:
     _out("RUN_END reason=%s rc=%s stopped=%s%s" % (result.reason, result.rc, result.stopped, code))
     if result.refusal:
         _err("hint: %s" % result.refusal["hint"])
+    if result.cap_trip:  # a cap end: what to change, from runner_result.json's cap_trip
+        _err("hint: %s" % result.cap_trip["hint"])
     if not result.stopped:
         _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)
     return run_exit_code(result, Path(args.out_dir))

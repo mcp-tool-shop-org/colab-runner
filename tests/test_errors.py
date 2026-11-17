@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from colab_runner.__main__ import main
-from colab_runner.errors import CODES, Refused, error_record
+from colab_runner.errors import CODES, Refused, cap_trip_record, error_record
 from colab_runner.window_lib import launch_guards as lg
 from tests.fakes import FakeClock, rec
 from tests.test_tokens import TokenLeakingColab, fake_tokens, leak_lines, values
@@ -69,6 +69,32 @@ def library_refusal_codes() -> set[str]:
     return set(re.findall(r'"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)"', inspect.getsource(lg.evaluate_cap_budget)))
 
 
+def _function(path: Path, name: str) -> ast.FunctionDef:
+    tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    return next(f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name == name)
+
+
+def trip_codes() -> set[str]:
+    """The codes a cap trip can carry (runner_result.json `cap_trip`), read from the source: the literal `CODE:`
+    prefixes of SpendGuard.check in spend.py, and, because check formats its cap record's code (`rec["code"]`, from
+    SpendGuard.cap_record, which is the library's evaluate_cap_guard), every code evaluate_cap_guard sets."""
+    import inspect
+
+    spend = PKG / "spend.py"
+    check = _function(spend, "check")
+    codes = set()
+    for node in ast.walk(check):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            m = re.match(r"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+): ", node.value)
+            if m:
+                codes.add(m.group(1))
+    check_src = ast.unparse(check)
+    record_src = ast.unparse(_function(spend, "cap_record"))
+    if "self.cap_record(" in check_src and "rec['code']" in check_src and "lg.evaluate_cap_guard(" in record_src:
+        codes |= set(re.findall(r'"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)"', inspect.getsource(lg.evaluate_cap_guard)))
+    return codes
+
+
 class CodeTableTest(unittest.TestCase):
     def test_every_code_in_the_source_has_a_hint_and_a_retryable_value(self):
         codes, dynamic = source_codes()
@@ -94,9 +120,25 @@ class CodeTableTest(unittest.TestCase):
         for code in lib:
             self.assertIn(code, CODES)
 
+    def test_every_cap_trip_code_in_the_source_has_a_hint_and_a_retryable_value(self):
+        trips = trip_codes()
+        # the collector sees spend.py's own prefixes and the library's cap-guard codes that check() passes on
+        self.assertEqual(trips, {"RATE_ABOVE_MAX", "ASSIGNMENTS_UNREADABLE", "CAP_GUARD_TRIPPED",
+                                 "COLAB_USAGE_PARSE_FAILED"})
+        codes, _ = source_codes()
+        self.assertIn("CAP_CEILING_REACHED", codes)  # the runner's own cap end (the ceiling reached by the clock)
+        for code in sorted(trips | {"CAP_CEILING_REACHED"}):
+            with self.subTest(code=code):
+                self.assertIn(code, CODES)
+                self.assertTrue(CODES[code].hint.strip())
+                self.assertNotIn("\n", CODES[code].hint)  # one line: the CLI prints it as `hint: ...`
+                self.assertIsInstance(CODES[code].retryable, bool)
+                rec_ = cap_trip_record("%s: what happened" % code)
+                self.assertEqual(rec_, error_record(code, "what happened"))
+
     def test_the_table_has_no_code_the_source_never_uses(self):
         codes, _ = source_codes()
-        self.assertEqual(sorted(set(CODES) - set(codes) - library_refusal_codes()), [])
+        self.assertEqual(sorted(set(CODES) - set(codes) - library_refusal_codes() - trip_codes()), [])
 
     def test_a_refusal_carries_code_message_hint_and_retryable(self):
         exc = Refused("OUT_DIR_NOT_EMPTY", "x exists")

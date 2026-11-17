@@ -3,13 +3,16 @@
 A code is UPPER_SNAKE. Each has a one-line `hint` (what the caller should change) and `retryable` (would the same
 call, unchanged, be worth retrying: False for every refusal of the caller's input, which fails the same way again).
 The CLI prints `REFUSED: CODE: message` (or `RUN_ERROR: CODE: message`) and then `hint: ...`; `runner_result.json`
-records a refusal as `{code, message, hint, retryable}`.
+records a refusal as `{code, message, hint, retryable}`, and a `cap` end's trip the same way, as `cap_trip`.
 
-Every code reaches the source through `Refused`, `require_number`, `error_record` or a `code` assignment, so a test
-reads them all from the source (tests/test_errors.py) and checks each one has an entry here."""
+Every code reaches the source through `Refused`, `require_number`, `error_record` or a `code` assignment, or is a
+cap trip's (the `CODE:` prefixes of `SpendGuard.check` in spend.py, and the codes of the library's `evaluate_cap_guard`
+that it passes on), so a test reads them all from the source (tests/test_errors.py) and checks each one has an entry
+here."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -76,6 +79,23 @@ CODES: dict[str, Code] = {
     "QUARANTINE_ESCAPE": Code(
         "report it: the file was removed rather than moved outside its quarantine; pass a plain --out-dir (or a "
         "download path) without `..`", _FIX),
+    # cap trips: a `cap` end, not a refusal (runner_result.json `cap_trip`; the hint is printed after RUN_END)
+    "CAP_GUARD_TRIPPED": Code(
+        "the window's priced spend reached its ceiling (the cap less --margin and the cleanup reserve): raise --cap, or "
+        "give the job less to do in one window", _FIX),
+    "CAP_CEILING_REACHED": Code(
+        "the clock reached the cap's ceiling at the priced rate (the cap less --margin and the cleanup reserve): raise "
+        "--cap, or give the job less to do in one window", _FIX),
+    "RATE_ABOVE_MAX": Code(
+        "the window's stable rate went above --max-rate: pass the card's real rate as --max-rate (and a --cap to "
+        "match), and --pre-open-rate with --pre-open-assignments so a neighbour's rate is not counted as this one's",
+        _FIX),
+    "ASSIGNMENTS_UNREADABLE": Code(
+        "`colab usage` gave no readable Active assignments count (or a stable rate below the floor) 3 times in a "
+        "row: check `colab usage` by hand, then run the window again", True),
+    "COLAB_USAGE_PARSE_FAILED": Code(
+        "`colab usage` could not be read or parsed, and the guard never prices a window it cannot read: check "
+        "`colab usage` by hand (sign-in, network), then run the window again", True),
     "UNEXPECTED_ERROR": Code(
         "read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop "
         "--out-dir D`; rerun with --debug for the traceback", _FIX),
@@ -92,6 +112,18 @@ def error_record(code: str, message: str) -> dict:
     """`{code, message, hint, retryable}`: how a named code is recorded (runner_result.json) and printed."""
     c = lookup(code)
     return {"code": code, "message": message, "hint": c.hint, "retryable": c.retryable}
+
+
+_TRIP_CODE_RE = re.compile(r"([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+): (.*)", re.S)
+
+
+def cap_trip_record(trip: str) -> dict:
+    """A cap trip string (`CODE: message`, as SpendGuard.check writes it) as `{code, message, hint, retryable}`. A
+    trip with no leading code (a stand-in guard's) keeps the whole string as its message, with a null code."""
+    m = _TRIP_CODE_RE.fullmatch(trip)
+    if m is None:
+        return {"code": None, "message": trip, "hint": _UNKNOWN.hint, "retryable": _UNKNOWN.retryable}
+    return error_record(m.group(1), m.group(2))
 
 
 class Refused(ValueError):
@@ -113,4 +145,4 @@ class Refused(ValueError):
         return {"code": self.code, "message": self.message, "hint": self.hint, "retryable": self.retryable}
 
 
-__all__ = ["CODES", "Code", "Refused", "error_record", "lookup"]
+__all__ = ["CODES", "Code", "Refused", "cap_trip_record", "error_record", "lookup"]
