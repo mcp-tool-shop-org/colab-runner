@@ -1,29 +1,43 @@
 """The VM cells and the runner against a fake `colab` CLI that runs the cells locally. POSIX only (the cells use
 setsid/nohup/bash, as the VM does), except VmLibTest, which signals no process."""
 
+import contextlib
+import gc
+import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
 from colab_runner.colab_cli import Colab
-from colab_runner.runner import Runner, cell_source
-from tests.fakes import VmLog
+from colab_runner.runner import VM_DIR, Runner
+from tests.fakes import VmLog, exec_vm_lib
 
 POSIX = os.name == "posix"
 FAKE = str(Path(__file__).with_name("fake_colab.py"))
 
 
 def run_cell(name, env, timeout=60):
-    full = dict(os.environ)
-    full.update(env)
-    proc = subprocess.run([sys.executable, "-c", cell_source(name)], env=full, capture_output=True, text=True, timeout=timeout)
-    return proc
+    out, err = io.StringIO(), io.StringIO()
+    ns = {"__name__": "cr_vm_" + name}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        with mock.patch.dict(os.environ, env):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                exec_vm_lib(ns)
+                cell = VM_DIR / (name + ".py")
+                exec(compile(cell.read_text(encoding="utf-8"), str(cell), "exec"), ns)
+        ns.clear()
+        gc.collect()
+    return types.SimpleNamespace(stdout=out.getvalue(), stderr=err.getvalue(), returncode=0)
 
 
 def wait_for(path, secs=20):
@@ -38,6 +52,11 @@ def wait_for(path, secs=20):
 def gone(pid, secs=10.0):
     end = time.time() + secs
     while time.time() < end:
+        if POSIX:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -47,7 +66,7 @@ def gone(pid, secs=10.0):
 
 
 class VmLibTest(unittest.TestCase):
-    """(B) cr_alive: a PermissionError on the pid (another user's process on a recycled pid) is not our job."""
+    """Cross-platform VM helper tests (mocking POSIX pid signals so coverage reaches lib.py on any OS)."""
 
     def test_a_recycled_pid_owned_by_another_user_is_not_alive(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -56,6 +75,121 @@ class VmLibTest(unittest.TestCase):
                 self.assertFalse(ns["cr_alive"](4242))
             with mock.patch("os.kill", side_effect=ProcessLookupError):
                 self.assertFalse(ns["cr_alive"](4242))
+
+    def test_cr_alive_proc_stat_zombie_sleeping_and_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = VmLog(tmp).ns
+            with mock.patch("os.kill", return_value=None):
+                with mock.patch("builtins.open", mock.mock_open(read_data="42 (bash) Z 1\n")):
+                    self.assertFalse(ns["cr_alive"](42))
+                with mock.patch("builtins.open", mock.mock_open(read_data="42 (bash) S 1\n")):
+                    self.assertTrue(ns["cr_alive"](42))
+                with mock.patch("builtins.open", side_effect=OSError):
+                    self.assertTrue(ns["cr_alive"](42))
+
+    def test_cr_status_ignores_corrupt_json_and_cr_kill_job_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "job.status.json").write_text("{corrupt", encoding="utf-8")
+            ns = VmLog(tmp).ns
+            self.assertIsNone(ns["cr_status"]())
+
+            # Mocked POSIX process-group kill escalation (covers killpg paths even on non-POSIX hosts).
+            (Path(tmp) / "job.pid").write_text("4242\n", encoding="utf-8")
+            with mock.patch.object(ns["signal"], "SIGKILL", 9, create=True):
+                with mock.patch.object(ns["os"], "killpg", create=True, side_effect=ProcessLookupError):
+                    self.assertEqual(ns["cr_kill_job"](0.1), "CR_NOT_RUNNING pid=4242")
+                with mock.patch.object(ns["os"], "killpg", create=True, side_effect=[None, ProcessLookupError]):
+                    self.assertEqual(ns["cr_kill_job"](0.1), "CR_NOT_RUNNING pid=4242")
+                with mock.patch.object(ns["os"], "killpg", create=True, return_value=None), \
+                        mock.patch.object(ns["time"], "sleep", return_value=None):
+                    self.assertEqual(ns["cr_kill_job"](0.05), "CR_KILLED pid=4242")
+
+    def test_cr_start_job_refuses_reused_job_with_different_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = VmLog(tmp).ns
+            (Path(tmp) / "job.pid").write_text("4242\n", encoding="utf-8")
+            (Path(tmp) / "job.status.json").write_text('{"rc": 0}', encoding="utf-8")
+            (Path(tmp) / "job.run_id").write_text("run-1\n", encoding="utf-8")
+            with mock.patch("os.kill", side_effect=ProcessLookupError):
+                with mock.patch.dict(os.environ, {"CR_RUN_ID": "run-1"}):
+                    self.assertEqual(ns["cr_start_job"](), "CR_ALREADY_RUNNING pid=4242")
+                with mock.patch.dict(os.environ, {"CR_RUN_ID": "run-2"}):
+                    self.assertEqual(ns["cr_start_job"](), "CR_JOB_EXISTS job=job pid=4242")
+
+    @staticmethod
+    def snapshot(folder):
+        return {p.name: p.read_bytes() for p in sorted(Path(folder).rglob("*")) if p.is_file()}
+
+    def test_a_dead_pid_run_with_no_status_file_is_still_another_run(self):
+        # step 1 tripped and was killed: its pid is dead and no status file was written; its files stay its own
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = VmLog(tmp).ns
+            (Path(tmp) / "job.pid").write_text("4242\n", encoding="utf-8")
+            (Path(tmp) / "job.run_id").write_text("run-1\n", encoding="utf-8")
+            (Path(tmp) / "job.run.out").write_text("step 1 log\n", encoding="utf-8")
+            (Path(tmp) / "job.poll.json").write_text('{"run_id": "run-1", "rc": null}', encoding="utf-8")
+            before = self.snapshot(tmp)
+            with mock.patch("os.kill", side_effect=AssertionError("another run's pid is never probed")), \
+                    mock.patch.object(ns["subprocess"], "Popen", side_effect=AssertionError("no second job")), \
+                    mock.patch.dict(os.environ, {"CR_RUN_ID": "run-2", "CR_SCRIPT": "/x.sh"}):
+                self.assertEqual(ns["cr_start_job"](), "CR_JOB_EXISTS job=job pid=4242")
+                (Path(tmp) / "job.run_id").unlink()  # files with no owner at all (an older runner's) are not ours
+                self.assertEqual(ns["cr_start_job"](), "CR_JOB_EXISTS job=job pid=4242")
+            del before["job.run_id"]
+            self.assertEqual(self.snapshot(tmp), before)  # every file of step 1 survives, byte for byte
+
+    def test_a_restart_of_the_same_run_id_is_not_refused(self):
+        # the same run (a retried start whose job died before writing its status) is restarted, never refused
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = VmLog(tmp).ns
+            (Path(tmp) / "job.pid").write_text("4242\n", encoding="utf-8")
+            (Path(tmp) / "job.run_id").write_text("run-1\n", encoding="utf-8")
+            (Path(tmp) / "job.run.out").write_text("first try\n", encoding="utf-8")
+            popen = mock.Mock(return_value=types.SimpleNamespace(pid=777))
+            with mock.patch("os.kill", side_effect=ProcessLookupError), \
+                    mock.patch.object(ns["subprocess"], "Popen", popen), \
+                    mock.patch.dict(os.environ, {"CR_RUN_ID": "run-1", "CR_SCRIPT": "/x.sh"}):
+                self.assertEqual(ns["cr_start_job"](), "CR_STARTED pid=777")
+            self.assertFalse((Path(tmp) / "job.run.out").exists())  # its own stale log, removed
+            self.assertEqual((Path(tmp) / "job.run_id").read_text(encoding="utf-8"), "run-1\n")
+            self.assertEqual((Path(tmp) / "job.pid").read_text(encoding="utf-8"), "777\n")
+            self.assertIn(json.dumps("run-1"), popen.call_args[0][0])  # the status file will carry the run id
+
+    def test_the_kill_cell_never_kills_another_runs_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ns = VmLog(tmp).ns
+            (Path(tmp) / "job.pid").write_text("4242\n", encoding="utf-8")
+            (Path(tmp) / "job.run_id").write_text("run-1\n", encoding="utf-8")
+            with mock.patch.object(ns["os"], "killpg", create=True, side_effect=AssertionError("never signalled")), \
+                    mock.patch.dict(os.environ, {"CR_RUN_ID": "run-2"}):
+                self.assertEqual(ns["cr_kill_job"](0.1), "CR_NOT_OURS job=job")
+
+    def test_every_poll_record_names_the_run_whose_files_it_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vm = VmLog(tmp)
+            rec, _ = vm.ns["cr_collect"](0)
+            self.assertEqual((rec["run_id"], rec["status_run_id"]), ("", None))
+            (Path(tmp) / "job.run_id").write_text("run-1\n", encoding="utf-8")
+            (Path(tmp) / "job.status.json").write_text('{"rc": 0, "run_id": "run-1"}', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"CR_RUN_ID": "run-2"}):  # the asker's id is never reported
+                rec, _ = vm.ns["cr_collect"](0)
+            self.assertEqual((rec["run_id"], rec["status_run_id"], rec["rc"]), ("run-1", "run-1", 0))
+
+    def test_a_refused_resident_cell_writes_its_own_file_and_leaves_the_poll_file_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            step1 = {"job": "j", "run_id": "run-1", "rc": 0, "log_offset": 5}
+            (Path(tmp) / "j.pid").write_text("4242\n", encoding="utf-8")
+            (Path(tmp) / "j.run_id").write_text("run-1\n", encoding="utf-8")
+            (Path(tmp) / "j.status.json").write_text('{"rc": 0, "run_id": "run-1"}', encoding="utf-8")
+            (Path(tmp) / "j.poll.json").write_text(json.dumps(step1), encoding="utf-8")
+            before = self.snapshot(tmp)
+            out = run_cell("resident", {"CR_CONTENT": tmp, "CR_JOB": "j", "CR_RUN_ID": "run-2"}).stdout
+            self.assertIn("CR_JOB_EXISTS job=j pid=4242", out)
+            refused = json.loads((Path(tmp) / "j.refused.json").read_text(encoding="utf-8"))
+            self.assertEqual((refused["run_id"], refused["error"]), ("run-2", "JOB_ALREADY_EXISTS"))
+            after = self.snapshot(tmp)
+            del after["j.refused.json"]
+            self.assertEqual(after, before)  # step 1's poll record (and every other file of it) untouched
 
 
 @unittest.skipUnless(POSIX, "the cells run on a POSIX VM")
@@ -194,6 +328,46 @@ class VmCellTest(unittest.TestCase):
         self.assertTrue(gone(pid))
         self.assertIn("CR_NOT_RUNNING", run_cell("kill", self.env).stdout)
 
+    def test_the_kill_cell_escalates_to_sigkill_when_sigterm_is_ignored(self):
+        env = dict(self.env, **self.script("trap '' TERM\nsleep 30\n"))
+        self.assertIn("CR_STARTED", run_cell("start", env).stdout)
+        time.sleep(0.1)
+        pid = int((Path(self.vm) / "j.pid").read_text())
+        out = run_cell("kill", dict(self.env, CR_KILL_GRACE_S="0.2")).stdout
+        self.assertIn("CR_KILLED pid=%d" % pid, out)
+        self.assertTrue(gone(pid))
+
+    def test_reused_job_with_different_run_id_is_refused_in_start_and_resident_cells(self):
+        env1 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-1")
+        self.assertIn("CR_STARTED", run_cell("start", env1).stdout)
+        self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
+
+        rec1, _ = self.poll()
+        self.assertEqual((rec1["run_id"], rec1["status_run_id"], rec1["rc"]), ("run-1", "run-1", 0))
+
+        env2 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-2")
+        self.assertIn("CR_JOB_EXISTS", run_cell("start", env2).stdout)
+        res_out = run_cell("resident", env2).stdout
+        self.assertIn("CR_JOB_EXISTS", res_out)
+        self.assertFalse((Path(self.vm) / "j.poll.json").exists())  # the refusal never writes the poll file
+        refused = json.loads((Path(self.vm) / "j.refused.json").read_text())
+        self.assertEqual((refused["error"], refused["run_id"]), ("JOB_ALREADY_EXISTS", "run-2"))
+        self.assertEqual(self.poll()[0]["run_id"], "run-1")
+
+    def test_a_killed_job_with_no_status_file_is_still_another_runs(self):
+        env1 = dict(self.env, **self.script("echo step-1\nsleep 30\n"), CR_RUN_ID="run-1")
+        self.assertIn("CR_STARTED", run_cell("start", env1).stdout)
+        self.assertTrue(wait_for(Path(self.vm) / "j.run.out"))
+        pid = int((Path(self.vm) / "j.pid").read_text())
+        self.assertIn("CR_NOT_OURS", run_cell("kill", dict(self.env, CR_RUN_ID="run-2", CR_KILL_GRACE_S="1")).stdout)
+        self.assertIn("CR_KILLED", run_cell("kill", dict(self.env, CR_RUN_ID="run-1", CR_KILL_GRACE_S="1")).stdout)
+        self.assertTrue(gone(pid))
+        self.assertFalse((Path(self.vm) / "j.status.json").exists())  # killed: the wrapper never wrote one
+        env2 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-2")
+        files = {p.name: p.read_bytes() for p in Path(self.vm).iterdir() if p.is_file()}
+        self.assertIn("CR_JOB_EXISTS", run_cell("start", env2).stdout)
+        self.assertEqual({p.name: p.read_bytes() for p in Path(self.vm).iterdir() if p.is_file()}, files)
+
 
 @unittest.skipUnless(POSIX, "the cells run on a POSIX VM")
 class EndToEndTest(unittest.TestCase):
@@ -312,7 +486,7 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(Colab(["/no/such/colab"]).run(["x"], 5).rc, 127)
 
     def cli(self, *extra, env=None):
-        full = dict(self.env, COLAB_RUNNER_CLI="%s %s" % (sys.executable, FAKE), **(env or {}))
+        full = dict(self.env, COLAB_RUNNER_CLI=shlex.join([sys.executable, FAKE]), **(env or {}))
         return subprocess.run(
             [sys.executable, "-m", "colab_runner", "run", "--session", "s", "--out-dir", str(self.out), "--content",
              str(self.vm), "--wall-s", "120", "--poll-s", "0.2", "--max-rate", "0.26", "--cap", "0.9",

@@ -5,6 +5,7 @@ command line. The fake tokens are built at run time: no token is a literal in th
 import inspect
 import json
 import os
+import re
 import string
 import sys
 import tempfile
@@ -349,7 +350,7 @@ class PartialDownloadTest(unittest.TestCase):
         from colab_runner import colab_cli
 
         self.local.write_text(self.partial)
-        with mock.patch.object(colab_cli.lg, "scrub_file_in_place", side_effect=PermissionError):
+        with mock.patch.object(Path, "write_text", side_effect=PermissionError):
             colab_cli.scrub_local(self.local)
         self.assertFalse(self.local.exists())
 
@@ -469,6 +470,601 @@ class CliStderrScrubTest(unittest.TestCase):
         self.assertEqual((code, colab.calls), (3, []))
         self.assertIn("SESSION_MARKER_INVALID", text)
         self.assert_clean(text)
+
+
+class BinaryDownloadScrubTest(unittest.TestCase):
+    """Follow-up item 1: content-based binary-safe download scrub, quarantine outside out_dir, and runner refusal."""
+
+    PNG_HEAD = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\xff\xd8\xfe"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.t = fake_tokens()
+
+    def test_each_byte_pattern_matches_its_text_pattern_on_ascii_input(self):
+        from colab_runner.colab_cli import BYTE_TOKEN_PATTERNS
+
+        self.assertEqual(len(BYTE_TOKEN_PATTERNS), len(lg.TOKEN_SCRUB_PATTERNS))
+        samples = [
+            "https://x/y?colab-runtime-proxy-token=" + self.t["proxy"] + "&z=1",
+            "callback?access_token=" + self.t["access"] + "&ok=1",
+            "Authorization: Bearer " + self.t["bearer"],
+            "token=" + self.t["hf"] + " done",
+            "clean ascii line with hf_short and bearer without value",
+            "plain text nothing secret here 12345",
+        ]
+        for (name, bpat), (tpat, _) in zip(BYTE_TOKEN_PATTERNS, lg.TOKEN_SCRUB_PATTERNS, strict=True):
+            for sample in samples:
+                with self.subTest(pattern=name, sample=sample):
+                    tm = tpat.search(sample)
+                    bm = bpat.search(sample.encode("ascii"))
+                    self.assertEqual(bm is not None, tm is not None)
+                    if tm is not None and bm is not None:
+                        self.assertEqual(bm.group(0).decode("ascii"), tm.group(0))
+
+    def test_the_twins_know_every_str_space_in_the_code_space(self):
+        from colab_runner import colab_cli
+
+        spaces = [chr(c) for c in range(sys.maxunicode + 1) if re.fullmatch(r"\s", chr(c))]
+        self.assertEqual(colab_cli._STR_SPACES, spaces)  # none above U+3000 was missed
+        for ch in "\x1c\x1d\x1e\x1f\x85\xa0   　":
+            self.assertIn(ch, spaces)
+
+    def test_every_byte_twin_matches_exactly_what_its_text_pattern_matches(self):
+        """PR 3 fix 1, (B): over a generated corpus with every str space (\\x1c-\\x1f, NEL, NBSP, EM SPACE and the
+        rest) and look-alikes that are not spaces, each byte twin finds the same matches, at the same places, as its
+        text pattern on the decoded text. The one difference is `\\b` next to a non-ASCII word character, where the
+        byte twin of `hf_` matches and the text pattern does not: a superset, never a miss."""
+        import itertools
+
+        from colab_runner import colab_cli
+
+        tok = self.t["bearer"][:24]
+        spaces = list(colab_cli._STR_SPACES)
+        seps = [""] + spaces + ["\x1c ", "  ", "　　", "​", "﻿", "-", "é", "&"]
+        prefixes = ["", "x", " ", "é", "Authorization: "]
+        heads = ["Bearer", "colab-runtime-proxy-token=", "access_token=", "hf_", "Bearer Bearer"]
+        bodies = [tok, tok[:5], "a.b-c_d", "tokén" + tok, tok + " " + tok, tok + "é", " " + tok, ""]
+        suffixes = ["", " end", "\x1f", "&x=1", "é", "\u0085"]
+        word_non_ascii = re.compile(r"[^\x00-\x7f]")
+        cases = exact = 0
+        for pre, head, sep, body, suf in itertools.product(prefixes, heads, seps, bodies, suffixes):
+            s = pre + head + sep + body + suf
+            b = s.encode("utf-8")
+            for (name, bpat), (tpat, _) in zip(colab_cli.BYTE_TOKEN_PATTERNS, lg.TOKEN_SCRUB_PATTERNS, strict=True):
+                text = [(len(s[:m.start()].encode()), len(s[:m.end()].encode())) for m in tpat.finditer(s)]
+                byte = [(m.start(), m.end()) for m in bpat.finditer(b)]
+                cases += 1
+                if name == "hf_" and any(re.match(r"\w", c) for c in word_non_ascii.findall(s)):
+                    self.assertTrue(set(text) <= set(byte), (name, s))
+                else:
+                    exact += 1
+                    self.assertEqual(byte, text, (name, s))
+        self.assertGreater(exact, 30000)
+        self.assertGreater(cases, exact)
+
+    def test_the_review_cases_are_caught_in_a_binary(self):
+        from colab_runner.colab_cli import binary_token_hit
+
+        tok = self.t["bearer"].encode("ascii")
+        for sep in (b" ", b"\x1c", b"\x1f", b"\t", " ".encode(), "\u0085".encode(), " ".encode(),
+                    "　".encode(), " ".encode(), b" \xc2\xa0 "):
+            with self.subTest(sep=sep):
+                data = self.PNG_HEAD + b"Authorization: Bearer" + sep + tok + b"\x00"
+                self.assertEqual(binary_token_hit(data), "Bearer")
+                text = ("Authorization: Bearer" + sep.decode("utf-8") + self.t["bearer"])
+                self.assertNotIn(self.t["bearer"], lg.scrub_colab_tokens(text))  # the text path catches it too
+
+    def test_content_decides_binary_never_extension(self):
+        from colab_runner.colab_cli import is_binary_bytes, scrub_local
+
+        self.assertFalse(is_binary_bytes("plain utf8 café\n".encode("utf-8")))
+        self.assertTrue(is_binary_bytes(b"abc\x00def"))
+        self.assertTrue(is_binary_bytes(b"\x80\xff\xfeinvalid"))
+        # A .png containing valid UTF-8 text without NUL is scrubbed as text.
+        fake_png = self.root / "actually_text.png"
+        fake_png.write_text("HF_TOKEN=" + self.t["hf"] + "\n", encoding="utf-8")
+        scrub_local(fake_png)
+        self.assertEqual(fake_png.read_text(encoding="utf-8"), "HF_TOKEN=hf_[REDACTED]\n")
+        # A .txt containing a NUL byte without tokens is treated as binary and left byte-identical.
+        fake_txt = self.root / "actually_binary.txt"
+        raw = b"row1\x00row2\r\n"
+        fake_txt.write_bytes(raw)
+        scrub_local(fake_txt)
+        self.assertEqual(fake_txt.read_bytes(), raw)
+        # Every text case (LF, CRLF, CR, Unicode, clean and token-bearing) is byte-identical to scrub_file_in_place.
+        for idx, blob in enumerate([
+            b"clean\r\nlines\rcaf\xc3\xa9\n",
+            ("line1\r\n" + "\n".join(leak_lines(self.t)) + "\r\n").encode("utf-8"),
+        ]):
+            a = self.root / ("txt_a_%d.log" % idx)
+            b = self.root / ("txt_b_%d.log" % idx)
+            a.write_bytes(blob)
+            b.write_bytes(blob)
+            scrub_local(a)
+            lg.scrub_file_in_place(b)
+            self.assertEqual(a.read_bytes(), b.read_bytes())
+
+    def test_clean_png_nul_byte_and_invalid_utf8_are_byte_identical(self):
+        from colab_runner.colab_cli import scrub_local
+
+        cases = {
+            "clean.png": self.PNG_HEAD + b"\x00\x01\x02IEND\xaeB`\x82",
+            "has_nul.bin": b"header\x00payload\xff\xfe\r\n",
+            "bad_utf8.dat": b"\x80\x81\xfe\xffnot-utf8-at-all\r\n",
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name):
+                p = self.root / name
+                p.write_bytes(raw)
+                res = Colab([sys.executable, "-c", "import sys; sys.exit(0)"]).download(
+                    "s", "/content/" + name, str(p), 30,
+                )
+                self.assertTrue(res.ok)
+                self.assertEqual(p.read_bytes(), raw)
+                scrub_local(p)
+                self.assertEqual(p.read_bytes(), raw)
+
+    def test_png_with_token_is_refused_and_quarantined_unchanged(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+
+        raw = self.PNG_HEAD + b"metadata=" + self.t["hf"].encode("ascii") + b"\x00IEND\xaeB`\x82"
+        cli = self.root / "dl.py"
+        cli.write_text("import pathlib, sys\npathlib.Path(sys.argv[-1]).write_bytes(%r)\n" % (raw,))
+        out_dir = self.root / "out"
+        out_dir.mkdir()
+        target = out_dir / "render.png"
+        qdir = out_dir.parent / "out.quarantine"
+        logs: list[str] = []
+        colab = Colab([sys.executable, str(cli)], quarantine_dir=qdir, log=logs.append)
+        colab._base_dir = out_dir
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            colab.download("s", "/content/render.png", str(target), 30)
+        self.assertEqual(cm.exception.code, "BINARY_DOWNLOAD_TOKEN")
+        self.assertFalse(target.exists())
+        self.assertEqual(list(out_dir.rglob("*")), [])
+        qfile = qdir / "render.png"
+        self.assertTrue(qfile.is_file())
+        self.assertEqual(qfile.read_bytes(), raw)
+        self.assertEqual(len(cm.exception.quarantined), 1)
+        self.assertEqual(cm.exception.quarantined[0]["pattern"], "hf_")
+        self.assertTrue(any("hf_" in ln for ln in logs))
+        for v in values(self.t):
+            self.assertNotIn(v, "\n".join(logs))
+            self.assertNotIn(v, str(cm.exception))
+
+    def test_partial_binary_download_follows_same_rule(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+
+        clean_partial = self.PNG_HEAD + b"clean-partial\x80\xff"
+        poison_partial = self.PNG_HEAD + b"Bearer " + self.t["bearer"].encode("ascii") + b"\x00cut"
+        partial_cli = self.root / "partial_bin.py"
+        partial_cli.write_text(textwrap.dedent("""
+            import pathlib, sys, time
+            mode, hex_bytes, local = sys.argv[1], sys.argv[2], sys.argv[-1]
+            pathlib.Path(local).write_bytes(bytes.fromhex(hex_bytes))
+            if mode == "hang":
+                time.sleep(60)
+            sys.exit(1)
+        """))
+
+        # Clean partial binary on fail / timeout / interrupt stays byte-identical.
+        for mode in ("fail", "hang"):
+            p = self.root / ("clean_%s.png" % mode)
+            res = Colab([sys.executable, str(partial_cli), mode, clean_partial.hex()]).download(
+                "s", "/c/a.png", str(p), 1.0 if mode == "hang" else 30.0,
+            )
+            self.assertFalse(res.ok)
+            self.assertEqual(p.read_bytes(), clean_partial)
+
+        # Poisoned partial binary on fail / timeout / interrupt is quarantined and refused.
+        for mode in ("fail", "hang", "raise"):
+            with self.subTest(mode=mode):
+                out_dir = self.root / ("out_%s" % mode)
+                out_dir.mkdir()
+                p = out_dir / "partial.png"
+                qdir = out_dir.parent / (out_dir.name + ".quarantine")
+                if mode == "raise":
+                    colab = Colab(["colab"], quarantine_dir=qdir)
+                    colab._base_dir = out_dir
+
+                    def interrupted(args, timeout):
+                        Path(args[-1]).write_bytes(poison_partial)
+                        raise KeyboardInterrupt
+
+                    colab.run = interrupted
+                else:
+                    colab = Colab(
+                        [sys.executable, str(partial_cli), mode, poison_partial.hex()],
+                        quarantine_dir=qdir,
+                    )
+                    colab._base_dir = out_dir
+                with self.assertRaises(BinaryDownloadRefused) as cm:
+                    colab.download("s", "/c/partial.png", str(p), 1.0 if mode == "hang" else 30.0)
+                self.assertEqual(cm.exception.quarantined[0]["pattern"], "Bearer")
+                self.assertFalse(p.exists())
+                self.assertEqual((qdir / "partial.png").read_bytes(), poison_partial)
+
+    def test_directory_download_handles_clean_text_and_poison_binaries_and_collisions(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused, scrub_local
+
+        bundle = self.root / "bundle"
+        (bundle / "sub").mkdir(parents=True)
+        clean_png = self.PNG_HEAD + b"\x00clean"
+        bad_utf8 = b"\x80\xffbad-utf8"
+        poison_png = self.PNG_HEAD + b"access_token=" + self.t["access"].encode("ascii") + b"&x=1"
+        (bundle / "clean.png").write_bytes(clean_png)
+        (bundle / "raw.bin").write_bytes(bad_utf8)
+        (bundle / "notes.txt").write_text("Bearer %s\n" % self.t["bearer"], encoding="utf-8")
+        (bundle / "sub" / "poison.png").write_bytes(poison_png)
+
+        qdir = self.root / "bundle.quarantine"
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            scrub_local(bundle, quarantine_dir=qdir)
+        self.assertEqual(cm.exception.quarantined[0]["pattern"], "access_token")
+        # Clean binaries remain byte-identical and text files are scrubbed even when a sibling is quarantined.
+        self.assertEqual((bundle / "clean.png").read_bytes(), clean_png)
+        self.assertEqual((bundle / "raw.bin").read_bytes(), bad_utf8)
+        self.assertEqual((bundle / "notes.txt").read_text(encoding="utf-8"), "Bearer [REDACTED]\n")
+        self.assertFalse((bundle / "sub" / "poison.png").exists())
+        self.assertEqual((qdir / "sub" / "poison.png").read_bytes(), poison_png)
+
+        # Collision: additional poisoned files at the same relative path are quarantined without overwriting.
+        poison_2 = self.PNG_HEAD + self.t["hf"].encode("ascii") + b"\x00v2"
+        poison_3 = self.PNG_HEAD + self.t["hf"].encode("ascii") + b"\x00v3"
+        (bundle / "sub" / "poison.png").write_bytes(poison_2)
+        with self.assertRaises(BinaryDownloadRefused):
+            scrub_local(bundle, quarantine_dir=qdir)
+        (bundle / "sub" / "poison.png").write_bytes(poison_3)
+        with self.assertRaises(BinaryDownloadRefused):
+            scrub_local(bundle, quarantine_dir=qdir)
+        self.assertEqual((qdir / "sub" / "poison.png").read_bytes(), poison_png)
+        self.assertEqual((qdir / "sub" / "poison.png.1").read_bytes(), poison_2)
+        self.assertEqual((qdir / "sub" / "poison.png.2").read_bytes(), poison_3)
+
+    def test_unreadable_file_and_quarantine_move_failure_remove_source(self):
+        from unittest import mock
+
+        from colab_runner.colab_cli import scrub_local
+
+        p = self.root / "unreadable.bin"
+        p.write_bytes(b"\x00secret")
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+            scrub_local(p)
+        self.assertFalse(p.exists())
+
+        p2 = self.root / "cannot_move.png"
+        p2.write_bytes(self.PNG_HEAD + self.t["hf"].encode("ascii"))
+        with mock.patch("colab_runner.colab_cli.shutil.move", side_effect=PermissionError),                 mock.patch.object(tempfile, "tempdir", str(self.root)):  # the bare quarantine, made here
+            with self.assertRaises(PermissionError):
+                scrub_local(p2)
+        self.assertFalse(p2.exists())
+
+    def test_symlinks_are_unlinked_without_following(self):
+        from colab_runner.colab_cli import scrub_local
+
+        outside = self.root / "outside.txt"
+        outside.write_text("Bearer %s\n" % self.t["bearer"], encoding="utf-8")
+        link = self.root / "link.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            self.skipTest("symlinks require privilege on this Windows host")
+        scrub_local(link)
+        self.assertFalse(link.exists())
+        self.assertIn(self.t["bearer"], outside.read_text(encoding="utf-8"))
+
+        folder = self.root / "dir_with_link"
+        folder.mkdir()
+        (folder / "inner.txt").write_text("Bearer %s\n" % self.t["bearer"], encoding="utf-8")
+        (folder / "sym.txt").symlink_to(outside)
+        scrub_local(folder)
+        self.assertFalse((folder / "sym.txt").exists())
+        self.assertEqual((folder / "inner.txt").read_text(encoding="utf-8"), "Bearer [REDACTED]\n")
+
+    def test_runner_quarantine_isolates_out_dir_and_salvage_and_still_stops(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+        from colab_runner.runner import Runner
+
+        poison_png = self.PNG_HEAD + b"colab-runtime-proxy-token=" + self.t["proxy"].encode("ascii") + b"\x00"
+        clean_png = self.PNG_HEAD + b"\x00ok"
+        run_dir = self.root / "run1"
+        run_dir.mkdir()
+        out_dir = run_dir / "out"
+        vm_files = {
+            "/content/clean.png": clean_png,
+            "/content/renders/poison.png": poison_png,
+        }
+
+        class RenderColab(FakeColab):
+            def download(self, session, remote, local, timeout=120.0):
+                self._record("download", session, timeout)
+                payload = vm_files.get(remote)
+                if payload is not None:
+                    Path(local).write_bytes(payload)
+                    return CliResult(0)
+                return super().download(session, remote, local, timeout)
+
+        def polls(n, env):
+            return rec(rc=1 if n >= 2 else None)
+
+        colab = RenderColab(polls=polls)
+        logs: list[str] = []
+        runner = Runner(colab, "sess", out_dir, log=logs.append)
+        salvage_saw: list[str] = []
+
+        def salvage(reason: str) -> bool:
+            runner.download("/content/clean.png", runner.out_dir / "renders" / "clean.png", 10)
+            try:
+                runner.download("/content/renders/poison.png", runner.out_dir / "renders" / "poison.png", 10)
+            finally:
+                # Neither the out dir a lane bundles nor salvage sees any quarantined file.
+                salvage_saw.extend(
+                    p.relative_to(runner.out_dir).as_posix() for p in runner.out_dir.rglob("*") if p.is_file()
+                )
+            return True
+
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            runner.run(script="/content/x.sh", wall_s=3600, salvage=salvage)
+
+        self.assertEqual(cm.exception.code, "BINARY_DOWNLOAD_TOKEN")
+        self.assertEqual(colab.stops, [("sess", 0)])
+        self.assertTrue((out_dir / "stop_confirmed.json").is_file())
+        self.assertFalse((out_dir / "session_open.json").exists())
+        # Out-dir bundle contents only have clean files and runner metadata, never the quarantined file.
+        bundled = [p.relative_to(out_dir).as_posix() for p in out_dir.rglob("*") if p.is_file()]
+        self.assertNotIn("renders/poison.png", bundled)
+        self.assertNotIn("renders/poison.png", salvage_saw)
+        self.assertFalse(any("quarantine" in p for p in bundled))
+        self.assertFalse(any("quarantine" in p for p in salvage_saw))
+        self.assertEqual((out_dir / "renders" / "clean.png").read_bytes(), clean_png)
+
+        # Quarantine lives as sibling <out-dir>.quarantine outside out_dir with bytes intact.
+        qdir = run_dir / "out.quarantine"
+        self.assertEqual(runner.quarantine_dir, qdir)
+        qfile = qdir / "renders" / "poison.png"
+        self.assertTrue(qfile.is_file())
+        self.assertEqual(qfile.read_bytes(), poison_png)
+
+        # runner_result.json names the quarantined file with pattern name only, never token bytes.
+        result_text = (out_dir / "runner_result.json").read_text(encoding="utf-8")
+        result = json.loads(result_text)
+        self.assertEqual((result["reason"], result["stopped"]), ("error", True))
+        self.assertEqual(len(result["quarantined"]), 1)
+        self.assertEqual(result["quarantined"][0]["path"], str(qfile))
+        self.assertEqual(result["quarantined"][0]["pattern"], "colab-runtime-proxy-token")
+        for v in values(self.t):
+            self.assertNotIn(v, result_text)
+            self.assertNotIn(v, "\n".join(logs))
+
+    def test_runner_resident_quarantined_log_and_cli_exit_1_still_stop(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from colab_runner.__main__ import main
+
+        poison_log = self.PNG_HEAD + b"line=" + self.t["hf"].encode("ascii") + b"\x00end"
+        colab = FakeColab(vm_poll_file=rec(rc=0), run_log=poison_log)
+        out_dir = self.root / "cli_run" / "out"
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            code = main([
+                "run", "--session", "s", "--out-dir", str(out_dir), "--script", "/c/x.sh",
+                "--wall-s", "3600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "1200", "--resident",
+            ])
+        self.assertEqual(code, 1)
+        self.assertIn("RUN_ERROR: BinaryDownloadRefused: BINARY_DOWNLOAD_TOKEN:", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(colab.stops, [("s", 0)])
+        self.assertFalse((out_dir / "job.run.out").exists())
+        qfile = out_dir.parent / "out.quarantine" / "job.run.out"
+        self.assertEqual(qfile.read_bytes(), poison_log)
+        result = json.loads((out_dir / "runner_result.json").read_text(encoding="utf-8"))
+        self.assertEqual((result["reason"], result["stopped"]), ("error", True))
+        self.assertEqual(result["quarantined"][0]["pattern"], "hf_")
+        for v in values(self.t):
+            self.assertNotIn(v, err.getvalue())
+            self.assertNotIn(v, json.dumps(result))
+
+        # When resident log collection runs in _end (no time left inside loop), a poisoned log still turns into error + stop.
+        from colab_runner.colab_cli import BinaryDownloadRefused
+        from colab_runner.runner import Runner
+        from tests.fakes import FakeClock
+
+        clock = FakeClock()
+
+        def advance_on_poll_download(kind, fake, clk=clock):
+            if kind == "download" and fake.poll_file_count == 1:
+                clk.advance(1.0)
+
+        end_colab = FakeColab(vm_poll_file=rec(rc=0), run_log=poison_log, clock=clock, on_call=advance_on_poll_download)
+        end_out = self.root / "end_run" / "out"
+        runner = Runner(end_colab, "s", end_out, clock=clock.now, sleep=clock.sleep)
+        with self.assertRaises(BinaryDownloadRefused):
+            runner.run(script="/c/x.sh", wall_s=1.5, resident=True)
+        self.assertEqual(end_colab.stops, [("s", 0)])
+        end_res = json.loads((end_out / "runner_result.json").read_text(encoding="utf-8"))
+        self.assertEqual((end_res["reason"], end_res["stopped"]), ("error", True))
+        self.assertEqual(end_res["quarantined"][0]["pattern"], "hf_")
+
+    def test_runner_download_with_real_colab_uses_sibling_quarantine(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+        from colab_runner.runner import Runner
+
+        poison_png = self.PNG_HEAD + b"token=" + self.t["hf"].encode("ascii") + b"\x00"
+        cli = self.root / "real_dl.py"
+        cli.write_text("import pathlib, sys\npathlib.Path(sys.argv[-1]).write_bytes(%r)\n" % (poison_png,))
+        out_dir = self.root / "with_colab" / "out"
+        colab = Colab([sys.executable, str(cli)])
+        runner = Runner(colab, "s", out_dir)
+        with self.assertRaises(BinaryDownloadRefused):
+            runner.download("/c/render.png", out_dir / "render.png", 30)
+        qfile = out_dir.parent / "out.quarantine" / "render.png"
+        self.assertEqual(qfile.read_bytes(), poison_png)
+        with self.assertRaises(BinaryDownloadRefused):
+            runner.download("/c/ext.png", self.root / "outside_out.png", 30)
+        self.assertEqual((out_dir.parent / "out.quarantine" / "outside_out.png").read_bytes(), poison_png)
+        self.assertEqual(len(runner._res.quarantined), 2)
+        self.assertIsNone(colab.quarantine_dir)  # unbound cleanly after the call
+
+
+def png(*texts: tuple[bytes, bytes]) -> bytes:
+    """A real 1x1 grey PNG with tEXt chunks (keyword, text), as ComfyUI writes its prompt and workflow."""
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + b"".join(chunk(b"tEXt", key + b"\x00" + text) for key, text in texts)
+            + chunk(b"IDAT", zlib.compress(b"\x00\x80")) + chunk(b"IEND", b""))
+
+
+class RenderMetadataTest(unittest.TestCase):
+    """PR 3 fix 1, (B): a render whose prompt says "Bearer" is a good render; a real bearer token in it is not."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.t = fake_tokens()
+
+    @staticmethod
+    def prompt(text: str) -> bytes:
+        return json.dumps({"6": {"class_type": "CLIPTextEncode", "inputs": {"text": text}}}).encode("utf-8")
+
+    def real_shaped(self) -> list[str]:
+        """Bearer values shaped like the credentials a lane can meet, made at run time (none is a literal here)."""
+        alnum = string.ascii_letters + string.digits
+        body = "".join(alnum[(i * 11 + 5) % len(alnum)] for i in range(120))
+        jwt = "eyJ" + body[:33] + "." + "eyJ" + body[40:80] + "." + body[80:120].replace("a", "-")
+        return [self.t["bearer"], "ya" + "29." + body, jwt, self.t["hf"], body[:20]]
+
+    def download(self, raw: bytes, out_dir: Path):
+        from colab_runner.runner import Runner
+
+        cli = self.root / "dl.py"
+        cli.write_text("import pathlib, sys\npathlib.Path(sys.argv[-1]).write_bytes(%r)\n" % (raw,))
+        runner = Runner(Colab([sys.executable, str(cli)]), "s", out_dir)
+        target = out_dir / "renders" / "r.png"
+        return runner, target, lambda: runner.download("/content/r.png", target, 30)
+
+    def test_token_shape(self):
+        from colab_runner.colab_cli import BEARER_TOKEN_MIN, token_shaped
+
+        self.assertEqual(BEARER_TOKEN_MIN, 20)
+        for word in (b"of", b"Of-The-North", b"highly_detailed_background", b"x" * 64, b"A1b2C3d4E5f6G7h8i9J"):
+            self.assertFalse(token_shaped(word), word)
+        for tok in self.real_shaped():
+            self.assertTrue(token_shaped(tok.encode("ascii")), tok)
+
+    def test_every_real_shaped_token_the_text_pattern_catches_is_caught_in_a_binary(self):
+        from colab_runner.colab_cli import binary_token_hit
+
+        for tok in self.real_shaped():
+            for sep in (" ", "\t", "\x1f", " ", " "):
+                with self.subTest(tok=tok[:6], sep=sep):
+                    text = "Authorization: Bearer" + sep + tok
+                    self.assertNotIn(tok[3:], lg.scrub_colab_tokens(text))
+                    raw = png((b"prompt", self.prompt("a render")), (b"note", text.encode("utf-8")))
+                    self.assertIsNotNone(binary_token_hit(raw))
+
+    def test_a_render_whose_prompt_says_bearer_comes_through_byte_identical(self):
+        from colab_runner.colab_cli import binary_token_hit, is_binary_bytes
+
+        for i, words in enumerate(("Flame Bearer of the North", "the Ring-Bearer, oil painting", "Bearer of light",
+                                   "Standard Bearer highly_detailed_background_masterpiece",
+                                   "Bearer Bearer of the Dawn")):
+            with self.subTest(words=words):
+                # the prompt as ComfyUI writes it (JSON, in tEXt), and as plain UTF-8 text in a chunk of its own
+                raw = png((b"prompt", self.prompt(words)), (b"workflow", self.prompt(words + ", 8k")),
+                          (b"parameters", words.encode("utf-8")))
+                self.assertTrue(is_binary_bytes(raw))
+                self.assertIsNone(binary_token_hit(raw))
+                runner, target, go = self.download(raw, self.root / ("ok_%d" % i) / "out")
+                self.assertTrue(go().ok)
+                self.assertEqual(target.read_bytes(), raw)  # byte-identical
+                self.assertFalse(runner.quarantine_dir.exists())
+                self.assertEqual(runner._res.quarantined, [])
+
+    def test_a_render_with_a_real_bearer_token_is_refused(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+
+        raw = png((b"prompt", self.prompt("Flame Bearer of the North")),
+                  (b"note", ("Authorization: Bearer " + self.t["bearer"]).encode("ascii")))
+        out_dir = self.root / "bad" / "out"
+        runner, target, go = self.download(raw, out_dir)
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            go()
+        self.assertEqual(cm.exception.quarantined[0]["pattern"], "Bearer")
+        self.assertFalse(target.exists())
+        self.assertEqual((runner.quarantine_dir / "renders" / "r.png").read_bytes(), raw)
+
+
+class BareQuarantineTest(unittest.TestCase):
+    """PR 3 fix 1, (B): with no quarantine_dir (a bare `Colab.download` or `scrub_local`), a refused binary goes to a
+    new `colab-runner-quarantine-*` folder under the system temp dir, never next to the file in the out dir."""
+
+    def setUp(self):
+        from unittest import mock
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.temp = self.root / "system-temp"
+        self.temp.mkdir()
+        patcher = mock.patch.object(tempfile, "tempdir", str(self.temp))  # what tempfile.gettempdir() answers
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.t = fake_tokens()
+        self.poison = BinaryDownloadScrubTest.PNG_HEAD + b"x=" + self.t["hf"].encode("ascii") + b"\x00"
+
+    def assert_outside(self, out_dir: Path, exc):
+        q = Path(exc.quarantined[0]["path"])
+        self.assertEqual(q.read_bytes(), self.poison)
+        self.assertIn(self.temp, q.parents)
+        self.assertTrue(q.relative_to(self.temp).parts[0].startswith("colab-runner-quarantine-"))
+        self.assertNotIn(out_dir, q.parents)
+        self.assertEqual([p for p in out_dir.rglob("*") if p.is_file()], [])
+        self.assertFalse(any("quarantine" in p.name for p in out_dir.rglob("*")))
+
+    def test_a_bare_colab_download_quarantines_under_the_system_temp_dir(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused
+
+        cli = self.root / "dl.py"
+        cli.write_text("import pathlib, sys\npathlib.Path(sys.argv[-1]).write_bytes(%r)\n" % (self.poison,))
+        out_dir = self.root / "out"
+        (out_dir / "renders").mkdir(parents=True)
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            Colab([sys.executable, str(cli)]).download("s", "/content/r.png", str(out_dir / "renders" / "r.png"), 30)
+        self.assert_outside(out_dir, cm.exception)
+        self.assertEqual(Path(cm.exception.quarantined[0]["path"]).name, "r.png")
+
+    def test_a_bare_scrub_of_a_directory_quarantines_under_the_system_temp_dir(self):
+        from colab_runner.colab_cli import BinaryDownloadRefused, scrub_local
+
+        out_dir = self.root / "out"
+        (out_dir / "renders" / "sub").mkdir(parents=True)
+        (out_dir / "renders" / "sub" / "p.png").write_bytes(self.poison)
+        with self.assertRaises(BinaryDownloadRefused) as cm:
+            scrub_local(out_dir / "renders")
+        self.assert_outside(out_dir, cm.exception)
+        self.assertEqual(Path(cm.exception.quarantined[0]["path"]).relative_to(self.temp).parts[1:],
+                         ("renders", "sub", "p.png"))
+
+    def test_a_clean_bare_download_makes_no_quarantine(self):
+        from colab_runner.colab_cli import scrub_local
+
+        p = self.root / "clean.png"
+        p.write_bytes(BinaryDownloadScrubTest.PNG_HEAD + b"\x00clean")
+        scrub_local(p)
+        self.assertEqual(list(self.temp.iterdir()), [])
 
 
 if __name__ == "__main__":

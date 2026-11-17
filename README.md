@@ -34,10 +34,26 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
   call timeouts that bound is 466 s, or 986 s with `--resident` (`Runner.own_cleanup_bound_s`).
 - Pass `--pre-open-rate` and `--pre-open-assignments` together, read just before the session opened, or neither. Without them
   the whole account rate is attributed to this window, so a neighbour session can trip the rate limit.
+- Pass a distinct `--job` (default `job`) for each step sharing a `--content` directory. How a reused `--job` is refused:
+  - Every run has its own run id, `CR_RUN_ID`: a fresh one, unless the lane passes one with `--env` (an empty one is
+    replaced). A lane that passes the same `CR_RUN_ID` to two steps turns this refusal off between them.
+  - The VM writes the run id to `<job>.run_id` before the job starts. The job's status file and every poll record carry it.
+  - The job's files are `<job>.pid`, `.status.json`, `.run.out`, `.poll.json` and `.run_id`. If any of them is there under
+    another run id (or under none), the step ends `start_failed` with `JOB_ALREADY_EXISTS`. That holds whether the other job's process is
+    alive or dead, and with or without a status file.
+  - A refused step touches none of the other run's files, never kills its job, and still stops its own session. In
+    `--resident` mode the refusal goes to `<job>.refused.json`, never to `<job>.poll.json`.
+  - The runner takes only records that carry its own run id. A record another run left under the same `--job` (step 1's
+    final `<job>.poll.json`, say) never ends a step. In `--resident` mode, if only another run's records appear within
+    `--setup-stall-s`, the step ends `start_failed` with `JOB_ALREADY_EXISTS`. Without `--resident`, such a record counts as
+    a failed poll.
+  - A retried start of the same run (one whose reply was lost) is not refused.
+- In `--resident` mode, a non-finite or non-positive `CR_RESIDENT_MAX_S` passed via `--env` is refused up front
+  (`RESIDENT_MAX_INVALID`, exit 3).
 
 **Exit codes.** `run`: 0 for `done` with a confirmed stop, 1 for any other end, a failed stop or an error, 2 for a usage error,
-3 for a refusal. `stop --out-dir D`: 0 for a confirmed stop or nothing to stop, 1 for a failed stop, 3 for a marker that names
-no session.
+3 for a refusal. `stop --out-dir D`: 0 for a confirmed stop or nothing to stop, 1 for a failed stop, 2 for a usage error, 3 for
+a marker that names no session.
 
 **How a run ends:** `done`, `failed` (non-zero exit), `oom`, `wall`, `cap`, `setup_stall`, `progress_stall`, `dead`,
 `unreachable`, `start_failed`, `interrupted` or `error`.
@@ -47,11 +63,11 @@ no session.
 
 **What `run` writes in the out dir** (`--job` defaults to `job`, `--content` to `/content`):
 - `session_open.json` while the session may be open;
-- `runner_result.json`, the run's end;
-- `<job>.run.out`, the job's log;
+- `runner_result.json`, the run's end (including a `quarantined` entry for each binary download quarantined during the run);
+- `<job>.run.out`, the job's log (appears only once the job has written log lines, or once `--resident` has collected it);
 - `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
 
-**The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line (split on spaces).
+**The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line (split with `shlex.split`).
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
@@ -63,9 +79,36 @@ no session.
 - A run with no good poll for `--unreachable-polls` polls in a row (default 10), or for `--unreachable-s` (default 1800), ends
   `unreachable`.
 
-**Secrets.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE` puts the value in the
-runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI. Every CLI output
-line, error line and downloaded file is scrubbed with the vendored library's `scrub_colab_tokens`.
+**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
+puts the value in the runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI.
+Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
+directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
+- Text files are scrubbed in place with `scrub_colab_tokens`.
+- Clean binary files are left byte-identical. Unreadable files are removed.
+- **The binary rule.** A binary file is scanned with byte twins of the library's token patterns.
+  - On UTF-8 the twins match exactly what the text patterns match on the decoded text. Every character Python's `\s` matches
+    counts as a space, `\x1c`-`\x1f`, NBSP, NEL and EM SPACE included.
+  - The one difference is next to a non-ASCII letter, where the `hf_` twin matches and the text pattern does not: more,
+    never less.
+  - One rule is stricter than text: in a binary, `Bearer` counts only when the value after it is token-shaped. That means
+    at least 20 characters of `[A-Za-z0-9._-]`, using at least two of lower case, upper case and digits.
+  - So a render whose prompt says "Flame Bearer of the North" comes through byte-identical. A real bearer token (an OAuth
+    access token, a JWT, a Hugging Face token) is caught.
+  - Text files keep the library's patterns unchanged: the same prose in a text file still becomes `Bearer [REDACTED] the
+    North`.
+- **A hit is never rewritten.**
+  - The file is moved unchanged to quarantine, logged and named in `runner_result.json` (`quarantined`) by path and pattern
+    name only.
+  - The download is refused with `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). That ends `Runner.run` as `error` (CLI
+    exit 1), and the session is still stopped.
+- **Where the quarantine is.**
+  - Through `Runner` (and so `run`), it is the sibling directory `<out-dir>.quarantine/`. It is outside `--out-dir`, so
+    neither `salvage` nor out-dir bundling picks it up.
+  - A bare `Colab.download` or `scrub_local` with no `quarantine_dir` moves the file to a new folder
+    `colab-runner-quarantine-*` under the system temp dir (`tempfile.gettempdir()`). It never lands next to the file, so
+    never inside the folder the file was downloaded into. Its path is in `BinaryDownloadRefused.quarantined`. Pass
+    `Colab(quarantine_dir=...)` to choose the place.
+  - The runner never deletes a quarantine; **the lane must delete it and never ship it.**
 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.
