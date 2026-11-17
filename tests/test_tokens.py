@@ -282,8 +282,8 @@ class RunnerScrubTest(unittest.TestCase):
                     contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
                 code = main(["run", "--session", "s", "--out-dir", str(Path(tmp) / "out"), "--script", "/c/x.sh",
                              "--wall-s", "3600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "600"])
-            self.assertEqual(code, 1)
-            self.assertIn("RUN_ERROR: RuntimeError", err.getvalue())
+            self.assertEqual(code, 2)
+            self.assertIn("RUN_ERROR: UNEXPECTED_ERROR: RuntimeError", err.getvalue())
             for v in values(t):
                 self.assertNotIn(v, err.getvalue() + out.getvalue())
             self.assertEqual(colab.confirmed_stops(), ["s"])
@@ -433,21 +433,21 @@ class CliStderrScrubTest(unittest.TestCase):
 
     def test_env_unset_with_a_token_for_a_name(self):
         code, text, colab = self.call(self.base + ["--env", self.t["hf"]])  # a token where a NAME should be
-        self.assertEqual((code, colab.calls), (3, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("REFUSED: ENV_UNSET", text)
         self.assertIn("hf_[REDACTED]", text)
         self.assert_clean(text)
 
     def test_unknown_arguments_with_a_token(self):
         code, text, colab = self.call(["rn", "--env", "K=" + self.t["hf"], "--note", leak_lines(self.t)[1]])
-        self.assertEqual((code, colab.calls), (2, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("unknown arguments", text)
         self.assert_clean(text)
 
     def test_an_argparse_error_echoing_a_token(self):
         code, text, colab = self.call(self.base[:-6] + ["--max-rate", self.t["hf"], "--cap", "5",
                                                         "--cleanup-bound-s", "600"])
-        self.assertEqual((code, colab.calls), (2, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("invalid float value", text)
         self.assert_clean(text)
 
@@ -458,7 +458,7 @@ class CliStderrScrubTest(unittest.TestCase):
 
         with mock.patch("colab_runner.__main__.kit_env", side_effect=Refused("ENV_INVALID", leak_lines(self.t)[2])):
             code, text, _ = self.call(self.base)
-        self.assertEqual(code, 3)
+        self.assertEqual(code, 1)
         self.assertIn("Bearer [REDACTED]", text)
         self.assert_clean(text)
 
@@ -467,7 +467,7 @@ class CliStderrScrubTest(unittest.TestCase):
         out_dir.mkdir()
         (out_dir / "session_open.json").write_text("{}")
         code, text, colab = self.call(["stop", "--out-dir", str(out_dir)])
-        self.assertEqual((code, colab.calls), (3, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("SESSION_MARKER_INVALID", text)
         self.assert_clean(text)
 
@@ -856,8 +856,9 @@ class BinaryDownloadScrubTest(unittest.TestCase):
                 "run", "--session", "s", "--out-dir", str(out_dir), "--script", "/c/x.sh",
                 "--wall-s", "3600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "1200", "--resident",
             ])
-        self.assertEqual(code, 1)
-        self.assertIn("RUN_ERROR: BinaryDownloadRefused: BINARY_DOWNLOAD_TOKEN:", err.getvalue())
+        self.assertEqual(code, 2)
+        self.assertIn("RUN_ERROR: BINARY_DOWNLOAD_TOKEN: binary download quarantined:", err.getvalue())
+        self.assertIn("hint: keep tokens out of the job's binary outputs", err.getvalue())
         self.assertEqual(out.getvalue(), "")
         self.assertEqual(colab.stops, [("s", 0)])
         self.assertFalse((out_dir / "job.run.out").exists())

@@ -200,7 +200,7 @@ class ResidentTimeoutTest(unittest.TestCase):
                         "--wall-s", "600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "1200",
                         "--resident", "--env", "CR_RESIDENT_MAX_S=" + bad,
                     ])
-                self.assertEqual((code, colab.calls), (3, []))
+                self.assertEqual((code, colab.calls), (1, []))
                 self.assertIn("REFUSED: RESIDENT_MAX_INVALID:", err.getvalue())
 
     def test_a_job_that_ends_in_the_last_seconds_of_the_window_is_done(self):
