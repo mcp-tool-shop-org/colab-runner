@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "colab-runner"
-version = "0.0.1"
+version = "0.1.0"
 description = "Shared runner for paid Google Colab windows: detached jobs, card guards, token-file route, bucket sync."
 readme = "README.md"
 license = "MIT"
