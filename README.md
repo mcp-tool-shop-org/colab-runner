@@ -75,7 +75,7 @@ budget in compute units (see Pricing).
 - `--out-dir` must not exist yet, or be empty (`OUT_DIR_NOT_EMPTY` otherwise). A filesystem root is refused
   (`OUT_DIR_INVALID`): the quarantine is a sibling of the out dir, named from its resolved path. So is an out dir that
   cannot be created or listed.
-- `--cleanup-bound-s` must be at least the runner's own cleanup bound (`CLEANUP_BOUND_TOO_SMALL` otherwise). At the default
+- `--cleanup-bound-s` must be equal to or greater than the runner's own cleanup bound (`CLEANUP_BOUND_TOO_SMALL` otherwise). At the default
   call timeouts that bound is 466 s, or 986 s with `--resident` (`Runner.own_cleanup_bound_s`).
 - Pass `--pre-open-rate` and `--pre-open-assignments` together, read just before the session opened, or neither. Without them
   the whole account rate is attributed to this window, so a neighbour session can trip the rate limit.
@@ -143,7 +143,7 @@ traceback. A token is scrubbed at every level, the traceback included.
 - `runner_result.json`, the run's end. Its `quarantined` lists each binary download quarantined during the run, and a
   quarantine from a later `Runner.download` through the same `Runner` rewrites the file with it;
 - `<job>.run.out`, the job's log (appears only once the job has written log lines, or once `--resident` has collected it);
-- with `--resident`, `<job>.poll.json` (the job's latest poll record, as downloaded) and `<job>.refused.json`, this run's
+- when `--resident` is set, `<job>.poll.json` (the job's latest poll record, as the runner downloaded it) and `<job>.refused.json`, this run's
   own refusal record, when its refused resident cell wrote one (a `JOB_ALREADY_EXISTS` that only timed out on another
   run's records has none);
 - `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
@@ -154,7 +154,7 @@ unquoted backslash is dropped. One that cannot be split (an unclosed quote) is r
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
-- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Hold jobs skip the setup phase.
+- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Jobs started with `--hold-s` skip the setup phase.
 - `setup.log`: during setup, a run whose `setup.log` stops growing for `--setup-stall-s` (default 600) ends `setup_stall`.
 - **Progress:** after setup, a run ends `progress_stall` when nothing it can see moves for `--progress-stall-s` (default 900).
   What it sees is the sum of the first integer in each file matching `CR_PROGRESS_GLOB` (default `<out>/progress/*`), the count
@@ -163,7 +163,7 @@ unquoted backslash is dropped. One that cannot be split (an unclosed quote) is r
   `unreachable`.
 
 **Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
-puts the value in the runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI.
+puts the value in the runner's own command line. Values reach the VM inside the uploaded notebook cell file, never as arguments to the `colab` CLI.
 Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
 directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
 - Text files are scrubbed in place with `scrub_colab_tokens`.
@@ -171,8 +171,8 @@ directories (including partial transfers) are classified by content only (a NUL 
 - **The binary rule.** A binary file is scanned with byte twins of the library's token patterns.
   - On UTF-8 the twins match exactly what the text patterns match on the decoded text. Every character Python's `\s` matches
     counts as a space, `\x1c`-`\x1f`, NBSP, NEL and EM SPACE included.
-  - The one difference is next to a non-ASCII letter, where the `hf_` twin matches and the text pattern does not: more,
-    never less.
+  - The one difference is next to a non-ASCII letter, where the `hf_` twin matches and the text pattern does not. So the
+    binary rule can catch more than the text rule, never less.
   - One rule is stricter than text: in a binary, `Bearer` counts only when the value after it is token-shaped. That means
     at least 20 characters of `[A-Za-z0-9._-]`, using at least two of lower case, upper case and digits.
   - So a render whose prompt says `Flame Bearer of the North` comes through byte-identical. A real bearer token (an OAuth
@@ -198,7 +198,7 @@ directories (including partial transfers) are classified by content only (a NUL 
     `Colab(quarantine_dir=...)` to choose the place.
   - Every quarantine path is resolved and checked to stay inside its quarantine folder before the move. A file that
     would land outside it is removed instead, and the download fails with `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-  - The runner never deletes a quarantine; **the lane must delete it and never ship it.**
+  - colab-runner never deletes a quarantine. **The calling lane must delete it and must never ship it.**
 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.
@@ -212,7 +212,7 @@ early. The account balance is recorded and never prices the window.
 
 **What it touches.**
 - The Colab session the lane names: it uploads cell files, starts and kills the job it started, downloads the files
-  it was asked for, and stops the session. It signals no process another run started (`CR_NOT_OURS`).
+  it was asked for, and stops the session. It never sends a signal to a process that belongs to another run of colab-runner (`CR_NOT_OURS`).
 - The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the rig. A bare `Colab.download`
   with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
 - The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
@@ -225,7 +225,7 @@ command line and never changes them.
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
 and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the
-download is refused (above). The lane deletes the quarantine and never ships it.
+download is refused (above). colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
 
 **Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
 elevation.

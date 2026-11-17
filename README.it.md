@@ -58,19 +58,19 @@ Le cifre sono segnaposto. Imposta `--max-rate` sulle unità orarie previste per 
 - **Un marcatore che rimane** significa che la sessione potrebbe essere ancora aperta: un'interruzione non riuscita o un processo `run` terminato immediatamente (SIGKILL, un'istanza persa) prima che venga eseguita la pulizia. L'istanza esegue quindi `python -m colab_runner stop --out-dir D`.
 - **Prima che il marcatore esista** (un rifiuto o un errore di utilizzo, entrambi con codice di uscita 1), l'istanza esegue `colab stop -s S`.
 
-**Flag obbligatori di `run`:** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N`.
-- `--out-dir` non deve ancora esistere o deve essere vuoto (altrimenti `OUT_DIR_NOT_EMPTY`). Viene rifiutata una directory radice del file system (`OUT_DIR_INVALID`): la quarantena è una directory sorella della directory di output, il cui nome deriva dal percorso risolto. Lo stesso vale per una directory di output che non può essere creata o elencata.
-- `--cleanup-bound-s` deve essere almeno uguale al limite di pulizia dello strumento (altrimenti `CLEANUP_BOUND_TOO_SMALL`). Con i timeout predefiniti, questo limite è di 466 s o 986 s con `--resident` (`Runner.own_cleanup_bound_s`).
-- Passa `--pre-open-rate` e `--pre-open-assignments` insieme, appena prima dell'apertura della sessione, oppure nessuno dei due. In caso contrario, l'intero tasso dell'account viene attribuito a questa istanza, quindi un'altra sessione potrebbe superare il limite di tasso.
-- Passa un `--job` distinto (predefinito `job`) per ogni passaggio che condivide una directory `--content`. In che modo viene rifiutato un `--job` riutilizzato:
-- Ogni esecuzione ha il proprio ID di esecuzione, `CR_RUN_ID`, che è nuovo ogni volta. Il nome è riservato: `--env CR_RUN_ID=…` (o `CR_RUN_ID` in `Runner.run(env=...)`) viene rifiutato (`RUN_ID_RESERVED`), poiché l'uso dello stesso ID tra i passaggi disabiliterebbe questo rifiuto.
-- La VM scrive l'ID di esecuzione in `<job>.run_id` prima dell'avvio del job. Il file di stato del job e ogni record di controllo lo contengono.
-- I file del job sono `<job>.pid`, `.status.json`, `.run.out`, `.poll.json` e `.run_id`. Se uno di essi è presente con un altro ID di esecuzione (o con nessuno), il passaggio termina con `start_failed` e `JOB_ALREADY_EXISTS`. Questo vale indipendentemente dal fatto che il processo dell'altro job sia attivo o meno e con o senza un file di stato.
-- Un passaggio rifiutato non tocca nessuno dei file dell'altra esecuzione, non termina mai il suo job e interrompe comunque la propria sessione. In modalità `--resident`, il rifiuto viene inviato a `<job>.refused.json`, non a `<job>.poll.json`.
-- Lo strumento utilizza solo i record che contengono il proprio ID di esecuzione. Un record lasciato da un'altra esecuzione nella stessa `--job` (il `<job>.poll.json` finale del passaggio 1, ad esempio) non termina mai un passaggio. In modalità `--resident`, se nella `--setup-stall-s` compaiono solo i record di un'altra esecuzione, il passaggio termina con `start_failed` e `JOB_ALREADY_EXISTS`. Senza `--resident`, un tale record viene considerato un controllo non riuscito.
-- Un tentativo prima che sia stato visto alcun record (il timeout, ad esempio, mentre il job dell'altra esecuzione detiene la `--job`) non termina nulla: la cella di terminazione risponde con `CR_NOT_OURS` e quindi la `<job>.run.out` dell'altra esecuzione non viene raccolta.
-- Un nuovo tentativo dello stesso job (la cui risposta è andata persa) non viene rifiutato.
-- In modalità `--resident`, un `CR_RESIDENT_MAX_S` non finito o non positivo passato tramite `--env` viene rifiutato immediatamente (`RESIDENT_MAX_INVALID`, codice di uscita 1).
+**Flag obbligatorie di `run`:** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N`.
+- `--out-dir` non deve ancora esistere, oppure deve essere vuoto (altrimenti `OUT_DIR_NOT_EMPTY`). Una directory radice del filesystem non è consentita (`OUT_DIR_INVALID`): la directory di quarantena è una directory "sorella" della directory di output, il cui nome deriva dal percorso risolto. Lo stesso vale per una directory di output che non può essere creata o elencata.
+- `--cleanup-bound-s` deve essere uguale o superiore al limite di pulizia del runner (altrimenti `CLEANUP_BOUND_TOO_SMALL`). Con i timeout predefiniti, questo limite è di 466 s, oppure 986 s con `--resident` (`Runner.own_cleanup_bound_s`).
+- Passare `--pre-open-rate` e `--pre-open-assignments` insieme, subito prima dell'apertura della sessione, oppure non passarli affatto. In assenza, l'intero limite di velocità dell'account viene attribuito a questa finestra, quindi una sessione "vicina" potrebbe superare il limite di velocità.
+- Passare un valore distinto di `--job` (predefinito `job`) per ogni passaggio che condivide una directory `--content`. Il motivo per cui un `--job` riutilizzato non è consentito:
+- Ogni esecuzione ha il proprio ID di esecuzione, `CR_RUN_ID`, che è nuovo ogni volta. Il nome è riservato: `--env CR_RUN_ID=…` (o `CR_RUN_ID` in `Runner.run(env=...)`) non è consentito (`RUN_ID_RESERVED`), poiché l'uso dello stesso ID in più passaggi disabiliterebbe questo controllo tra di essi.
+- La VM scrive l'ID di esecuzione in `<job>.run_id` prima dell'avvio del job. Il file di stato del job e ogni record di sondaggio lo contengono.
+- I file del job sono `<job>.pid`, `.status.json`, `.run.out`, `.poll.json` e `.run_id`. Se uno di essi è presente con un ID di esecuzione diverso (o con nessuno), il passaggio termina `start_failed` con `JOB_ALREADY_EXISTS`. Questo vale indipendentemente dal fatto che il processo dell'altro job sia attivo o meno, e con o senza un file di stato.
+- Un passaggio non consentito non tocca nessuno dei file dell'altra esecuzione, non interrompe mai il suo job e interrompe comunque la propria sessione. In modalità `--resident`, il rifiuto viene inviato a `<job>.refused.json`, mai a `<job>.poll.json`.
+- Il runner prende solo i record che contengono il proprio ID di esecuzione. Un record lasciato da un'altra esecuzione nella stessa directory `--job` (ad esempio, il file `<job>.poll.json` finale del passaggio 1) non interrompe mai un passaggio. In modalità `--resident`, se nella directory `--setup-stall-s` compaiono solo i record di un'altra esecuzione, il passaggio termina `start_failed` con `JOB_ALREADY_EXISTS`. In assenza di `--resident`, tale record viene considerato un sondaggio non riuscito.
+- Un errore prima che sia stato visualizzato un record (ad esempio, il timeout, mentre il job di un'altra esecuzione detiene il `--job`) non interrompe comunque nulla: la cella di interruzione risponde con `CR_NOT_OURS`, e quindi il `<job>.run.out` dell'altra esecuzione non viene nemmeno raccolto.
+- Un nuovo tentativo di avvio della stessa esecuzione (quella la cui risposta è andata persa) non viene rifiutato.
+- In modalità `--resident`, un valore `CR_RESIDENT_MAX_S` non finito o non positivo passato tramite `--env` viene rifiutato immediatamente (`RESIDENT_MAX_INVALID`, uscita 1).
 
 **Codici di uscita** (convenzione dell'organizzazione), per `run` e `stop --out-dir D`:
 
@@ -110,61 +110,56 @@ segue il suggerimento per un'interruzione che non è stata confermata. Un rifiut
 - `runner_result.json` nella directory di output registra ogni fine dopo che il marker è stato scritto, incluso `error`. Un download binario
 rifiutato durante la pulizia trasforma la fine in `error` e mantiene la fine che ha sostituito in `prior_reason` (e nei dettagli).
 
-**Cosa `run` scrive nella directory di output** (`--job` per impostazione predefinita è `job`, `--content` è `/content`):
+**Cosa `run` scrive nella directory di output** (`--job` ha come valore predefinito `job`, `--content` ha come valore predefinito `/content`):
 - `session_open.json` mentre la sessione potrebbe essere aperta;
-- `runner_result.json`, la fine dell'esecuzione. Il suo `quarantined` elenca ogni download binario messo in quarantena durante l'esecuzione, e una
-quarantena da un successivo `Runner.download` tramite lo stesso `Runner` sovrascrive il file con esso;
+- `runner_result.json`, la fine dell'esecuzione. Il suo `quarantined` elenca ogni file binario scaricato e messo in quarantena durante l'esecuzione, e una quarantena da un `Runner.download` successivo attraverso lo stesso `Runner` sovrascrive il file.
 - `<job>.run.out`, il log del job (appare solo dopo che il job ha scritto righe di log, o dopo che `--resident` le ha raccolte);
-- con `--resident`, `<job>.poll.json` (l'ultima registrazione del polling del job, come scaricata) e `<job>.refused.json`, la registrazione del rifiuto di questa esecuzione, quando la cella residente rifiutata ne ha scritta una (un `JOB_ALREADY_EXISTS` che ha solo esaurito il tempo sulle registrazioni di un'altra
-esecuzione, non ne ha nessuna);
-- `stop_confirmed.json` dopo un'interruzione confermata, o `stop_pending.json` dopo un'interruzione non riuscita.
+- quando `--resident` è impostato, `<job>.poll.json` (l'ultimo record di sondaggio del job, come scaricato dal runner) e `<job>.refused.json`, il record di rifiuto di questa esecuzione, quando la sua cella residente rifiutata ne ha scritto uno (un `JOB_ALREADY_EXISTS` che ha solo superato il timeout sui record di un'altra esecuzione).
+- `stop_confirmed.json` dopo un arresto confermato, oppure `stop_pending.json` dopo un arresto non riuscito.
 
 **Il comando `colab`** è `colab` a meno che `COLAB_RUNNER_CLI` non specifichi un altro comando. Viene suddiviso con `shlex.split`,
 che utilizza le virgolette POSIX: su Windows, scrivi il percorso con barre oblique o racchiudilo tra virgolette (`"C:\tools\colab.exe"`), poiché una
 barra rovesciata non racchiusa tra virgolette viene eliminata. Un comando che non può essere suddiviso (una virgoletta non chiusa) viene rifiutato (`CLI_INVALID`, uscita 1).
 
-**Cosa il job deve scrivere, in modo che i guardiani dell'inattività possano vederlo.** I percorsi sono sulla VM; la directory di output è `CR_OUT_DIR`, per impostazione predefinita
-`<content>/<job>_out`.
-- `phase.txt`: assente, vuoto o `setup` durante l'installazione, qualsiasi altra cosa una volta in esecuzione. I job in attesa saltano la fase di configurazione.
-- `setup.log`: durante la configurazione, un'esecuzione il cui `setup.log` smette di aumentare per `--setup-stall-s` (impostazione predefinita 600) termina con `setup_stall`.
-- **Progresso:** dopo la configurazione, un'esecuzione termina con `progress_stall` quando nulla che può vedere si muove per `--progress-stall-s` (impostazione predefinita 900).
-Ciò che vede è la somma del primo numero intero in ogni file corrispondente a `CR_PROGRESS_GLOB` (impostazione predefinita `<out>/progress/*`), il conteggio
-dei file corrispondenti a `CR_UNITS_GLOB` e i battiti cardiaci in attesa.
-- Un'esecuzione senza un buon polling per `--unreachable-polls` polling consecutivi (impostazione predefinita 10), o per `--unreachable-s` (impostazione predefinita 1800), termina con
-`unreachable`.
+**Cosa il job deve scrivere, in modo che i controlli di stallo possano visualizzarlo.** I percorsi si trovano sulla VM; la directory di output è `CR_OUT_DIR`, per impostazione predefinita `<content>/<job>_out`.
+- `phase.txt`: assente, vuoto o `setup` durante l'installazione, qualsiasi altra cosa una volta in esecuzione. I job avviati con `--hold-s` saltano la fase di configurazione.
+- `setup.log`: durante la configurazione, un'esecuzione il cui `setup.log` smette di aumentare per `--setup-stall-s` (predefinito 600) termina `setup_stall`.
+- **Progresso:** dopo la configurazione, un'esecuzione termina `progress_stall` quando nulla di ciò che può vedere si muove per `--progress-stall-s` (predefinito 900).
+Ciò che vede è la somma del primo numero intero in ogni file corrispondente a `CR_PROGRESS_GLOB` (predefinito `<out>/progress/*`), il numero di file corrispondenti a `CR_UNITS_GLOB` e i battiti di cuore di attesa.
+- Un'esecuzione senza un buon sondaggio per `--unreachable-polls` sondaggi consecutivi (predefinito 10), o per `--unreachable-s` (predefinito 1800), termina `unreachable`.
 
-**Segreti e pulizia dei download per garantire la sicurezza binaria.** Passa un segreto come `--env NAME`, con NAME impostato nell'ambiente del canale. `--env NAME=VALUE`
-inserisce il valore nella riga di comando del runner. I valori raggiungono la VM all'interno del file della cella, mai come argomenti per la CLI `colab`.
-Ogni riga di output e ogni riga di errore della CLI vengono ripulite con la libreria fornita `scrub_colab_tokens`. I file e le
+**Segreti e pulizia dei download per garantire la sicurezza binaria.** Passa un segreto come `--env NAME`, con NAME impostato nell'ambiente del processo. `--env NAME=VALUE`
+inserisce il valore nella riga di comando del processo. I valori raggiungono la VM all'interno del file della cella del notebook caricato, mai come argomenti per la CLI `colab`.
+Ogni riga di output della CLI e ogni riga di errore vengono ripulite con la libreria fornita `scrub_colab_tokens`. I file e le
 directory scaricati (inclusi i trasferimenti parziali) vengono classificati solo in base al contenuto (un byte NUL o un tentativo di decodifica UTF-8 non riuscito indica un file binario):
 - I file di testo vengono ripuliti direttamente con `scrub_colab_tokens`.
-- I file binari puliti vengono lasciati identici. I file illeggibili vengono rimossi.
+- I file binari puliti rimangono identici byte per byte. I file illeggibili vengono rimossi.
 - **La regola binaria.** Un file binario viene scansionato con coppie di byte dei modelli di token della libreria.
-- Su UTF-8, le coppie corrispondono esattamente a ciò che i modelli di testo corrispondono nel testo decodificato. Ogni carattere con cui `\s` di Python corrisponde
+- In UTF-8, le coppie corrispondono esattamente a ciò che i modelli di testo corrispondono nel testo decodificato. Ogni carattere che `\s` di Python corrisponde
 viene considerato uno spazio, inclusi `\x1c`-`\x1f`, NBSP, NEL e EM SPACE.
-- L'unica differenza è accanto a una lettera non ASCII, dove la coppia `hf_` corrisponde e il modello di testo non lo fa: di più,
-mai di meno.
+- L'unica differenza è che si trova accanto a una lettera non ASCII, dove la coppia `hf_` corrisponde e il modello di testo no. Quindi,
+la regola binaria può rilevare più elementi rispetto alla regola del testo, ma mai meno.
 - Una regola è più rigorosa rispetto al testo: in un file binario, `Bearer` conta solo quando il valore successivo ha la forma di un token. Ciò significa
-almeno 20 caratteri di `[A-Za-z0-9._-]`, utilizzando almeno due tra minuscole, maiuscole e cifre.
-- Quindi, un rendering il cui prompt dice `Flame Bearer of the North` viene trasmesso in forma identica. Un vero token di autenticazione (un token di accesso OAuth,
+almeno 20 caratteri di `[A-Za-z0-9._-]`, utilizzando almeno due tra lettere minuscole, maiuscole e cifre.
+- Quindi, un rendering il cui prompt dice `Flame Bearer of the North` viene trasmesso byte per byte. Un vero token di autenticazione (un token di accesso OAuth,
 un JWT, un token di Hugging Face) viene rilevato.
-- I file di testo mantengono invariati i modelli della libreria: lo stesso testo in un file di testo diventa ancora `Bearer [REDACTED] the
+- I file di testo mantengono invariati i modelli della libreria: lo stesso testo in un file di testo continua a diventare `Bearer [REDACTED] the
 North`.
-- **Un elemento corrispondente non viene mai riscritto.**
+- **Un rilevamento non viene mai sovrascritto.**
 - Il file viene spostato invariato nella quarantena, registrato e denominato in `runner_result.json` (`quarantined`) solo in base al percorso e al nome del modello.
-- Il download viene rifiutato con `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Ciò termina `Runner.run` come `error` (uscita CLI 2) e la sessione viene comunque interrotta.
-- **Il download di una directory** viene ripulito di token, file per file, e un singolo errore non interrompe il resto: un elemento corrispondente il cui spostamento nella quarantena
+- Il download viene rifiutato con `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Ciò interrompe `Runner.run` come `error` (uscita CLI 2) e la sessione viene comunque interrotta.
+- **Il download di una directory** viene ripulito token per token, e un singolo errore non interrompe il resto: un rilevamento il cui spostamento nella quarantena
 fallisce viene rimosso e una sottodirectory che non può essere elencata viene annotata. Il primo errore di questo tipo viene segnalato una volta che tutti i file rimanenti sono stati ripuliti. Vengono letti solo i file regolari. Un collegamento simbolico, a un file o a una directory, viene eliminato, mai seguito, e qualsiasi altra voce che non sia un file regolare o una directory (un FIFO, un socket, un dispositivo) viene eliminata, mai letta.
 - **Dove si trova la quarantena.**
 - Tramite `Runner` (e quindi `run`), è la directory sorella `<out-dir>.quarantine/`. Si trova all'esterno di `--out-dir`, quindi
 né `salvage` né il raggruppamento out-dir lo rilevano.
-- Un semplice `Colab.download` o `scrub_local` senza `quarantine_dir` sposta il file in una nuova cartella
+- Una semplice `Colab.download` o `scrub_local` senza `quarantine_dir` sposta il file in una nuova cartella
 `colab-runner-quarantine-*` nella directory temporanea del sistema (`tempfile.gettempdir()`). Non si trova mai accanto al file, quindi
 mai all'interno della cartella in cui è stato scaricato il file. Il suo percorso è in `BinaryDownloadRefused.quarantined`. Passa
 `Colab(quarantine_dir=...)` per scegliere il luogo.
 - Ogni percorso di quarantena viene risolto e verificato per assicurarsi che rimanga all'interno della sua cartella di quarantena prima dello spostamento. Un file che
 si troverebbe all'esterno viene invece rimosso e il download fallisce con `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-- Il runner non elimina mai una quarantena; **il canale deve eliminarla e non inviarla mai.**
+- colab-runner non elimina mai una quarantena. **Il processo chiamante deve eliminarla e non deve mai inviarla.**
 
 **Salvage** è solo un hook dell'API Python: `Runner.run(..., salvage=callable)` lo esegue su ogni processo, tranne `done`, prima dell'arresto.
 La CLI non ha la funzione Salvage.
@@ -175,19 +170,15 @@ prima. Il saldo dell'account viene registrato e non influisce sul prezzo della f
 ## Sicurezza e modello di minaccia
 
 **Cosa influisce.**
-- La sessione Colab a cui il processo fa riferimento: carica i file delle celle, avvia e interrompe il processo che ha avviato, scarica i file
-richiesti e interrompe la sessione. Non segnala che un altro processo ha avviato un'altra esecuzione (`CR_NOT_OURS`).
-- La directory di output (`--out-dir`) e la sua directory sorella di quarantena `<out-dir>.quarantine/` sull'ambiente. Un semplice `Colab.download`
-senza una directory di quarantena utilizza una nuova cartella `colab-runner-quarantine-*` nella directory temporanea del sistema.
-- Le variabili d'ambiente a cui il processo fa riferimento con `--env`, che vengono passate alla VM all'interno del file della cella.
+- La sessione Colab: carica i file delle celle, avvia e interrompe il processo avviato, scarica i file richiesti e termina la sessione. Non invia mai un segnale a un processo che appartiene a un’altra esecuzione di colab-runner (`CR_NOT_OURS`).
+- La directory di output (`--out-dir`) e la relativa directory di quarantena `<out-dir>.quarantine/` sull’ambiente di test. Una directory `Colab.download` senza directory di quarantena utilizza una nuova cartella `colab-runner-quarantine-*` all’interno della directory temporanea del sistema.
+- Le variabili d’ambiente che la sessione Colab utilizza con `--env`, e che vengono passate alla macchina virtuale all’interno del file della cella.
 
 **Cosa non influisce.** Nessun file al di fuori della directory di output, della sua quarantena e della quarantena temporanea. Nessun'altra sessione Colab. Nessuna impostazione dell'account, credenziale o fatturazione: legge la tariffa e il saldo dell'account tramite la riga di comando `colab` e non li modifica mai.
 
 **Rete.** Solo tramite la riga di comando `colab`, verso Google Colab. colab-runner non apre alcuna connessione propria.
 
-**Segreti.** Un segreto passato come `--env NAME` non compare in nessuna riga di comando. Ogni riga di output, riga di errore, traccia di stack
-e file di testo scaricato vengono ripuliti dai token; un file binario con un token al suo interno viene messo in quarantena invariato e
-il download viene rifiutato (sopra). Il processo elimina la quarantena e non la invia mai.
+**Segreti.** Un segreto trasmesso come `--env NAME` non compare in nessuna riga di comando. Ogni riga di output, riga di errore, traccia di errore e file di testo scaricato viene ripulito dai token; un file binario che contiene un token viene messo in quarantena senza modifiche e il download viene rifiutato (come indicato sopra). Colab-runner non elimina mai la quarantena: la procedura chiamante deve eliminarla e non deve mai trasmetterla.
 
 **Autorizzazioni.** Viene eseguito come l'utente che lo esegue, con l'accesso `colab` già effettuato da tale utente. Non richiede alcuna elevazione dei privilegi.
 

@@ -9,7 +9,7 @@ sidebar:
 
 **What it touches.**
 - The Colab session the lane names: it uploads cell files, starts and kills the job it started, downloads the files
-  it was asked for, and stops the session. It signals no process another run started (`CR_NOT_OURS`).
+  it was asked for, and stops the session. It never sends a signal to a process that belongs to another run of colab-runner (`CR_NOT_OURS`).
 - The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the rig. A bare `Colab.download`
   with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
 - The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
@@ -22,7 +22,7 @@ command line and never changes them.
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
 and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the
-download is refused (below). The lane deletes the quarantine and never ships it.
+download is refused (below). colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
 
 **Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
 elevation.
@@ -34,7 +34,7 @@ Reporting a vulnerability: see [SECURITY.md](https://github.com/mcp-tool-shop-or
 ## The scrub and the quarantine
 
 **Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
-puts the value in the runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI.
+puts the value in the runner's own command line. Values reach the VM inside the uploaded notebook cell file, never as arguments to the `colab` CLI.
 Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
 directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
 - Text files are scrubbed in place with `scrub_colab_tokens`.
@@ -42,8 +42,8 @@ directories (including partial transfers) are classified by content only (a NUL 
 - **The binary rule.** A binary file is scanned with byte twins of the library's token patterns.
   - On UTF-8 the twins match exactly what the text patterns match on the decoded text. Every character Python's `\s` matches
     counts as a space, `\x1c`-`\x1f`, NBSP, NEL and EM SPACE included.
-  - The one difference is next to a non-ASCII letter, where the `hf_` twin matches and the text pattern does not: more,
-    never less.
+  - The one difference is next to a non-ASCII letter, where the `hf_` twin matches and the text pattern does not. So the
+    binary rule can catch more than the text rule, never less.
   - One rule is stricter than text: in a binary, `Bearer` counts only when the value after it is token-shaped. That means
     at least 20 characters of `[A-Za-z0-9._-]`, using at least two of lower case, upper case and digits.
   - So a render whose prompt says `Flame Bearer of the North` comes through byte-identical. A real bearer token (an OAuth
@@ -69,4 +69,4 @@ directories (including partial transfers) are classified by content only (a NUL 
     `Colab(quarantine_dir=...)` to choose the place.
   - Every quarantine path is resolved and checked to stay inside its quarantine folder before the move. A file that
     would land outside it is removed instead, and the download fails with `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-  - The runner never deletes a quarantine; **the lane must delete it and never ship it.**
+  - colab-runner never deletes a quarantine. **The calling lane must delete it and must never ship it.**

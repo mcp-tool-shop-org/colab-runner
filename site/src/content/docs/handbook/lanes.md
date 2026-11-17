@@ -16,7 +16,7 @@ sidebar:
 - `--out-dir` must not exist yet, or be empty (`OUT_DIR_NOT_EMPTY` otherwise). A filesystem root is refused
   (`OUT_DIR_INVALID`): the quarantine is a sibling of the out dir, named from its resolved path. So is an out dir that
   cannot be created or listed.
-- `--cleanup-bound-s` must be at least the runner's own cleanup bound (`CLEANUP_BOUND_TOO_SMALL` otherwise). At the default
+- `--cleanup-bound-s` must be equal to or greater than the runner's own cleanup bound (`CLEANUP_BOUND_TOO_SMALL` otherwise). At the default
   call timeouts that bound is 466 s, or 986 s with `--resident` (`Runner.own_cleanup_bound_s`).
 - Pass `--pre-open-rate` and `--pre-open-assignments` together, read just before the session opened, or neither. Without them
   the whole account rate is attributed to this window, so a neighbour session can trip the rate limit.
@@ -56,7 +56,7 @@ Exit codes, refusals, error codes and log levels are on the [Reference](../refer
 - `runner_result.json`, the run's end. Its `quarantined` lists each binary download quarantined during the run, and a
   quarantine from a later `Runner.download` through the same `Runner` rewrites the file with it;
 - `<job>.run.out`, the job's log (appears only once the job has written log lines, or once `--resident` has collected it);
-- with `--resident`, `<job>.poll.json` (the job's latest poll record, as downloaded) and `<job>.refused.json`, this run's
+- when `--resident` is set, `<job>.poll.json` (the job's latest poll record, as the runner downloaded it) and `<job>.refused.json`, this run's
   own refusal record, when its refused resident cell wrote one (a `JOB_ALREADY_EXISTS` that only timed out on another
   run's records has none);
 - `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
@@ -67,7 +67,7 @@ unquoted backslash is dropped. One that cannot be split (an unclosed quote) is r
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
-- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Hold jobs skip the setup phase.
+- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Jobs started with `--hold-s` skip the setup phase.
 - `setup.log`: during setup, a run whose `setup.log` stops growing for `--setup-stall-s` (default 600) ends `setup_stall`.
 - **Progress:** after setup, a run ends `progress_stall` when nothing it can see moves for `--progress-stall-s` (default 900).
   What it sees is the sum of the first integer in each file matching `CR_PROGRESS_GLOB` (default `<out>/progress/*`), the count
