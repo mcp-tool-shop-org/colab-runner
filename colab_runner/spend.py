@@ -62,6 +62,11 @@ class SpendGuard:
         if self.pre_open_assignments is not None:
             require_number("PRE_OPEN_ASSIGNMENTS_INVALID", "pre_open_assignments", self.pre_open_assignments,
                            inclusive=True, integer=True)
+        if (self.pre_open_rate is None) != (self.pre_open_assignments is None):
+            # both come from one pre-open `colab usage` reading: a rate without its count lets a neighbour that
+            # closed meanwhile hide this window's rate; a count without its rate prices against a zero baseline
+            raise Refused("PRE_OPEN_UNPAIRED", "pre_open_rate and pre_open_assignments come from one pre-open reading: "
+                          "give both, or neither")
         budget = self.budget()
         if budget["tripped"]:  # margin + cleanup reserve >= cap: the library's refusal, before any colab call
             raise Refused(budget["code"], budget["why"])

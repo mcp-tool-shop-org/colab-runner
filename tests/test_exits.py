@@ -126,6 +126,26 @@ class EveryExitStopsTest(unittest.TestCase):
             self.assertFalse(res.salvaged)
             self.assert_stopped_once(colab, runner, res)
 
+    def test_a_signal_during_cleanup_is_logged_after_the_stop_not_from_the_handler(self):
+        log, handler_wrote = [], []
+
+        def hook(kind, fake):
+            if kind == "poll" and fake.poll_count == 2:
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            if kind == "kill":
+                n = len(log)
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+                handler_wrote.append(len(log) - n)  # asserted below: a cleanup step swallows what it raises
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(on_call=hook)
+            runner, _ = make(colab, tmp, log=log.append)
+            runner.run(script="/content/x.sh", wall_s=3600)
+        self.assertEqual(handler_wrote, [0])  # the handler itself writes nothing
+        stop_i = next(i for i, ln in enumerate(log) if ln.startswith("stop confirmed"))
+        sig_i = next(i for i, ln in enumerate(log) if "during cleanup" in ln)
+        self.assertGreater(sig_i, stop_i)
+
     def test_a_signal_during_the_salvage_aborts_it_and_the_stop_still_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             colab = FakeColab(polls=lambda n, env: rec(alive=False))

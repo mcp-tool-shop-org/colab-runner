@@ -133,6 +133,58 @@ class BlackoutTest(unittest.TestCase):
             self.assertEqual(res.reason, "done")
 
 
+class ResidentTimeoutTest(unittest.TestCase):
+    """Fix 2, item 6: the resident exec's `--timeout` (kernel_timeout of its bound) never ends before the cell's
+    CR_RESIDENT_MAX_S, for windows short and long, and a job that ends at the window's last second is still done."""
+
+    def test_the_exec_timeout_is_never_shorter_than_the_resident_max(self):
+        from colab_runner.colab_cli import kernel_timeout
+
+        for wall_s in (2.0, 9.5, 29.0, 31.0, 600.0, 36000.0):
+            with self.subTest(wall_s=wall_s), tempfile.TemporaryDirectory() as tmp:
+                colab = FakeColab(vm_poll_file=rec(rc=0))
+                runner, _ = make(colab, tmp)
+                runner.run(script="/content/x.sh", wall_s=wall_s, resident=True)
+                env = next(e for e in colab.envs if "CR_RESIDENT_MAX_S" in e)
+                call = next(c for c in colab.calls if c["kind"] == "resident")
+                self.assertGreaterEqual(kernel_timeout(call["timeout"]), int(env["CR_RESIDENT_MAX_S"]))
+                self.assertEqual(int(env["CR_RESIDENT_MAX_S"]), max(1, int(wall_s)))
+
+    def test_a_caller_resident_max_gets_the_report_time_too(self):
+        from colab_runner.colab_cli import kernel_timeout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0))
+            runner, _ = make(colab, tmp)
+            runner.run(script="/content/x.sh", wall_s=600, resident=True, env={"CR_RESIDENT_MAX_S": "120"})
+            call = next(c for c in colab.calls if c["kind"] == "resident")
+            self.assertGreaterEqual(kernel_timeout(call["timeout"]), 120)
+        with tempfile.TemporaryDirectory() as tmp:  # a value that is not a number: the window's own end
+            colab = FakeColab(vm_poll_file=rec(rc=0))
+            runner, _ = make(colab, tmp)
+            runner.run(script="/content/x.sh", wall_s=600, resident=True, env={"CR_RESIDENT_MAX_S": "soon"})
+            call = next(c for c in colab.calls if c["kind"] == "resident")
+            self.assertGreaterEqual(kernel_timeout(call["timeout"]), 600)
+
+    def test_a_job_that_ends_in_the_last_seconds_of_the_window_is_done(self):
+        from colab_runner.colab_cli import kernel_timeout
+
+        def poll_file(n):
+            # the VM: the resident cell rewrites the poll file only while its exec's --timeout has not run out;
+            # after that the file stays frozen at its last write. The job ends 590 s into the 600 s window.
+            call = next(c for c in colab.calls if c["kind"] == "resident")
+            cell_alive_until = call["at"] + kernel_timeout(call["timeout"])
+            now = min(colab.clock.now(), cell_alive_until)
+            return rec(rc=0) if now - 1000.0 >= 590 else rec(progress=int(now))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=poll_file)
+            runner, _ = make(colab, tmp, poll_s=10)
+            res = runner.run(script="/content/x.sh", wall_s=600, resident=True)
+            self.assertEqual(res.reason, "done")
+            self.assertFalse(colab.resident_call.killed)  # the cell ended on its own, with the job
+
+
 FAKE_EXEC = textwrap.dedent("""
     import sys, time
     mode = sys.argv[1]

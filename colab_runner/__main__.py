@@ -26,7 +26,7 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _run_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="colab_runner run", description="Start a detached job on a Colab VM and poll it.")
+    p = ScrubbingParser(prog="colab_runner run", description="Start a detached job on a Colab VM and poll it.")
     p.add_argument("--session", required=True)
     p.add_argument("--out-dir", required=True, help="must not exist yet, or be empty")
     p.add_argument("--job", default="job")
@@ -90,8 +90,23 @@ def kit_env(items: list[str]) -> dict:
     return env
 
 
-def _log(line: str) -> None:
-    print(line, file=sys.stderr)  # the runner scrubs every line before it gets here
+def _err(line: str) -> None:
+    """Every line this CLI writes to stderr (refusals, errors, the runner's log) goes through the library's scrub."""
+    print(scrub(line), file=sys.stderr)
+
+
+def _out(line: str) -> None:
+    print(scrub(line))
+
+
+_log = _err
+
+
+class ScrubbingParser(argparse.ArgumentParser):
+    """argparse, with its usage and error messages scrubbed too: an error echoes the bad value it was given."""
+
+    def _print_message(self, message, file=None):
+        super()._print_message(scrub(message) if message else message, file)
 
 
 def run_command(argv: list[str]) -> int:
@@ -115,35 +130,35 @@ def run_command(argv: list[str]) -> int:
             resident=args.resident, unreachable_polls=args.unreachable_polls, unreachable_s=args.unreachable_s,
         )
     except Refused as exc:
-        print("REFUSED: %s: %s" % (exc.code, exc.why), file=sys.stderr)
+        _err("REFUSED: %s: %s" % (exc.code, exc.why))
         return 3
     except Exception as exc:  # the run has stopped its session already; its message is scrubbed like any output
-        print("RUN_ERROR: %s: %s" % (type(exc).__name__, scrub(str(exc))), file=sys.stderr)
+        _err("RUN_ERROR: %s: %s" % (type(exc).__name__, exc))
         return 1
-    print("RUN_END reason=%s rc=%s stopped=%s" % (result.reason, result.rc, result.stopped))
+    _out("RUN_END reason=%s rc=%s stopped=%s" % (result.reason, result.rc, result.stopped))
     return 0 if result.reason == "done" and result.stopped else 1
 
 
 def stop_command(argv: list[str]) -> int:
     """The compensator for a run killed outright: stop the session its `session_open.json` names, with the same
     confirmed-marker rule (the marker goes only after a confirmed stop). Nothing to stop is a success."""
-    p = argparse.ArgumentParser(prog="colab_runner stop", description="Stop the session a run left open in D.")
+    p = ScrubbingParser(prog="colab_runner stop", description="Stop the session a run left open in D.")
     p.add_argument("--out-dir", required=True)
     args = p.parse_args(argv)
     out_dir = Path(args.out_dir)
     marker = out_dir / "session_open.json"
     if not marker.is_file():
-        print("STOP_NOTHING: no session_open.json in %s" % out_dir)
+        _out("STOP_NOTHING: no session_open.json in %s" % out_dir)
         return 0
     try:
         session = json.loads(marker.read_text(encoding="utf-8"))["session"]
         if not isinstance(session, str) or not session:
             raise ValueError("no session name")
     except (ValueError, KeyError, TypeError) as exc:
-        print("REFUSED: SESSION_MARKER_INVALID: %s does not name a session (%s)" % (marker, exc), file=sys.stderr)
+        _err("REFUSED: SESSION_MARKER_INVALID: %s does not name a session (%s)" % (marker, exc))
         return 3
     ok = Runner(cli_from_env(), session, out_dir, log=_log).stop_session()
-    print("STOP_END session=%s confirmed=%s" % (session, ok))
+    _out("STOP_END session=%s confirmed=%s" % (session, ok))
     return 0 if ok else 1
 
 
@@ -159,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_command(args[1:])
     if args[0] == "stop":
         return stop_command(args[1:])
-    print(f"colab-runner: unknown arguments: {' '.join(args)}", file=sys.stderr)
+    _err("colab-runner: unknown arguments: %s" % " ".join(args))
     return 2
 
 

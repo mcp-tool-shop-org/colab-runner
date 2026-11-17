@@ -121,6 +121,48 @@ class SharedFixturesTest(unittest.TestCase):
         self.assertTrue(g.check(10.0).startswith("COLAB_USAGE_PARSE_FAILED:"))  # live mode needs a reading
 
 
+class UsageRetryTest(unittest.TestCase):
+    """Fix 2, item 6: a failed `colab usage` read gets bounded retries inside the time left; after them the
+    library's fail-closed rule still trips."""
+
+    def run_with_usage(self, fail_first, wall_s=3600, g=None, **runner_kw):
+        from colab_runner.colab_cli import CliResult
+        from tests.fakes import FakeColab, guard, make, rec
+
+        def usage(n):
+            return CliResult(1, "", "RuntimeError: Connection was lost") if n <= fail_first else usage_text()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0 if n >= 3 else None, progress=n), usage=usage)
+            runner, clock = make(colab, tmp, **runner_kw)
+            res = runner.run(script="/c/x.sh", wall_s=wall_s, guard=g or guard(max_rate=1.0, cap=20.0))
+            return res, colab, clock
+
+    def test_one_or_two_failed_reads_are_retried_and_the_run_goes_on(self):
+        for fails in (1, 2):
+            with self.subTest(fails=fails):
+                res, colab, _ = self.run_with_usage(fails)
+                self.assertEqual(res.reason, "done")
+                self.assertGreaterEqual(colab.usage_count, fails + 1)
+
+    def test_three_failed_reads_still_trip_fail_closed(self):
+        res, colab, _ = self.run_with_usage(3)
+        self.assertEqual(res.reason, "cap")
+        self.assertTrue(res.detail.startswith("COLAB_USAGE_PARSE_FAILED:"), res.detail)
+        self.assertEqual(colab.usage_count, 3)  # the first try and two retries, no more
+        self.assertEqual(colab.poll_count, 0)
+
+    def test_the_retries_are_clamped_to_the_time_left(self):
+        # a 40 s window: 0-30 (lost), a 2 s pause, then 32-40 clamped to the 8 s left; a third try has no time
+        res, colab, _ = self.run_with_usage(99, wall_s=40, start_timeout_s=5)
+        t0 = 1000.0  # tests.fakes.FakeClock starts every run here
+        usage = [c for c in colab.calls if c["kind"] == "usage"]
+        self.assertEqual([c["timeout"] for c in usage], [30.0, 8.0])
+        for c in usage:
+            self.assertLessEqual(c["at"] + c["timeout"], t0 + 40 + 1e-6)
+        self.assertTrue(res.detail.startswith("COLAB_USAGE_PARSE_FAILED:"), res.detail)
+
+
 GRANDCHILD_CLI = textwrap.dedent("""
     import os, subprocess, sys, time
     pid_file, mode = sys.argv[1], sys.argv[2]

@@ -222,11 +222,12 @@ class Colab:
         return BackgroundCall(proc, tmp, time.monotonic() + max(0.0, float(timeout)))
 
     def download(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
-        """`colab download`; the file is scrubbed in place (scrub_file_in_place) before the call returns."""
-        res = self.run(["download", "-s", session, remote, local], timeout)
-        if res.ok:
-            lg.scrub_file_in_place(Path(local))
-        return res
+        """`colab download`; whatever is at `local` afterwards is scrubbed in place (scrub_file_in_place) before the
+        call returns or raises, whatever the rc: a timed-out, failed or interrupted transfer can leave partial bytes."""
+        try:
+            return self.run(["download", "-s", session, remote, local], timeout)
+        finally:
+            scrub_local(local)
 
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         return self.run(["stop", "-s", session], timeout)
@@ -238,6 +239,18 @@ class Colab:
         return self.run(["usage"], timeout)
 
 
+def scrub_local(local) -> None:
+    """scrub_file_in_place on `local`, if anything is there; a file that cannot be read or rewritten is removed."""
+    path = Path(local)
+    try:
+        lg.scrub_file_in_place(path)
+    except OSError:
+        try:
+            path.unlink()
+        except OSError:  # pragma: no cover - it cannot be touched at all
+            pass
+
+
 def cli_from_env() -> Colab:
     """The CLI named by COLAB_RUNNER_CLI (a command line split on spaces), else `colab`."""
     raw = os.environ.get("COLAB_RUNNER_CLI", "").strip()
@@ -246,5 +259,5 @@ def cli_from_env() -> Colab:
 
 __all__ = [
     "BackgroundCall", "Colab", "CliResult", "KILL_WAIT_S", "TIMEOUT_RC", "cli_from_env", "env_preamble",
-    "kernel_timeout", "kill_group", "scrub", "write_cell",
+    "kernel_timeout", "kill_group", "scrub", "scrub_local", "write_cell",
 ]

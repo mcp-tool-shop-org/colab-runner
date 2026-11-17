@@ -198,7 +198,9 @@ class ClampTest(unittest.TestCase):
         colab = FakeColab(starts=["drop"] * 9)
         res, clock, t0 = self.run_window(colab, 200)
         self.assertEqual(res.reason, "start_failed")
-        self.assertEqual(colab.start_calls, 3)  # 0-60, 62-122, 126-186; the next one (8 + 60 s) could pass 200
+        # 0-60, 62-122, 126-186, then 194-200 clamped to the 6 s left after its 8 s backoff; a fifth has no time
+        self.assertEqual(colab.start_calls, 4)
+        self.assertEqual([c["timeout"] for c in colab.calls if c["kind"] == "start"], [60, 60, 60, 6])
         self.assertLessEqual(res.elapsed_s, 200 + ONE_CLAMPED_STEP_OVERRUN_S)
         self.assert_steps_clamped(colab, clock, t0, 200)
 
@@ -207,7 +209,9 @@ class ClampTest(unittest.TestCase):
         self.assertAlmostEqual(g.seconds_left(0), 150.0)
         colab = FakeColab(starts=["drop"] * 9)
         res, clock, t0 = self.run_window(colab, 3600, g)
-        self.assertEqual((res.reason, colab.start_calls), ("start_failed", 2))  # 0-60, 62-122; 4 + 60 s won't fit
+        # 0-60, 62-122, then 126-150 clamped to the 24 s left after its 4 s backoff
+        self.assertEqual((res.reason, colab.start_calls), ("start_failed", 3))
+        self.assertAlmostEqual([c["timeout"] for c in colab.calls if c["kind"] == "start"][-1], 24.0, delta=1e-6)
         self.assert_steps_clamped(colab, clock, t0, 150)
 
     def test_backoff_is_clamped_to_the_wall(self):
@@ -269,6 +273,92 @@ class ClampTest(unittest.TestCase):
 
     def test_the_fake_clock_starts_where_make_puts_it(self):
         self.assertEqual(FakeClock().now(), 1000.0)
+
+
+def cli(args, colab):
+    err, out = io.StringIO(), io.StringIO()
+    with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+            contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+        code = main(args)
+    return code, err.getvalue() + out.getvalue()
+
+
+class Fix2BoundsTest(unittest.TestCase):
+    """Fix 2: pre-open values come in pairs (item 3), a start attempt is clamped rather than skipped (item 4),
+    a hold job refuses a zero heartbeat (item 5), and the resident cleanup bound counts its extra waits (item 7)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = ["run", "--session", "s", "--out-dir", str(Path(self._tmp.name) / "out"), "--wall-s", "3600",
+                     "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "600"]
+
+    def test_an_unpaired_pre_open_value_is_refused_at_the_cli(self):
+        for extra in (["--pre-open-rate", "20.0"], ["--pre-open-assignments", "2"]):
+            with self.subTest(extra=extra):
+                colab = FakeColab(polls=lambda n, env: rec(rc=0))
+                code, text = cli(self.base + ["--script", "/c/x.sh"] + extra, colab)
+                self.assertEqual((code, colab.calls), (3, []))
+                self.assertIn("REFUSED: PRE_OPEN_UNPAIRED:", text)
+
+    def test_an_unpaired_pre_open_value_is_refused_at_the_api(self):
+        for kw in ({"pre_open_rate": 20.0}, {"pre_open_assignments": 2}):
+            with self.subTest(kw=kw), self.assertRaises(Refused) as cm:
+                guard(**kw)
+            self.assertEqual(cm.exception.code, "PRE_OPEN_UNPAIRED")
+        self.assertEqual(guard(pre_open_rate=20.0, pre_open_assignments=2).pre_open_assignments, 2)  # both: fine
+
+    def test_a_real_clock_run_with_a_60_s_wall_makes_its_start_attempt(self):
+        colab = FakeColab(polls=lambda n, env: rec(rc=0))  # no fake clock: the runner's real monotonic clock
+        code, text = cli(self.base[:-8] + ["--wall-s", "60", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s",
+                                           "600", "--script", "/c/x.sh"], colab)
+        self.assertEqual(code, 0, text)
+        starts = [c for c in colab.calls if c["kind"] == "start"]
+        self.assertEqual(len(starts), 1)  # made, not skipped
+        self.assertLessEqual(starts[0]["timeout"], 60.0)  # clamped to what was left
+
+    def test_a_60_s_wall_whose_clock_has_moved_still_makes_its_start_attempt(self):
+        class TickingClock(FakeClock):  # real time passes a little at every read, as time.monotonic does
+            def now(self):
+                self.now_s += 0.001
+                return self.now_s
+
+        colab = FakeColab(polls=lambda n, env: rec(rc=0), clock=TickingClock())
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/c/x.sh", wall_s=60)
+        self.assertEqual(res.reason, "done")
+        start = next(c for c in colab.calls if c["kind"] == "start")
+        self.assertLess(start["timeout"], 60.0)  # the old code skipped this attempt: 60 s no longer fitted
+
+    def test_a_start_attempt_with_less_than_min_call_s_left_is_not_made(self):
+        colab = FakeColab(starts=["drop"] * 9)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/c/x.sh", wall_s=MIN_CALL_S / 2)
+        self.assertEqual((res.reason, colab.start_calls), ("start_failed", 0))
+
+    def test_a_hold_job_refuses_a_zero_heartbeat_and_a_script_job_does_not_care(self):
+        colab = FakeColab(polls=lambda n, env: rec(rc=0))
+        code, text = cli(self.base + ["--hold-s", "60", "--heartbeat-s", "0"], colab)
+        self.assertEqual((code, colab.calls), (3, []))
+        self.assertIn("REFUSED: HEARTBEAT_INVALID:", text)
+        code, text = cli(self.base + ["--script", "/c/x.sh", "--heartbeat-s", "0"], colab)
+        self.assertEqual(code, 0, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            api = FakeColab()
+            runner, _ = make(api, tmp)
+            with self.assertRaises(Refused) as cm:
+                runner.run(hold_s=60, heartbeat_s=0, wall_s=600)
+            self.assertEqual((cm.exception.code, api.calls), ("HEARTBEAT_INVALID", []))
+
+    def test_the_resident_cleanup_bound_counts_its_report_time_and_its_own_kill(self):
+        from colab_runner.colab_cli import EXEC_REPORT_S, KILL_WAIT_S
+
+        runner = Runner(FakeColab(), "s", Path(self._tmp.name))
+        plain = runner.own_cleanup_bound_s(False)
+        extra = runner.restart_timeout_s + runner.log_timeout_s + 2 * 2 * KILL_WAIT_S
+        self.assertAlmostEqual(runner.own_cleanup_bound_s(True) - plain, extra + EXEC_REPORT_S + KILL_WAIT_S)
 
 
 if __name__ == "__main__":

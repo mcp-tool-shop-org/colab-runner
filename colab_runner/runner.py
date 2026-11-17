@@ -31,12 +31,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from colab_runner.colab_cli import KILL_WAIT_S, CliResult, Colab
+from colab_runner.colab_cli import EXEC_REPORT_S, KILL_WAIT_S, CliResult, Colab, scrub_local
 from colab_runner.window_lib import launch_guards as lg
 
 VM_DIR = Path(__file__).parent / "vm"
 SETUP_PHASES = (None, "", "setup")
 MIN_CALL_S = 1.0  # no call is started with less than this left before the wall or the ceiling
+USAGE_RETRY_PAUSE_S = 2.0  # between the tries of a failed `colab usage` read
 REACHED_EPS_S = 1e-6  # less than this left: the wall or the ceiling has been reached
 # Ends on which the VM job may still be running: its process group is terminated before salvage and stop.
 TRIPS = frozenset(
@@ -176,6 +177,7 @@ class Runner:
         start_attempts: int = 5,
         start_timeout_s: float = 60.0,
         usage_timeout_s: float = 30.0,
+        usage_retries: int = 2,
         kill_timeout_s: float = 60.0,
         kill_grace_s: float = 5.0,
         restart_timeout_s: float = 180.0,
@@ -197,6 +199,8 @@ class Runner:
         require_number("SETTING_INVALID", "kill_grace_s", kill_grace_s, inclusive=True)
         require_number("SETTING_INVALID", "start_attempts", start_attempts, low=1, inclusive=True, integer=True)
         require_number("SETTING_INVALID", "stop_attempts", stop_attempts, low=1, inclusive=True, integer=True)
+        require_number("SETTING_INVALID", "usage_retries", usage_retries, inclusive=True, integer=True)
+        self.usage_retries = int(usage_retries)
         self.colab, self.session, self.out_dir = colab, session, Path(out_dir)
         self.job, self.content = job, content
         self.poll_s, self.poll_timeout_s, self.backoff_max_s = poll_s, poll_timeout_s, backoff_max_s
@@ -207,6 +211,7 @@ class Runner:
         self.clock, self.sleep = clock, sleep
         self.log = lambda s: log(scrub(s))  # nothing reaches the log unscrubbed
         self._resident = None
+        self._cleanup_signals: list[int] = []
         self._phase = "idle"
         self._t0, self._wall_s, self._guard = 0.0, 0.0, None
 
@@ -224,11 +229,14 @@ class Runner:
     def own_cleanup_bound_s(self, resident: bool) -> float:
         """The worst case of the runner's own cleanup after a trip: the kill cell, then (resident mode) the kernel
         restart that frees it and the run-log download, then every stop attempt with the pauses between them; each
-        call can take 2 x KILL_WAIT_S more to be killed and reaped. A caller's salvage is the caller's to add."""
+        call can take 2 x KILL_WAIT_S more to be killed and reaped. In resident mode the background exec's report
+        time (EXEC_REPORT_S, given on top of the window, see _start_resident) and its own kill (KILL_WAIT_S) count
+        too. A caller's salvage is the caller's to add."""
         calls = [self.kill_timeout_s] + ([self.restart_timeout_s, self.log_timeout_s] if resident else [])
         calls += [self.stop_timeout_s] * self.stop_attempts
         pauses = sum(_stop_pause(i) for i in range(1, self.stop_attempts))
-        return sum(calls) + pauses + 2 * KILL_WAIT_S * len(calls)
+        resident_extra = EXEC_REPORT_S + KILL_WAIT_S if resident else 0.0
+        return sum(calls) + pauses + 2 * KILL_WAIT_S * len(calls) + resident_extra
 
     # -- time left before the wall and the ceiling ---------------------------------------------------------------
     def _time_left(self) -> tuple[float, str]:
@@ -258,18 +266,20 @@ class Runner:
     # -- start ----------------------------------------------------------------------------------------------------
     def start(self, env: Mapping[str, str]) -> tuple[bool, str]:
         """Start the job; a lost reply is retried and can never start a second job (the cell is idempotent).
-        An attempt is made only when its backoff and its whole timeout fit before the wall and the ceiling."""
+        Each attempt's timeout is clamped to what is left before the wall and the ceiling after its backoff,
+        min(start_timeout_s, left - pause); the retries stop when that is under MIN_CALL_S."""
         delay, last = 2.0, ""
         for attempt in range(1, self.start_attempts + 1):
             pause = delay if attempt > 1 else 0.0
             left, bound = self._time_left()
-            if pause + self.start_timeout_s > left:
+            timeout = min(self.start_timeout_s, left - pause)
+            if timeout < MIN_CALL_S:
                 self.log("start attempt %d not made: it could pass the %s (%.0fs left)" % (attempt, bound, left))
                 return False, last or "no time for a start attempt before the %s" % bound
             if pause:
                 self.sleep(pause)
                 delay = min(delay * 2, self.backoff_max_s)
-            res = self._clean(self.colab.exec_cell(self.session, cell_source("start"), self._env(env), self.start_timeout_s))
+            res = self._clean(self.colab.exec_cell(self.session, cell_source("start"), self._env(env), timeout))
             text = (res.out or res.err or "").strip()
             last = text.splitlines()[-1] if text else ""
             if res.ok and ("CR_STARTED" in res.out or "CR_ALREADY_RUNNING" in res.out):
@@ -280,9 +290,17 @@ class Runner:
         return False, last
 
     def _start_resident(self, env: Mapping[str, str], left: float) -> None:
+        """The resident cell writes its poll file until CR_RESIDENT_MAX_S (the window's end). Its exec gets the CLI's
+        report time on top (EXEC_REPORT_S, counted in own_cleanup_bound_s), so `colab exec --timeout`
+        (kernel_timeout) is never shorter than CR_RESIDENT_MAX_S and cannot end the cell before the window does.
+        Nothing bills for the extra: every exit kills the child (_end) before the stop."""
         full = self._env(env)
         full.setdefault("CR_RESIDENT_MAX_S", str(max(1, int(left))))
-        self._resident = self.colab.start_cell(self.session, cell_source("resident"), full, left)
+        try:
+            max_s = max(1.0, float(full["CR_RESIDENT_MAX_S"]))
+        except ValueError:
+            max_s = float(max(1, int(left)))
+        self._resident = self.colab.start_cell(self.session, cell_source("resident"), full, max_s + EXEC_REPORT_S)
 
     # -- poll -----------------------------------------------------------------------------------------------------
     def poll(self, offset: int, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
@@ -292,13 +310,32 @@ class Runner:
         ))
         return parse_poll(res.out) if res.ok else None
 
+    def _read_usage(self) -> Optional[CliResult]:
+        """One `colab usage` reading: a failed read is retried up to `usage_retries` times, each attempt (and the
+        pause before it) clamped to the time left before the wall and the ceiling. What is returned is the last try;
+        a reading that still failed then folds into COLAB_USAGE_PARSE_FAILED, the library's fail-closed rule. None
+        when no attempt fitted."""
+        last = None
+        for attempt in range(self.usage_retries + 1):
+            if attempt:
+                self._pause(USAGE_RETRY_PAUSE_S)
+            left, _ = self._time_left()
+            if left < MIN_CALL_S:
+                break
+            last = self._clean(self.colab.usage(min(self.usage_timeout_s, left)))
+            if last.ok:
+                break
+            self.log("colab usage attempt %d failed rc=%s: %s" % (attempt + 1, last.rc, (last.err or "")[-200:]))
+        return last
+
     def _download(self, remote: str, local: Path, timeout: float) -> CliResult:
-        """`colab download`, then the file scrubbed in place (scrub_file_in_place) before anything reads it."""
+        """`colab download`; whatever is at `local` afterwards is scrubbed in place (scrub_local) before anything
+        reads it, in a `finally`: a timed-out, failed or interrupted transfer can leave partial bytes."""
         Path(local).parent.mkdir(parents=True, exist_ok=True)
-        res = self._clean(self.colab.download(self.session, remote, str(local), timeout))
-        if res.ok:
-            lg.scrub_file_in_place(Path(local))
-        return res
+        try:
+            return self._clean(self.colab.download(self.session, remote, str(local), timeout))
+        finally:
+            scrub_local(local)
 
     def poll_resident(self, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
         local = self.out_dir / ("%s.poll.json" % self.job)
@@ -360,14 +397,16 @@ class Runner:
         self._t0, self._wall_s, self._guard = self.clock(), float(wall_s), guard
         self._resident, self._oom_seen, self._log_collected, self._skip_salvage = None, False, False, False
         self._res = RunResult("error")
-        write_json_atomic(
-            self.out_dir / "session_open.json", {"session": self.session, "job": self.job, "content": self.content}
-        )
+        self._cleanup_signals: list[int] = []
         self._phase = "run"
         handlers: Optional[dict] = None
         crash: Optional[BaseException] = None
         try:
             handlers = self._arm_signals()  # inside the try: a signal before it is armed still reaches the finally
+            # written inside the try, before the start cell: no gap between the marker and the stop's finally
+            write_json_atomic(
+                self.out_dir / "session_open.json", {"session": self.session, "job": self.job, "content": self.content}
+            )
             self._run_body(kit_env, wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
                            unreachable_polls, unreachable_s)
         except RunInterrupted as exc:
@@ -403,6 +442,8 @@ class Runner:
         kit_env = dict(env or {})
         if hold_s is not None:
             require_number("HOLD_INVALID", "hold_s", hold_s)
+            # a heartbeat-only job with no pause between beats spins writes on the VM; 0 has no meaning here
+            require_number("HEARTBEAT_INVALID", "heartbeat_s (with hold_s)", heartbeat_s)
             kit_env.update({"CR_MODE": "hold", "CR_HOLD_S": str(hold_s), "CR_HEARTBEAT_S": str(heartbeat_s)})
         elif script:
             kit_env.update({"CR_MODE": "script", "CR_SCRIPT": script})
@@ -465,9 +506,8 @@ class Runner:
                 return self._end_as("wall", "wall %.0fs reached" % wall_s)
             if guard is not None:
                 if fold is not None and (usage_t is None or self.clock() - usage_t >= self.poll_s):
-                    left, _ = self._time_left()
-                    if left >= MIN_CALL_S:
-                        u = self._clean(self.colab.usage(min(self.usage_timeout_s, left)))
+                    u = self._read_usage()
+                    if u is not None:
                         usage_t = self.clock()
                         fold(u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
                 trip = guard.check(self.clock() - self._t0)
@@ -572,6 +612,8 @@ class Runner:
                 self._step("salvage", lambda: self._salvage(res, salvage))
         self._phase = "stop"
         res.stopped = bool(self._step("stop", self.stop_session))
+        for signum in self._cleanup_signals:
+            self.log("signal %s during cleanup: salvage skipped, the stop still ran" % _signal_name(signum))
 
     def _kill_job(self, res: RunResult, resident: bool) -> None:
         """Terminate the job's process group on the VM (vm/kill.py). In resident mode the kernel is first restarted:
@@ -607,7 +649,7 @@ class Runner:
             self._phase = "stopping"
             raise RunInterrupted(signum)
         self._skip_salvage = True
-        self.log("signal %s during cleanup: salvage skipped, the stop still runs" % _signal_name(signum))
+        self._cleanup_signals.append(signum)  # logged after the stop (_end), never from inside the handler
         if self._phase == "salvage":
             raise _SalvageAborted()
 

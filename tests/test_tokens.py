@@ -288,5 +288,188 @@ class RunnerScrubTest(unittest.TestCase):
             self.assertEqual(colab.confirmed_stops(), ["s"])
 
 
+PARTIAL_CLI = textwrap.dedent("""
+    import sys, time
+    mode, text = sys.argv[1], sys.argv[2]
+    local = sys.argv[-1]
+    with open(local, "w") as fh:  # the first bytes of the transfer; then the CLI never finishes it
+        fh.write(text)
+    if mode == "hang":
+        time.sleep(60)
+    sys.exit(1)
+""")
+
+
+class PartialDownloadTest(unittest.TestCase):
+    """Fix 2, item 1: a download that times out, fails or is interrupted after writing partial bytes leaves no
+    token at `local`, in the wrapper and in the runner."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.t = fake_tokens()
+        self.partial = "\n".join(leak_lines(self.t))  # no final newline: cut mid-transfer
+        self.cli = Path(self._tmp.name) / "partial_cli.py"
+        self.cli.write_text(PARTIAL_CLI)
+        self.local = Path(self._tmp.name) / "got.run.out"
+
+    def assert_no_token(self):
+        text = self.local.read_text(encoding="utf-8") if self.local.exists() else ""
+        for v in values(self.t):
+            self.assertNotIn(v, text)
+
+    def test_a_timed_out_download_is_scrubbed(self):
+        res = Colab([sys.executable, str(self.cli), "hang", self.partial]).download("s", "/content/x", str(self.local), 1.5)
+        self.assertEqual(res.rc, 124)
+        self.assertIn("[REDACTED]", self.local.read_text())
+        self.assert_no_token()
+
+    def test_a_failed_download_is_scrubbed(self):
+        res = Colab([sys.executable, str(self.cli), "fail", self.partial]).download("s", "/content/x", str(self.local), 30)
+        self.assertEqual(res.rc, 1)
+        self.assertIn("[REDACTED]", self.local.read_text())
+        self.assert_no_token()
+
+    def test_an_interrupted_download_is_scrubbed(self):
+        colab = Colab(["colab"])
+
+        def interrupted(args, timeout):
+            Path(args[-1]).write_text(self.partial)
+            raise KeyboardInterrupt
+
+        colab.run = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            colab.download("s", "/content/x", str(self.local), 30)
+        self.assertIn("[REDACTED]", self.local.read_text())
+        self.assert_no_token()
+
+    def test_a_partial_file_that_cannot_be_scrubbed_is_removed(self):
+        from unittest import mock
+
+        from colab_runner import colab_cli
+
+        self.local.write_text(self.partial)
+        with mock.patch.object(colab_cli.lg, "scrub_file_in_place", side_effect=PermissionError):
+            colab_cli.scrub_local(self.local)
+        self.assertFalse(self.local.exists())
+
+    def test_the_runner_scrubs_a_partial_download_from_any_colab(self):
+        partial = self.partial
+
+        class PartialColab(FakeColab):
+            mode = "fail"
+
+            def download(self, session, remote, local, timeout=120.0):
+                Path(local).write_text(partial)
+                if self.mode == "raise":
+                    raise KeyboardInterrupt
+                return CliResult(124 if self.mode == "timeout" else 1, "", "timed out mid-transfer")
+
+        for mode in ("timeout", "fail", "raise"):
+            with self.subTest(mode=mode):
+                colab = PartialColab()
+                colab.mode = mode
+                runner, _ = make(colab, self._tmp.name)
+                self.local = runner.out_dir / "job.run.out"
+                if mode == "raise":
+                    with self.assertRaises(KeyboardInterrupt):
+                        runner._download("/content/job.run.out", self.local, 10)
+                else:
+                    self.assertFalse(runner._download("/content/job.run.out", self.local, 10).ok)
+                self.assertTrue(self.local.exists())
+                self.assert_no_token()
+
+    def test_a_resident_run_whose_log_download_breaks_keeps_no_token(self):
+        partial = self.partial
+
+        class BreakingLogColab(FakeColab):
+            def download(self, session, remote, local, timeout=120.0):
+                if remote.endswith(".run.out"):
+                    self._record("download", session, timeout)
+                    Path(local).write_text(partial)
+                    return self._fail(timeout, "timed out mid-transfer")
+                return super().download(session, remote, local, timeout)
+
+        colab = BreakingLogColab(vm_poll_file=rec(rc=0))
+        runner, _ = make(colab, self._tmp.name)
+        res = runner.run(script="/content/x.sh", wall_s=3600, resident=True)
+        self.assertEqual(res.reason, "done")
+        self.local = runner.out_dir / "job.run.out"
+        self.assertTrue(self.local.exists())
+        self.assert_no_token()
+
+
+class CliStderrScrubTest(unittest.TestCase):
+    """Fix 2, item 2: every refusal and error line the CLI writes is scrubbed; a token is fed through each path."""
+
+    def call(self, args):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from colab_runner.__main__ import main
+
+        colab = FakeColab(polls=lambda n, env: rec(rc=0))
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+                contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+            try:
+                code = main(args)
+            except SystemExit as exc:  # argparse errors exit
+                code = exc.code
+        return code, err.getvalue() + out.getvalue(), colab
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.t = fake_tokens()
+        self.base = ["run", "--session", "s", "--out-dir", str(Path(self._tmp.name) / "out"), "--script", "/c/x.sh",
+                     "--wall-s", "3600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "600"]
+
+    def assert_clean(self, text):
+        for v in values(self.t):
+            self.assertNotIn(v, text)
+
+    def test_env_unset_with_a_token_for_a_name(self):
+        code, text, colab = self.call(self.base + ["--env", self.t["hf"]])  # a token where a NAME should be
+        self.assertEqual((code, colab.calls), (3, []))
+        self.assertIn("REFUSED: ENV_UNSET", text)
+        self.assertIn("hf_[REDACTED]", text)
+        self.assert_clean(text)
+
+    def test_unknown_arguments_with_a_token(self):
+        code, text, colab = self.call(["rn", "--env", "K=" + self.t["hf"], "--note", leak_lines(self.t)[1]])
+        self.assertEqual((code, colab.calls), (2, []))
+        self.assertIn("unknown arguments", text)
+        self.assert_clean(text)
+
+    def test_an_argparse_error_echoing_a_token(self):
+        code, text, colab = self.call(self.base[:-6] + ["--max-rate", self.t["hf"], "--cap", "5",
+                                                        "--cleanup-bound-s", "600"])
+        self.assertEqual((code, colab.calls), (2, []))
+        self.assertIn("invalid float value", text)
+        self.assert_clean(text)
+
+    def test_a_refusal_whose_why_carries_a_token(self):
+        from unittest import mock
+
+        from colab_runner.runner import Refused
+
+        with mock.patch("colab_runner.__main__.kit_env", side_effect=Refused("ENV_INVALID", leak_lines(self.t)[2])):
+            code, text, _ = self.call(self.base)
+        self.assertEqual(code, 3)
+        self.assertIn("Bearer [REDACTED]", text)
+        self.assert_clean(text)
+
+    def test_stop_with_a_token_in_its_out_dir_path(self):
+        out_dir = Path(self._tmp.name) / self.t["hf"]
+        out_dir.mkdir()
+        (out_dir / "session_open.json").write_text("{}")
+        code, text, colab = self.call(["stop", "--out-dir", str(out_dir)])
+        self.assertEqual((code, colab.calls), (3, []))
+        self.assertIn("SESSION_MARKER_INVALID", text)
+        self.assert_clean(text)
+
+
 if __name__ == "__main__":
     unittest.main()
