@@ -17,51 +17,82 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 10,
-      "changed": 17,
+      "added": 13,
+      "changed": 0,
       "moved": 0,
-      "parts": 4,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "colab_runner/ is now read by tests/test_errors.py.",
+        "kind": "door",
+        "sentence": "CI now also runs scripts/check-audit-allowlist.mjs and scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "colab_runner/",
-          "tests/test_errors.py"
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.mjs",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "colab_runner/**/*.py is now read by tests/test_errors.py.",
+        "sentence": ".github/audit-allowlist.json is now read by .github/workflows/ci.yml and scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "colab_runner/**/*.py",
-          "tests/test_errors.py"
+          ".github/audit-allowlist.json",
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "colab_runner/vm/kill.py is now read by tests/test_window_lib.py.",
+        "sentence": ".github/workflows/ci.yml is now read by scripts/check-audit-allowlist.test.mjs.",
         "subjects": [
-          "colab_runner/vm/kill.py",
-          "tests/test_window_lib.py"
+          ".github/workflows/ci.yml",
+          "scripts/check-audit-allowlist.test.mjs"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "And 4 more new writers and readers of places.",
+        "sentence": "scripts/check-audit-allowlist.mjs is now read by scripts/check-audit-allowlist.test.mjs.",
+        "subjects": [
+          "scripts/check-audit-allowlist.mjs",
+          "scripts/check-audit-allowlist.test.mjs"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "scripts/check-audit-allowlist.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "scripts/check-audit-allowlist.mjs"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "scripts/check-audit-allowlist.test.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "scripts/check-audit-allowlist.test.mjs"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "site/src/content/docs/handbook/lanes.md is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "site/src/content/docs/handbook/lanes.md"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "And 1 more new file that belongs to no part.",
         "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "10 files added and 17 changed content, across 4 parts.",
+        "sentence": "13 files added, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "cc633abb7abd43fd4544ca8a309269d9a64fe34e",
-      "generatedAt": "2026-11-12T20:56:07.709Z"
+      "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
+      "generatedAt": "2026-11-17T21:38:18.287Z"
     },
     "unchanged": false
   },
@@ -70,9 +101,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "d5a53737449f1b9d76677dbc7ca888cd0669813d",
+  "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (29 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
+  "derived": "4 parts, mostly Python (30 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
     {
       "checks": [
@@ -99,22 +130,52 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 15
+          "files": 16
         }
       ],
       "runs": [
+        "scripts/check-audit-allowlist.mjs",
+        "scripts/check-audit-allowlist.test.mjs",
         "verify.sh",
+        "site/astro.config.mjs",
+        "site/src/",
         "tests/"
       ],
-      "runsCount": 2,
-      "runsMore": 0,
+      "runsCount": 6,
+      "runsMore": 19,
       "sends": [
         "uploads coverage to Codecov"
       ],
       "stages": [],
       "triggers": [
         "on a pull request to main",
-        "on a push to main touching 7 paths",
+        "on a push to main touching 10 paths",
+        "or by hand"
+      ],
+      "untracked": "site/audit-report.json, which is not tracked"
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": ".github/workflows/pages.yml",
+      "id": ".github/workflows/pages.yml",
+      "landings": [],
+      "name": "Deploy site to GitHub Pages",
+      "pushes": false,
+      "reach": [],
+      "runs": [
+        "site/astro.config.mjs",
+        "site/src/"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [
+        "deploys the site on main"
+      ],
+      "stages": [],
+      "triggers": [
+        "on a push to main touching 2 paths",
         "or by hand"
       ]
     },
@@ -152,11 +213,13 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-17T20:25:03.555Z",
+  "generatedAt": "2026-11-17T21:43:26.878Z",
   "limits": [
     "7 writes and 6 reads use paths built at run time and are not named here.",
+    "1 write goes to places this repository does not track, so it is not listed as generated.",
     "9 writes and 15 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
+    "18 files belong to no part: scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, site/astro.config.mjs and 15 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -175,9 +238,9 @@
   "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 15,
+  "testFiles": 17,
   "testedBy": {
-    "colab_runner": 12
+    "colab_runner": 13
   },
   "testedCodeParts": 1,
   "unnamedWrites": 7,

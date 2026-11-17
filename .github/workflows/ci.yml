@@ -10,6 +10,9 @@ on:
       - "verify.sh"
       - "pyproject.toml"
       - "codecov.yml"
+      - "site/**"
+      - "scripts/**"
+      - ".github/audit-allowlist.json"
       - ".github/workflows/**"
   pull_request:
     branches: [main]
@@ -70,6 +73,24 @@ jobs:
       - name: Atlas check
         if: matrix.python-version == '3.12'
         run: npx --yes @dogfood-lab/atlas@1.26.0 check
+
+      # The landing page and handbook build here, so a broken page fails the PR rather than the Pages deploy after
+      # merge (pages.yml runs only on main). The site's npm audit goes through scripts/check-audit-allowlist.mjs
+      # (ported from merchant-league, tested by the node --test line): reviewed, time-boxed exceptions live in
+      # .github/audit-allowlist.json, and any high or critical advisory not listed there, listed but expired, or whose
+      # reported range or fix status has changed, still fails this step.
+      - name: Site build
+        if: matrix.python-version == '3.12'
+        working-directory: site
+        run: |
+          npm ci --no-fund --no-audit
+          node --test ../scripts/check-audit-allowlist.test.mjs
+          set +e
+          npm audit --audit-level=high --json > audit-report.json
+          AUDIT_EXIT=$?
+          set -e
+          node ../scripts/check-audit-allowlist.mjs audit-report.json ../.github/audit-allowlist.json "$AUDIT_EXIT" package-lock.json
+          npm run build
 
       # Dependency scan (pip-audit, pinned). colab-runner has no runtime dependencies (pyproject: dependencies = []), so
       # this audits the dev dependencies and whatever installing the package pulled in: the environment as
