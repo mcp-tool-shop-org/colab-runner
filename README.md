@@ -34,10 +34,15 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
   call timeouts that bound is 466 s, or 986 s with `--resident` (`Runner.own_cleanup_bound_s`).
 - Pass `--pre-open-rate` and `--pre-open-assignments` together, read just before the session opened, or neither. Without them
   the whole account rate is attributed to this window, so a neighbour session can trip the rate limit.
+- Pass a distinct `--job` (default `job`) for each step sharing a `--content` directory. Reusing a `--job` whose pid or
+  status file already exists on the VM ends `start_failed` with `JOB_ALREADY_EXISTS` (without touching the earlier job) and
+  still stops this step's session.
+- In `--resident` mode, a non-finite or non-positive `CR_RESIDENT_MAX_S` passed via `--env` is refused up front
+  (`RESIDENT_MAX_INVALID`, exit 3).
 
 **Exit codes.** `run`: 0 for `done` with a confirmed stop, 1 for any other end, a failed stop or an error, 2 for a usage error,
-3 for a refusal. `stop --out-dir D`: 0 for a confirmed stop or nothing to stop, 1 for a failed stop, 3 for a marker that names
-no session.
+3 for a refusal. `stop --out-dir D`: 0 for a confirmed stop or nothing to stop, 1 for a failed stop, 2 for a usage error, 3 for
+a marker that names no session.
 
 **How a run ends:** `done`, `failed` (non-zero exit), `oom`, `wall`, `cap`, `setup_stall`, `progress_stall`, `dead`,
 `unreachable`, `start_failed`, `interrupted` or `error`.
@@ -47,11 +52,11 @@ no session.
 
 **What `run` writes in the out dir** (`--job` defaults to `job`, `--content` to `/content`):
 - `session_open.json` while the session may be open;
-- `runner_result.json`, the run's end;
-- `<job>.run.out`, the job's log;
+- `runner_result.json`, the run's end (including `quarantined` entries if any binary download was quarantined);
+- `<job>.run.out`, the job's log (appears only once the job has written log lines, or once `--resident` has collected it);
 - `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
 
-**The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line (split on spaces).
+**The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line (split with `shlex.split`).
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
@@ -63,9 +68,17 @@ no session.
 - A run with no good poll for `--unreachable-polls` polls in a row (default 10), or for `--unreachable-s` (default 1800), ends
   `unreachable`.
 
-**Secrets.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE` puts the value in the
-runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI. Every CLI output
-line, error line and downloaded file is scrubbed with the vendored library's `scrub_colab_tokens`.
+**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
+puts the value in the runner's own command line. Values reach the VM inside the cell file, never as arguments to the `colab` CLI.
+Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
+directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
+- Text files are scrubbed in place with `scrub_colab_tokens`.
+- Clean binary files are left byte-identical. Unreadable files are removed.
+- Any binary file whose bytes match a token pattern is never rewritten: it is moved unchanged to the sibling quarantine
+  directory `<out-dir>.quarantine/` (outside `--out-dir`, so neither `salvage` nor out-dir bundling picks it up), logged and
+  named in `runner_result.json` (`quarantined`) by path and pattern name only, and refused with `BinaryDownloadRefused`
+  (`BINARY_DOWNLOAD_TOKEN`), ending `Runner.run` as `error` (CLI exit 1) while still stopping the session. The runner never
+  deletes `<out-dir>.quarantine/`; **the lane must delete it and never ship it.**
 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.

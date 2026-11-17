@@ -5,8 +5,10 @@
   rc 124. A call interrupted by anything else (a signal, an exception) is killed the same way before the exception
   goes on.
 - Every `out` and `err` is passed through the vendored library's token scrub (`launch_guards.scrub_colab_tokens`)
-  before any caller sees it, and every downloaded file is scrubbed in place (`launch_guards.scrub_file_in_place`)
-  before the call returns.
+  before any caller sees it. Every downloaded file is checked by content: text is scrubbed in place with
+  `launch_guards.scrub_colab_tokens`; binary files (containing NUL or failing strict UTF-8 decoding) are never
+  rewritten — clean binaries stay byte-identical, while a token match moves the file to quarantine and raises
+  `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`).
 - A cell's environment travels inside the cell file, written owner-only (0600) where the OS has file modes, never
   as `colab exec --env` arguments, so no value reaches a command line.
 
@@ -14,20 +16,66 @@ The wrapper never parses CLI output beyond what its callers ask for, and never d
 
 from __future__ import annotations
 
+import io
 import os
+import re
+import shlex
+import shutil
 import signal
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 from colab_runner.window_lib import launch_guards as lg
 
 TIMEOUT_RC = 124
 KILL_WAIT_S = 5.0  # after a group kill: how long to wait for the pipes to close and the call to be reaped
 EXEC_REPORT_S = 15.0  # of an exec call's bound, the time kept back for the CLI to report a kernel-side timeout
+
+
+def _pattern_name(pattern: re.Pattern[str], idx: int) -> str:
+    cleaned = pattern.pattern.replace(r"\b", "").replace(r"\s", " ")
+    m = re.search(r"[A-Za-z][A-Za-z0-9_-]*", cleaned)
+    return m.group(0) if m else "pattern_%d" % idx
+
+
+# Byte regexes compiled directly from the vendored library's TOKEN_SCRUB_PATTERNS (never copied).
+BYTE_TOKEN_PATTERNS: list[tuple[str, re.Pattern[bytes]]] = [
+    (_pattern_name(p, i), re.compile(p.pattern.encode("utf-8"), p.flags & ~re.UNICODE))
+    for i, (p, _) in enumerate(lg.TOKEN_SCRUB_PATTERNS)
+]
+
+
+class BinaryDownloadRefused(RuntimeError):
+    """A downloaded binary file matched a token pattern: quarantined unchanged, never rewritten, and refused."""
+
+    def __init__(self, quarantined: list[dict[str, str]]):
+        self.code = "BINARY_DOWNLOAD_TOKEN"
+        self.quarantined = list(quarantined)
+        summary = ", ".join("%s (pattern=%s)" % (q["source"], q["pattern"]) for q in self.quarantined)
+        super().__init__("%s: binary download quarantined: %s" % (self.code, summary))
+
+
+def default_quarantine_dir(target: Path) -> Path:
+    """Sibling `<target>.quarantine` directory, outside `target` itself."""
+    p = Path(target)
+    if not p.name:  # pragma: no cover - empty path resolved to concrete name
+        p = p.resolve()
+    return p.parent / (p.name + ".quarantine")
+
+
+def is_binary_bytes(data: bytes) -> bool:
+    """Decide text vs binary by content only (never by extension): NUL byte or invalid UTF-8 is binary."""
+    if b"\x00" in data:
+        return True
+    try:
+        data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def scrub(text: Optional[str]) -> str:
@@ -164,9 +212,21 @@ class BackgroundCall:
 class Colab:
     """`argv` is the command prefix, default ["colab"]; tests pass [sys.executable, "fake_colab.py"]."""
 
-    def __init__(self, argv: Sequence[str] = ("colab",), env: Mapping[str, str] | None = None):
+    def __init__(
+        self,
+        argv: Sequence[str] = ("colab",),
+        env: Mapping[str, str] | None = None,
+        *,
+        quarantine_dir: Optional[Path] = None,
+        log: Optional[Callable[[str], None]] = None,
+        on_quarantine: Optional[Callable[[dict[str, str]], None]] = None,
+    ):
         self.argv = list(argv)
         self.env = dict(os.environ if env is None else env)
+        self.quarantine_dir = Path(quarantine_dir) if quarantine_dir is not None else None
+        self.log = log
+        self.on_quarantine = on_quarantine
+        self._base_dir: Optional[Path] = None
 
     def run(self, args: Sequence[str], timeout: float) -> CliResult:
         """One call, bounded at `timeout` seconds (plus at most 2 x KILL_WAIT_S to kill and reap it)."""
@@ -222,12 +282,15 @@ class Colab:
         return BackgroundCall(proc, tmp, time.monotonic() + max(0.0, float(timeout)))
 
     def download(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
-        """`colab download`; whatever is at `local` afterwards is scrubbed in place (scrub_file_in_place) before the
-        call returns or raises, whatever the rc: a timed-out, failed or interrupted transfer can leave partial bytes."""
+        """`colab download`; whatever is at `local` afterwards runs through `scrub_local` before the call returns or
+        raises, whatever the rc: a timed-out, failed or interrupted transfer can leave partial bytes."""
         try:
             return self.run(["download", "-s", session, remote, local], timeout)
         finally:
-            scrub_local(local)
+            scrub_local(
+                local, quarantine_dir=self.quarantine_dir, base_dir=self._base_dir,
+                log=self.log, on_quarantine=self.on_quarantine,
+            )
 
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         return self.run(["stop", "-s", session], timeout)
@@ -239,25 +302,123 @@ class Colab:
         return self.run(["usage"], timeout)
 
 
-def scrub_local(local) -> None:
-    """scrub_file_in_place on `local`, if anything is there; a file that cannot be read or rewritten is removed."""
-    path = Path(local)
+def _unlink_quiet(path: Path) -> None:
     try:
-        lg.scrub_file_in_place(path)
-    except OSError:
+        path.unlink()
+    except OSError:  # pragma: no cover - it cannot be touched at all
+        pass
+
+
+def _iter_files(root: Path) -> list[Path]:
+    if root.is_symlink():
+        _unlink_quiet(root)
+        return []
+    if not root.exists():
+        return []
+    if root.is_file():
+        return [root]
+    if not root.is_dir():  # pragma: no cover - special device or FIFO
+        return []
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        parent = Path(dirpath)
+        dirnames[:] = sorted(d for d in dirnames if not (parent / d).is_symlink())
+        for name in sorted(filenames):
+            p = parent / name
+            if p.is_symlink():
+                _unlink_quiet(p)
+            else:
+                files.append(p)
+    return files
+
+
+def _quarantine_dest(src: Path, root: Path, quarantine_dir: Path, base_dir: Optional[Path]) -> Path:
+    rel: Optional[Path] = None
+    if base_dir is not None:
         try:
-            path.unlink()
-        except OSError:  # pragma: no cover - it cannot be touched at all
-            pass
+            rel = src.relative_to(base_dir)
+        except ValueError:
+            rel = None
+    if rel is None:
+        if root.is_dir():
+            inner = src.relative_to(root)
+            rel = inner if quarantine_dir == default_quarantine_dir(root) else Path(root.name) / inner
+        else:
+            rel = Path(src.name)
+    dest = quarantine_dir / rel
+    if not dest.exists():
+        return dest
+    n = 1
+    while True:
+        cand = dest.with_name("%s.%d" % (dest.name, n))
+        if not cand.exists():
+            return cand
+        n += 1
+
+
+def scrub_local(
+    local,
+    *,
+    quarantine_dir: Optional[Path] = None,
+    base_dir: Optional[Path] = None,
+    log: Optional[Callable[[str], None]] = None,
+    on_quarantine: Optional[Callable[[dict[str, str]], None]] = None,
+) -> None:
+    """Binary-safe scrub of `local` (file or directory).
+
+    Text vs binary is decided by content (NUL byte or failed strict UTF-8 decode). Text files are scrubbed in place
+    with `launch_guards.scrub_colab_tokens`; binary files are never rewritten (clean binaries stay byte-identical, while
+    a token match moves the file to quarantine and raises `BinaryDownloadRefused`). Unreadable files are removed."""
+    root = Path(local)
+    files = _iter_files(root)
+    if not files:
+        return
+    qdir = Path(quarantine_dir) if quarantine_dir is not None else default_quarantine_dir(root)
+    quarantined: list[dict[str, str]] = []
+    for p in files:
+        try:
+            data = p.read_bytes()
+        except OSError:
+            _unlink_quiet(p)
+            continue
+        if not is_binary_bytes(data):
+            raw = io.StringIO(data.decode("utf-8"), newline=None).read()
+            scrubbed = lg.scrub_colab_tokens(raw)
+            if scrubbed != raw:
+                try:
+                    p.write_text(scrubbed, encoding="utf-8", newline="\n")
+                except OSError:
+                    _unlink_quiet(p)
+            continue
+        hit = next((name for name, bpat in BYTE_TOKEN_PATTERNS if bpat.search(data)), None)
+        if hit is None:
+            continue
+        dest = _quarantine_dest(p, root, qdir, base_dir)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(p), str(dest))
+        except OSError:
+            _unlink_quiet(p)
+            raise
+        entry = {"path": str(dest), "source": str(p), "pattern": hit}
+        quarantined.append(entry)
+        if log is not None:
+            log(scrub("BINARY_DOWNLOAD_TOKEN: quarantined %s -> %s (pattern=%s)" % (p, dest, hit)))
+        if on_quarantine is not None:
+            on_quarantine(entry)
+    if quarantined:
+        raise BinaryDownloadRefused(quarantined)
 
 
 def cli_from_env() -> Colab:
-    """The CLI named by COLAB_RUNNER_CLI (a command line split on spaces), else `colab`."""
+    """The CLI named by COLAB_RUNNER_CLI (split with shlex.split), else `colab`."""
     raw = os.environ.get("COLAB_RUNNER_CLI", "").strip()
-    return Colab(raw.split() if raw else ["colab"])
+    parts = shlex.split(raw) if raw else []
+    return Colab(parts or ["colab"])
 
 
 __all__ = [
-    "BackgroundCall", "Colab", "CliResult", "KILL_WAIT_S", "TIMEOUT_RC", "cli_from_env", "env_preamble",
-    "kernel_timeout", "kill_group", "scrub", "scrub_local", "write_cell",
+    "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult", "KILL_WAIT_S",
+    "TIMEOUT_RC", "cli_from_env", "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout",
+    "kill_group", "scrub", "scrub_local", "write_cell",
 ]

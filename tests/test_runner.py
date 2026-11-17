@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from colab_runner.runner import cell_source, parse_poll
 from colab_runner.spend import SpendGuard, neighbour_warning
@@ -47,6 +48,49 @@ class StartTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.run(wall_s=10)
             self.assertEqual(colab.calls, [])
+
+    def test_second_step_reusing_default_job_is_refused_with_job_already_exists(self):
+        from colab_runner.runner import Runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0))
+            step1, _ = make(colab, Path(tmp) / "s1")
+            res1 = step1.run(script="/content/step1.sh", wall_s=3600)
+            self.assertEqual(res1.reason, "done")
+
+            step2 = Runner(colab, "s2", Path(tmp) / "s2" / "out", clock=colab.clock.now, sleep=colab.clock.sleep)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertIn("--job", res2.detail)
+            self.assertEqual(colab.kill_calls, 0)  # step 2 must never kill step 1's job
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+            # Passing a distinct --job succeeds on the same VM.
+            step3 = Runner(
+                colab, "s3", Path(tmp) / "s3" / "out", job="step3", clock=colab.clock.now, sleep=colab.clock.sleep,
+            )
+            res3 = step3.run(script="/content/step3.sh", wall_s=3600)
+            self.assertEqual(res3.reason, "done")
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0), ("s3", 0)])
+
+    def test_second_resident_step_reusing_default_job_is_refused_without_touching_first_job(self):
+        from colab_runner.runner import Runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0), run_log="step1-log\n")
+            step1, _ = make(colab, Path(tmp) / "s1")
+            res1 = step1.run(script="/content/step1.sh", wall_s=3600, resident=True)
+            self.assertEqual(res1.reason, "done")
+
+            step2 = Runner(colab, "s2", Path(tmp) / "s2" / "out", clock=colab.clock.now, sleep=colab.clock.sleep)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600, resident=True)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertEqual(colab.kill_calls, 0)
+            self.assertEqual(colab.restart_calls, 0)
+            self.assertFalse((step2.out_dir / "job.run.out").exists())
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
 
 
 class PollTest(unittest.TestCase):
@@ -365,10 +409,54 @@ class SpendTest(unittest.TestCase):
         self.assertIsNone(guard.check(1000))
         self.assertIn("CAP_GUARD_TRIPPED", guard.check(1100))
 
+    def test_skipped_usage_read_labels_the_nearer_limit_both_orders(self):
+        from colab_runner.colab_cli import CliResult
+        from tests.fakes import FakeClock, guard
+
+        # 1a. Usage read skipped (< MIN_CALL_S left), wall is nearer than ceiling -> "wall".
+        # 1b. Usage read skipped (< MIN_CALL_S left), ceiling is nearer than wall -> "cap".
+        cases = [
+            ("wall", 10.0, guard(max_rate=1.0, cap=50.0, cleanup_bound_s=600.0)),
+            ("cap", 3600.0, guard(max_rate=3.6, cap=1.01, cleanup_bound_s=1000.0)),  # 0.01 CCU / 3.6/h = 10s ceiling
+        ]
+        for want_reason, wall_s, g in cases:
+            with self.subTest(mode="skipped", want=want_reason), tempfile.TemporaryDirectory() as tmp:
+                clock = FakeClock()
+
+                def advance_on_start(kind, fake, clk=clock):
+                    if kind == "start":
+                        clk.advance(9.5)
+
+                colab = FakeColab(clock=clock, on_call=advance_on_start)
+                runner, _ = make(colab, tmp)
+                res = runner.run(script="/content/x.sh", wall_s=wall_s, guard=g)
+                self.assertEqual(res.reason, want_reason)
+                self.assertEqual(colab.usage_count, 0)
+
+        # 2. Failed usage read whose retry is cut short by the nearer limit -> names nearer limit ("wall" vs "cap").
+        for want_reason, wall_s, g in cases:
+            with self.subTest(mode="cut_retry", want=want_reason), tempfile.TemporaryDirectory() as tmp:
+                clock = FakeClock()
+
+                def advance_on_start_6s(kind, fake, clk=clock):
+                    if kind == "start":
+                        clk.advance(6.0)
+
+                colab = FakeColab(
+                    clock=clock,
+                    on_call=advance_on_start_6s,
+                    usage=lambda n: CliResult(1, "", "Connection was lost"),
+                )
+                runner, _ = make(colab, tmp)
+                res = runner.run(script="/content/x.sh", wall_s=wall_s, guard=g)
+                self.assertEqual(res.reason, want_reason)
+                self.assertEqual(colab.usage_count, 1)
+
 
 class CliEnvTest(unittest.TestCase):
     def test_cli_from_env(self):
         import os
+        import sys
         from unittest import mock
 
         from colab_runner.colab_cli import cli_from_env
@@ -377,6 +465,21 @@ class CliEnvTest(unittest.TestCase):
             self.assertEqual(cli_from_env().argv, ["colab"])
         with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": "python fake.py"}):
             self.assertEqual(cli_from_env().argv, ["python", "fake.py"])
+        with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": '"/opt/my tools/colab" --flag \'x y\''}):
+            self.assertEqual(cli_from_env().argv, ["/opt/my tools/colab", "--flag", "x y"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "dir with space"
+            spaced.mkdir()
+            script = spaced / "fake cli.py"
+            script.write_text("import sys\nprint('space-ok', sys.argv[1])\n", encoding="utf-8")
+            cmd = '"%s" "%s"' % (Path(sys.executable).as_posix(), script.as_posix())
+            with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": cmd}):
+                colab = cli_from_env()
+                self.assertEqual(colab.argv, [Path(sys.executable).as_posix(), script.as_posix()])
+                res = colab.run(["--ping"], 10)
+            self.assertEqual(res.rc, 0, res.err)
+            self.assertIn("space-ok --ping", res.out)
 
 
 if __name__ == "__main__":

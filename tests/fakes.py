@@ -10,7 +10,7 @@ from typing import Optional
 from unittest import mock
 
 from colab_runner.colab_cli import CliResult
-from colab_runner.runner import Runner, vm_lib_source
+from colab_runner.runner import VM_DIR, Runner, _scrub_source
 from colab_runner.spend import SpendGuard
 
 USAGE_TEXT = "Current balance: {balance:.2f} compute units\nUsage rate: {rate:.2f} / hr\nActive assignments: {n}\n"
@@ -103,6 +103,8 @@ class FakeColab:
         self.on_call, self.max_polls = on_call, max_polls
         self.jobs_started = 0
         self.vm_has_job = False
+        self.vm_jobs: dict[tuple[str, str], str] = {}
+        self._resident_job_exists: Optional[dict] = None
         self.poll_count = self.start_calls = self.resident_calls = self.stop_calls = 0
         self.kill_calls = self.restart_calls = self.usage_count = self.poll_file_count = 0
         self.envs: list[dict] = []
@@ -148,9 +150,17 @@ class FakeColab:
         action = self.starts.pop(0) if self.starts else "ok"
         if action == "drop":
             return self._fail(timeout)
-        if self.vm_has_job:
+        key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+        run_id = env.get("CR_RUN_ID", "")
+        if self.vm_has_job and not self.vm_jobs:
             out = "CR_ALREADY_RUNNING pid=1\n"
+        elif key in self.vm_jobs:
+            if run_id and self.vm_jobs[key] != run_id:
+                out = "CR_JOB_EXISTS job=%s pid=1\n" % key[1]
+            else:
+                out = "CR_ALREADY_RUNNING pid=1\n"
         else:
+            self.vm_jobs[key] = run_id
             self.vm_has_job = True
             self.jobs_started += 1
             out = "CR_STARTED pid=1\n"
@@ -159,9 +169,22 @@ class FakeColab:
         return CliResult(0, out)
 
     def start_cell(self, session, source, env=None, timeout=60.0) -> FakeCall:
-        self.envs.append(dict(env or {}))
+        env = dict(env or {})
+        self.envs.append(env)
         self._record("resident", session, timeout)
         self.resident_calls += 1
+        key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+        run_id = env.get("CR_RUN_ID", "")
+        if key in self.vm_jobs and run_id and self.vm_jobs[key] != run_id:
+            self._resident_job_exists = {
+                "job": key[1], "error": "JOB_ALREADY_EXISTS", "detail": "CR_JOB_EXISTS job=%s pid=1" % key[1],
+            }
+            self.resident_call = FakeCall(
+                CliResult(0, "CR_JOB_EXISTS job=%s pid=1\nCR_RESIDENT_DONE\n" % key[1]), done=True,
+            )
+            return self.resident_call
+        self._resident_job_exists = None
+        self.vm_jobs[key] = run_id
         self.jobs_started += 1
         self.vm_has_job = True
         self.resident_call = FakeCall(self.resident_result, done=self.resident_done_at_start)
@@ -172,7 +195,10 @@ class FakeColab:
         name = remote.rsplit("/", 1)[-1]
         if name.endswith(".poll.json"):
             self.poll_file_count += 1
-            data = self.vm_poll_file(self.poll_file_count) if callable(self.vm_poll_file) else self.vm_poll_file
+            if self._resident_job_exists is not None:
+                data = self._resident_job_exists
+            else:
+                data = self.vm_poll_file(self.poll_file_count) if callable(self.vm_poll_file) else self.vm_poll_file
             if isinstance(data, dict) and data.get("rc") is not None and self.resident_call is not None:
                 self.resident_call.done = True  # the resident cell ends once the job's status is in
         elif name.endswith(".run.out"):
@@ -181,7 +207,10 @@ class FakeColab:
             data = None
         if data is None:
             return self._fail(timeout, "no such file: %s" % remote)
-        Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+        if isinstance(data, bytes):
+            Path(local).write_bytes(data)
+        else:
+            Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
         return CliResult(0)
 
     def stop(self, session, timeout=120.0) -> CliResult:
@@ -218,6 +247,13 @@ def make(colab: FakeColab, tmp, **kw) -> tuple[Runner, FakeClock]:
     return runner, clock
 
 
+def exec_vm_lib(ns: dict) -> None:
+    """Compile and execute `_scrub_source()` + `colab_runner/vm/lib.py` at its real path for coverage."""
+    exec(compile(_scrub_source(), "<scrub_source>", "exec"), ns)
+    lib = VM_DIR / "lib.py"
+    exec(compile(lib.read_text(encoding="utf-8"), str(lib), "exec"), ns)
+
+
 class VmLog:
     """A VM job log served by the real poll code: vm/lib.py's cr_collect, exec'd here against a temp folder (no pid
     file there, so no process is ever signalled)."""
@@ -226,7 +262,7 @@ class VmLog:
         self.folder, self.job = Path(folder), job
         with mock.patch.dict(os.environ, {"CR_CONTENT": str(self.folder), "CR_JOB": job}):
             self.ns: dict = {"__name__": "cr_vm_lib"}
-            exec(compile(vm_lib_source(), "cr_vm_lib", "exec"), self.ns)
+            exec_vm_lib(self.ns)
 
     def write(self, data: bytes) -> None:
         (self.folder / (self.job + ".run.out")).write_bytes(data)

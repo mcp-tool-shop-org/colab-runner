@@ -16,6 +16,7 @@
 #                       (polyglot: one summary per finished README); default none
 #   CR_POLL_LOG_OFFSET  poll cell: byte offset of the next chunk of the job log
 #   CR_KILL_GRACE_S     kill cell: seconds between SIGTERM and SIGKILL to the job's process group, default 5
+#   CR_RUN_ID           start/resident cell: unique id of the runner invocation (refuses reused CR_JOB)
 import glob
 import json
 import os
@@ -30,6 +31,7 @@ CR_PID_FILE = os.path.join(CR_CONTENT, CR_JOB + ".pid")
 CR_STATUS_FILE = os.path.join(CR_CONTENT, CR_JOB + ".status.json")
 CR_RUN_LOG = os.path.join(CR_CONTENT, CR_JOB + ".run.out")
 CR_POLL_FILE = os.path.join(CR_CONTENT, CR_JOB + ".poll.json")
+CR_RUN_ID_FILE = os.path.join(CR_CONTENT, CR_JOB + ".run_id")
 CR_OUT = os.environ.get("CR_OUT_DIR") or os.path.join(CR_CONTENT, CR_JOB + "_out")
 CR_HB_FILE = os.path.join(CR_OUT, "hold_heartbeat.txt")
 CR_MAX_LOG = 65536
@@ -115,9 +117,14 @@ def cr_units():
 def cr_start_job():
     """Start the job as its own session; idempotent. Returns the line to print."""
     existing = cr_pid()
-    if existing is not None and (cr_alive(existing) or os.path.exists(CR_STATUS_FILE)):
+    want_id = os.environ.get("CR_RUN_ID", "")
+    has_status = os.path.exists(CR_STATUS_FILE)
+    if (existing is not None and (cr_alive(existing) or has_status)) or (want_id and has_status):
+        prev_id = cr_read(CR_RUN_ID_FILE) or ""
+        if want_id and prev_id != want_id:
+            return "CR_JOB_EXISTS job=%s pid=%s" % (CR_JOB, existing if existing is not None else 0)
         return "CR_ALREADY_RUNNING pid=%d" % existing
-    for p in (CR_STATUS_FILE, CR_RUN_LOG, CR_POLL_FILE, CR_HB_FILE):
+    for p in (CR_STATUS_FILE, CR_RUN_LOG, CR_POLL_FILE, CR_HB_FILE, CR_RUN_ID_FILE):
         if os.path.exists(p):
             os.remove(p)
     mode = os.environ.get("CR_MODE", "script")
@@ -133,6 +140,9 @@ def cr_start_job():
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         env=dict(os.environ), start_new_session=True, close_fds=True,
     )
+    with open(CR_RUN_ID_FILE + ".tmp", "w") as fh:
+        fh.write(want_id + "\n")
+    os.replace(CR_RUN_ID_FILE + ".tmp", CR_RUN_ID_FILE)
     with open(CR_PID_FILE + ".tmp", "w") as fh:
         fh.write("%d\n" % proc.pid)
     os.replace(CR_PID_FILE + ".tmp", CR_PID_FILE)

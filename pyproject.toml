@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["ruff==0.14.3", "coverage==7.11.0"]
+dev = ["ruff==0.14.3", "coverage==7.11.0", "setuptools>=68", "wheel"]
 
 [project.urls]
 Repository = "https://github.com/mcp-tool-shop-org/colab-runner"
@@ -35,5 +35,5 @@ extend-exclude = ["colab_runner/window_lib"]
 "colab_runner/vm/*.py" = ["F821"]
 
 [tool.coverage.run]
-# the VM cells run on the VM (and under exec() in tests), where coverage cannot follow them
-omit = ["colab_runner/vm/*", "colab_runner/window_lib/*"]
+# vendored byte for byte (see colab_runner/window_lib/PROVENANCE.md); pinned by test_window_lib
+omit = ["colab_runner/window_lib/*"]
