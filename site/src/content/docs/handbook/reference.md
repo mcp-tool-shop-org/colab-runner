@@ -117,6 +117,11 @@ then, so it stopped it, and the last line is `RUN_END reason=start_failed … co
   `QUARANTINE_ESCAPE`) records it in
   `runner_result.json` as `refusal: {code, message, hint, retryable}`. `retryable` is false for every refusal of the
   caller's input: the same call fails the same way again.
+- A `cap` end is not a refusal, but it records its trip the same way, in `runner_result.json` as
+  `cap_trip: {code, message, hint, retryable}`, and writes the hint on stderr after `RUN_END`. The code is the trip's
+  leading `CODE:` (`CAP_GUARD_TRIPPED`, `COLAB_USAGE_PARSE_FAILED`, `RATE_ABOVE_MAX` or `ASSIGNMENTS_UNREADABLE`), or
+  `CAP_CEILING_REACHED` when the clock reached the ceiling before the guard tripped. `detail` keeps the trip string.
+  Every other end has `cap_trip: null`.
 - Every code and its hint is in `colab_runner/errors.py` (`CODES`).
 
 **Log levels** (`run` and `stop`): `--quiet` writes only the end lines (`RUN_END`, `STOP_END` or `STOP_NOTHING`, and a
@@ -181,6 +186,11 @@ again.
 | `JOB_ALREADY_EXISTS` | no | pass a distinct --job for each step that shares a --content directory |
 | `BINARY_DOWNLOAD_TOKEN` | no | keep tokens out of the job's binary outputs; delete the quarantine named in runner_result.json and never ship it |
 | `QUARANTINE_ESCAPE` | no | report it: the file was removed rather than moved outside its quarantine; pass a plain --out-dir (or a download path) without `..` |
+| `CAP_GUARD_TRIPPED` | no | the window's priced spend reached its ceiling (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
+| `CAP_CEILING_REACHED` | no | the clock reached the cap's ceiling at the priced rate (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
+| `RATE_ABOVE_MAX` | no | the window's stable rate went above --max-rate: pass the card's real rate as --max-rate (and a --cap to match), and --pre-open-rate with --pre-open-assignments so a neighbour's rate is not counted as this one's |
+| `ASSIGNMENTS_UNREADABLE` | yes | `colab usage` gave no readable Active assignments count (or a stable rate below the floor) 3 times in a row: check `colab usage` by hand, then run the window again |
+| `COLAB_USAGE_PARSE_FAILED` | yes | `colab usage` could not be read or parsed, and the guard never prices a window it cannot read: check `colab usage` by hand (sign-in, network), then run the window again |
 | `UNEXPECTED_ERROR` | no | read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop --out-dir D`; rerun with --debug for the traceback |
 
 ## Environment variables
