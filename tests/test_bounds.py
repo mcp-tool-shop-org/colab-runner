@@ -22,7 +22,7 @@ ONE_CLAMPED_STEP_OVERRUN_S = REACHED_EPS_S
 
 
 class CliRefusalTest(unittest.TestCase):
-    """Every bad value is refused by name (REFUSED: <CODE>, exit 3), with zero fake calls made."""
+    """Every bad value is refused by name (REFUSED: <CODE>, exit 1), with zero fake calls made."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -79,7 +79,7 @@ class CliRefusalTest(unittest.TestCase):
             for value in values:
                 with self.subTest(flag=flag, value=value):
                     code, err, colab = self.call(self.with_flag(flag, value))
-                    self.assertEqual(code, 3, err)
+                    self.assertEqual(code, 1, err)
                     self.assertIn("REFUSED: %s:" % code_name, err)
                     self.assertEqual(colab.calls, [])
 
@@ -91,19 +91,19 @@ class CliRefusalTest(unittest.TestCase):
                 i = args.index(flag)
                 del args[i:i + 2]
                 code, err, colab = self.call(args)
-                self.assertEqual((code, colab.calls), (3, []))
+                self.assertEqual((code, colab.calls), (1, []))
                 self.assertIn("REFUSED: %s:" % code_name, err)
 
     def test_a_resident_run_needs_the_resident_cleanup_bound(self):
         code, err, colab = self.call(self.base() + ["--resident"])  # 600 s is below the resident bound (966 s)
-        self.assertEqual((code, colab.calls), (3, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("REFUSED: CLEANUP_BOUND_TOO_SMALL:", err)
 
     def test_bad_env_entries_are_refused_without_echoing_a_value(self):
         for entry, code_name in (("1BAD=x", "ENV_INVALID"), ("=v", "ENV_INVALID"), ("CR_TEST_SURELY_UNSET", "ENV_UNSET")):
             with self.subTest(entry=entry):
                 code, err, colab = self.call(self.base() + ["--env", entry])
-                self.assertEqual((code, colab.calls), (3, []))
+                self.assertEqual((code, colab.calls), (1, []))
                 self.assertIn("REFUSED: %s:" % code_name, err)
                 self.assertNotIn("=x", err)
 
@@ -111,7 +111,7 @@ class CliRefusalTest(unittest.TestCase):
         Path(self.out).mkdir()
         (Path(self.out) / "stop_confirmed.json").write_text("{}")  # a stale marker from an earlier run
         code, err, colab = self.call(self.base())
-        self.assertEqual((code, colab.calls), (3, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("REFUSED: OUT_DIR_NOT_EMPTY:", err)
 
     def test_the_old_rate_flag_no_longer_stands_in_for_max_rate(self):
@@ -298,7 +298,7 @@ class Fix2BoundsTest(unittest.TestCase):
             with self.subTest(extra=extra):
                 colab = FakeColab(polls=lambda n, env: rec(rc=0))
                 code, text = cli(self.base + ["--script", "/c/x.sh"] + extra, colab)
-                self.assertEqual((code, colab.calls), (3, []))
+                self.assertEqual((code, colab.calls), (1, []))
                 self.assertIn("REFUSED: PRE_OPEN_UNPAIRED:", text)
 
     def test_an_unpaired_pre_open_value_is_refused_at_the_api(self):
@@ -341,7 +341,7 @@ class Fix2BoundsTest(unittest.TestCase):
     def test_a_hold_job_refuses_a_zero_heartbeat_and_a_script_job_does_not_care(self):
         colab = FakeColab(polls=lambda n, env: rec(rc=0))
         code, text = cli(self.base + ["--hold-s", "60", "--heartbeat-s", "0"], colab)
-        self.assertEqual((code, colab.calls), (3, []))
+        self.assertEqual((code, colab.calls), (1, []))
         self.assertIn("REFUSED: HEARTBEAT_INVALID:", text)
         code, text = cli(self.base + ["--script", "/c/x.sh", "--heartbeat-s", "0"], colab)
         self.assertEqual(code, 0, text)

@@ -92,7 +92,9 @@ class FakeColab:
     file keeps serving the other run's last record (stale), and the refusal goes to `<job>.refused.json`, which
     appears only after `refused_after` downloads of it have found nothing (the refused cell has not run yet; None:
     it never runs).
-    With a clock, a lost or failed call costs its whole timeout, as a hung call does. Every call is recorded in
+    A kill for a job another run holds answers CR_NOT_OURS, as the VM's kill cell does.
+    With a clock, a lost or failed call costs its whole timeout, as a hung call does; a download of a file that is
+    not there fails at once, as the real CLI's does. Every call is recorded in
     `calls` and `events`; `on_call(kind, fake)` runs at each call (tests raise or signal from it)."""
 
     def __init__(self, polls=None, starts=None, stops=None, vm_poll_file=None, run_log=None, usage=None,
@@ -156,6 +158,10 @@ class FakeColab:
         if "CR_KILL_GRACE_S" in env:
             self._record("kill", session, timeout)
             self.kill_calls += 1
+            key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+            run_id = env.get("CR_RUN_ID", "")
+            if run_id and key in self.vm_jobs and self.vm_jobs[key] != run_id:
+                return CliResult(0, "CR_NOT_OURS job=%s\n" % key[1])  # vm/lib.py cr_kill_job: signals nothing
             return CliResult(0, "CR_KILLED pid=1\n")
         if "CR_POLL_LOG_OFFSET" in env:
             self._record("poll", session, timeout)
@@ -245,7 +251,8 @@ class FakeColab:
         else:
             data = None
         if data is None:
-            return self._fail(timeout, "no such file: %s" % remote)
+            # a real `colab download` of a missing file fails at once: it does not use up the call's timeout
+            return CliResult(1, "", "no such file: %s" % remote)
         if isinstance(data, bytes):
             Path(local).write_bytes(data)
         else:

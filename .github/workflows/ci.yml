@@ -70,3 +70,15 @@ jobs:
       - name: Atlas check
         if: matrix.python-version == '3.12'
         run: npx --yes @dogfood-lab/atlas@1.26.0 check
+
+      # Dependency scan (pip-audit, pinned). colab-runner has no runtime dependencies (pyproject: dependencies = []), so
+      # this audits the dev dependencies and whatever installing the package pulled in: the environment as
+      # `pip install -e ".[dev]"` left it, frozen before pip-audit itself is installed (pip and the editable package
+      # are not in the freeze). An advisory fails the step; it is never ignored or skipped here.
+      - name: Dependency audit (pip-audit)
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip freeze --exclude-editable > "$RUNNER_TEMP/audit-requirements.txt"
+          cat "$RUNNER_TEMP/audit-requirements.txt"
+          python -m pip install "pip-audit==2.10.1"
+          python -m pip_audit --strict --no-deps --disable-pip --progress-spinner off -r "$RUNNER_TEMP/audit-requirements.txt"

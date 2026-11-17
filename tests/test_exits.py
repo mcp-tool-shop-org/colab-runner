@@ -13,7 +13,7 @@ from unittest import mock
 
 from colab_runner.__main__ import main
 from colab_runner.runner import TRIPS
-from tests.fakes import FakeColab, guard, make, rec
+from tests.fakes import FakeClock, FakeColab, guard, make, rec
 
 POSIX = os.name == "posix"
 
@@ -247,12 +247,14 @@ class StopCommandTest(unittest.TestCase):
             self.assertEqual((code, colab.calls), (0, []))
             self.assertIn("STOP_NOTHING", out)
 
-    def test_a_stop_that_fails_keeps_the_marker_and_exits_1(self):
+    def test_a_stop_that_fails_keeps_the_marker_and_exits_2(self):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / "session_open.json").write_text(json.dumps({"session": "s1"}))
             colab = FakeColab(stops=[1, 1, 1])
-            code, _, _ = self.call(tmp, colab)
-            self.assertEqual(code, 1)
+            code, out, err = self.call(tmp, colab)
+            self.assertEqual(code, 2)
+            self.assertIn("STOP_END session=s1 confirmed=False", out)
+            self.assertIn("hint: run `python -m colab_runner stop --out-dir D` again", err)
             self.assertTrue((Path(tmp) / "session_open.json").is_file())
             self.assertTrue((Path(tmp) / "stop_pending.json").is_file())
 
@@ -262,7 +264,7 @@ class StopCommandTest(unittest.TestCase):
                 (Path(tmp) / "session_open.json").write_text(body)
                 colab = FakeColab()
                 code, _, err = self.call(tmp, colab)
-                self.assertEqual((code, colab.calls), (3, []))
+                self.assertEqual((code, colab.calls), (1, []))
                 self.assertIn("REFUSED: SESSION_MARKER_INVALID", err)
 
 
@@ -299,7 +301,7 @@ class FailuresAreFailuresTest(unittest.TestCase):
     def test_the_cli_exits_non_zero_for_failed_and_oom(self):
         base = ["run", "--session", "s", "--script", "/content/x.sh", "--wall-s", "3600", "--max-rate", "1",
                 "--cap", "5", "--cleanup-bound-s", "600"]
-        for rc, want in ((0, 0), (1, 1), (137, 1)):
+        for rc, want in ((0, 0), (1, 2), (137, 2)):
             with self.subTest(rc=rc), tempfile.TemporaryDirectory() as tmp:
                 colab = FakeColab(polls=lambda n, env, rc=rc: rec(rc=rc))
                 out = io.StringIO()
@@ -308,6 +310,138 @@ class FailuresAreFailuresTest(unittest.TestCase):
                     code = main(base + ["--out-dir", str(Path(tmp) / "out")])
                 self.assertEqual(code, want, out.getvalue())
                 self.assertIn("reason=%s" % {0: "done", 1: "failed", 137: "oom"}[rc], out.getvalue())
+
+
+class ExitCodeTest(unittest.TestCase):
+    """Ship gate (B2): the org convention. 0 ok; 1 a refusal or a usage error (no marker was written); 2 a runtime
+    error (any end but done, RUN_ERROR, a failed stop); 3 partial success (done, but the stop was not confirmed)."""
+
+    BASE = ["--session", "s", "--script", "/content/x.sh", "--wall-s", "36000", "--max-rate", "1", "--cap", "50",
+            "--cleanup-bound-s", "1000"]
+
+    def cli(self, argv, colab):
+        """main(argv) on `colab`, its Runner on a fake clock; returns (code, stdout, stderr)."""
+        from colab_runner.runner import Runner
+
+        clock = colab.clock = colab.clock or FakeClock()
+
+        def runner(*a, **kw):
+            return Runner(*a, clock=clock.now, sleep=clock.sleep, **kw)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+                mock.patch("colab_runner.__main__.Runner", side_effect=runner), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = main(argv)
+            except SystemExit as exc:  # argparse's usage errors
+                code = exc.code
+        return code, out.getvalue(), err.getvalue()
+
+    def run_args(self, tmp, *extra):
+        """run with the base flags, a flag in `extra` replacing the base's."""
+        base = list(self.BASE)
+        for flag in extra[::2]:
+            if flag in base:
+                i = base.index(flag)
+                del base[i:i + 2]
+        return ["run"] + base + ["--out-dir", str(Path(tmp) / "out")] + list(extra)
+
+    def test_every_end_reason_has_its_exit_code(self):
+        extra = {"wall": ["--wall-s", "600"], "cap": ["--max-rate", "10", "--cap", "5"]}
+        for reason, (fake_kw, _) in scenarios().items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp:
+                code, out, err = self.cli(self.run_args(tmp, *extra.get(reason, [])), FakeColab(**fake_kw))
+                if reason == "error":
+                    self.assertEqual(code, 2, err)
+                    self.assertIn("RUN_ERROR: UNEXPECTED_ERROR: RuntimeError: simulated crash mid-loop", err)
+                    self.assertIn("hint: read runner_result.json", err)
+                    self.assertEqual(out, "")
+                    continue
+                self.assertEqual(code, 0 if reason == "done" else 2, (out, err))
+                self.assertIn("RUN_END reason=%s " % reason, out)
+                self.assertIn("stopped=True", out)
+
+    def test_an_interrupted_run_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, _ = self.cli(self.run_args(tmp), FakeColab(on_call=signal_at_second_poll(signal.SIGTERM)))
+        self.assertEqual(code, 2)
+        self.assertIn("RUN_END reason=interrupted", out)
+
+    def test_done_whose_stop_failed_is_partial_success_3(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, err = self.cli(self.run_args(tmp), FakeColab(polls=lambda n, env: rec(rc=0), stops=[1, 1, 1]))
+            self.assertTrue((Path(tmp) / "out" / "session_open.json").is_file())
+        self.assertEqual(code, 3)
+        self.assertIn("RUN_END reason=done rc=0 stopped=False", out)
+        self.assertIn("hint: run `python -m colab_runner stop --out-dir D` again", err)
+
+    def test_done_with_its_marker_still_there_is_3(self):
+        from colab_runner.__main__ import run_exit_code
+        from colab_runner.runner import RunResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(run_exit_code(RunResult("done", stopped=True), Path(tmp)), 0)
+            (Path(tmp) / "session_open.json").write_text("{}")
+            self.assertEqual(run_exit_code(RunResult("done", stopped=True), Path(tmp)), 3)
+            self.assertEqual(run_exit_code(RunResult("wall", stopped=True), Path(tmp)), 2)
+
+    def test_a_trip_whose_stop_failed_is_a_runtime_error_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, err = self.cli(self.run_args(tmp), FakeColab(polls=lambda n, env: rec(alive=False),
+                                                                     stops=[1, 1, 1]))
+        self.assertEqual(code, 2)
+        self.assertIn("RUN_END reason=dead rc=None stopped=False", out)
+        self.assertIn("hint: run `python -m colab_runner stop --out-dir D` again", err)
+
+    def test_a_reused_job_ends_start_failed_exit_2_with_its_code_and_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0))
+            self.assertEqual(self.cli(self.run_args(Path(tmp) / "a"), colab)[0], 0)
+            code, out, err = self.cli(self.run_args(Path(tmp) / "b"), colab)
+            written = json.loads((Path(tmp) / "b" / "out" / "runner_result.json").read_text())
+        self.assertEqual(code, 2)
+        self.assertIn("RUN_END reason=start_failed rc=None stopped=True code=JOB_ALREADY_EXISTS", out)
+        self.assertIn("hint: pass a distinct --job", err)
+        self.assertEqual((written["refusal"]["code"], written["refusal"]["retryable"]), ("JOB_ALREADY_EXISTS", False))
+
+    def test_a_refusal_exits_1_with_its_code_and_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab()
+            code, out, err = self.cli(self.run_args(tmp, "--wall-s", "0"), colab)
+        self.assertEqual((code, out, colab.calls), (1, "", []))
+        first, second = err.splitlines()[:2]
+        self.assertTrue(first.startswith("REFUSED: WALL_INVALID: "), first)
+        self.assertEqual(second, "hint: pass --wall-s as a finite number of seconds greater than 0")
+
+    def test_usage_errors_exit_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for argv in (["run", "--out-dir", str(Path(tmp) / "o")], ["run"] + self.BASE[:-2],
+                         ["stop"], ["stop", "--out-dir", tmp, "--nope"], ["nope"],
+                         ["run"] + self.BASE + ["--out-dir", tmp, "--quiet", "--debug"]):
+                with self.subTest(argv=argv):
+                    colab = FakeColab()
+                    code, _, err = self.cli(argv, colab)
+                    self.assertEqual((code, colab.calls), (1, []), err)
+
+    def test_stop_exit_codes(self):
+        from colab_runner.runner import Runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "session_open.json"
+            self.assertEqual(self.cli(["stop", "--out-dir", tmp], FakeColab())[0], 0)  # nothing to stop
+            marker.write_text(json.dumps({"session": "s1"}))
+            self.assertEqual(self.cli(["stop", "--out-dir", tmp], FakeColab(stops=[1, 1, 1]))[0], 2)  # failed
+            self.assertEqual(self.cli(["stop", "--out-dir", tmp], FakeColab())[0], 0)  # confirmed
+            marker.write_text("{}")
+            code, _, err = self.cli(["stop", "--out-dir", tmp], FakeColab())  # a bad marker
+            self.assertEqual(code, 1)
+            self.assertIn("hint: stop the session by name", err)
+            marker.write_text(json.dumps({"session": "s1"}))
+            with mock.patch.object(Runner, "stop_session", side_effect=OSError("disk gone")):
+                code, _, err = self.cli(["stop", "--out-dir", tmp], FakeColab())  # an error during the stop
+            self.assertEqual(code, 2)
+            self.assertIn("STOP_ERROR: UNEXPECTED_ERROR: OSError: disk gone", err)
 
 
 if __name__ == "__main__":
