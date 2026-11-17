@@ -1,25 +1,30 @@
 import type { SiteConfig } from '@mcptoolshop/site-theme';
 
 export const config: SiteConfig = {
-  title: 'my-package',
-  description: 'A tool by mcp-tool-shop',
-  logoBadge: 'MP',
-  brandName: 'my-package',
+  title: 'Colab Runner',
+  description:
+    'The studio’s shared runner for paid Google Colab windows: a detached job, a spending cap, token scrubbing, and a session that always gets stopped.',
+  logoBadge: 'CR',
+  brandName: 'colab-runner',
   repoUrl: 'https://github.com/mcp-tool-shop-org/colab-runner',
-  npmUrl: 'https://www.npmjs.com/package/my-package',
-  footerText: 'MIT Licensed — built by <a href="https://github.com/mcp-tool-shop-org" style="color:var(--color-muted);text-decoration:underline">mcp-tool-shop-org</a>',
+  footerText:
+    'MIT Licensed — built by <a href="https://mcp-tool-shop.github.io/" style="color:var(--color-muted);text-decoration:underline">MCP Tool Shop</a>',
 
   hero: {
-    badge: 'Open source',
-    headline: 'my-package',
-    headlineAccent: 'by mcp-tool-shop.',
-    description: 'A tool by mcp-tool-shop',
-    primaryCta: { href: '#usage', label: 'Get started' },
+    badge: '0.1.0 · Python 3.11+',
+    headline: 'Colab Runner',
+    headlineAccent: 'paid windows that always stop.',
+    description:
+      'Start a job on a Colab VM that outlives the rig, watch it inside a spending cap, scrub every token from what comes back, and stop the session on every exit. One shared runner instead of a copy in every lane.',
+    primaryCta: { href: 'handbook/getting-started/', label: 'Get started' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
-      { label: 'Install', code: 'npm install my-package' },
-      { label: 'Import', code: "import { ... } from 'my-package'" },
-      { label: 'Use', code: '// replace with a compelling one-liner' },
+      { label: 'Install', code: 'pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"' },
+      {
+        label: 'Run',
+        code: 'python -m colab_runner run --session S --out-dir D --script /content/job.sh --wall-s 3600 --max-rate R --cap C --cleanup-bound-s 600',
+      },
+      { label: 'Recover', code: 'python -m colab_runner stop --out-dir D' },
     ],
   },
 
@@ -27,12 +32,46 @@ export const config: SiteConfig = {
     {
       kind: 'features',
       id: 'features',
-      title: 'Features',
-      subtitle: 'What makes my-package useful.',
+      title: 'What it does',
+      subtitle: 'The code every Colab lane used to carry its own copy of.',
       features: [
-        { title: 'Fast', desc: 'Describe what makes my-package fast or efficient.' },
-        { title: 'Typed', desc: 'Describe the type safety or schema guarantees.' },
-        { title: 'Tested', desc: 'Describe the test coverage or reliability story.' },
+        {
+          title: 'A detached job',
+          desc: 'The job runs on the VM in its own process, with a status file and a log, so a lost rig-side process never loses the work.',
+        },
+        {
+          title: 'A spending cap',
+          desc: 'The window is priced from the card’s rate, and the run ends at the cap with room reserved for its own cleanup.',
+        },
+        {
+          title: 'Stall guards',
+          desc: 'A setup that stops growing, progress that stops moving, a dead job or a poll blackout each end the run instead of billing on.',
+        },
+        {
+          title: 'A stop on every exit',
+          desc: 'Once it owns the session it stops it, and a marker stays until the stop is confirmed, so `stop` can always finish the job.',
+        },
+        {
+          title: 'Token scrubbing',
+          desc: 'Every line and downloaded text file is scrubbed. A binary holding a token is quarantined unchanged and the download is refused.',
+        },
+        {
+          title: 'Structured refusals',
+          desc: 'Every refusal and error has a code, a message and a hint, and the exit codes follow the org convention.',
+        },
+      ],
+    },
+    {
+      kind: 'data-table',
+      id: 'exits',
+      title: 'Exit codes',
+      subtitle: 'For `run` and `stop`.',
+      columns: ['Exit', 'Meaning'],
+      rows: [
+        ['0', 'Done, and the session’s stop confirmed'],
+        ['1', 'A refusal or a usage error, before the session marker was written'],
+        ['2', 'Any other end, or an error; stop the session if its marker is still there'],
+        ['3', 'Done, but the stop was not confirmed: run `stop --out-dir D`'],
       ],
     },
     {
@@ -40,8 +79,14 @@ export const config: SiteConfig = {
       id: 'usage',
       title: 'Usage',
       cards: [
-        { title: 'Install', code: 'npm install my-package' },
-        { title: 'Basic usage', code: "import { ... } from 'my-package';\n\n// replace with real usage" },
+        {
+          title: 'A window',
+          code: 'colab new -s my-window\npython -m colab_runner run --session my-window --out-dir runs/w1 \\n  --script /content/train.sh --wall-s 3600 \\n  --max-rate 13.5 --cap 15 --cleanup-bound-s 600',
+        },
+        {
+          title: 'After a lost rig',
+          code: '# session_open.json is still in the out dir\npython -m colab_runner stop --out-dir runs/w1',
+        },
       ],
     },
   ],

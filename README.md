@@ -1,7 +1,22 @@
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.zh.md">中文</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.hi.md">हिन्दी</a> | <a href="README.it.md">Italiano</a> | <a href="README.pt-BR.md">Português (BR)</a>
+</p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mcp-tool-shop-org/brand/main/logos/colab-runner/readme.png" alt="Colab Runner" width="400">
+</p>
+
+<p align="center">
+  <a href="https://github.com/mcp-tool-shop-org/colab-runner/actions/workflows/ci.yml"><img src="https://github.com/mcp-tool-shop-org/colab-runner/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
+</p>
+
 # colab-runner
 
 The studio's shared runner for paid Google Colab windows: one place for the code every Colab lane
-used to carry its own copy of.
+used to carry its own copy of. It starts a job on a Colab VM in a process that outlives the rig, watches it
+inside a spending cap, scrubs tokens from everything it brings back, and always tries to stop the session.
 
 **Status: 0.1.0.** The detached runner (item 1 below) is built. Items 2 to 5 are not built yet.
 
@@ -18,6 +33,34 @@ used to carry its own copy of.
    so a kit checks its assumptions against them and a wrong one becomes a refusal code, not a paid surprise.
 
 Lanes vendor a pinned release of this repo, one lane per pull request.
+
+## Install
+
+colab-runner is not on PyPI. A lane vendors a pinned release, or installs it from the tag:
+
+```bash
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+```
+
+- **Python** 3.11 or later. The package has no runtime dependencies.
+- **The `colab` command line** (Google's Colab CLI), signed in to the account that pays for the window. colab-runner
+  calls it; it does not install it or sign in for you. `COLAB_RUNNER_CLI` points at another command line (below).
+- **Platforms:** CI runs on Linux with Python 3.11 and 3.12. The studio also runs it from Windows.
+
+## Quick start
+
+The lane opens the session, then hands it to `run`, which ends by stopping it:
+
+```bash
+colab new -s my-window            # the lane's own step: open the session (plus the card's flags)
+python -m colab_runner run --session my-window --out-dir runs/w1   --script /content/train.sh --wall-s 3600   --max-rate 13.5 --cap 15 --cleanup-bound-s 600
+echo "exit $?"                    # 0 done and stopped; see the exit codes below
+```
+
+The figures are placeholders. Set `--max-rate` to the card's expected units per hour and `--cap` to the window's
+budget in compute units (see Pricing).
+
+`python -m colab_runner --help` lists every command; `run --help` lists every flag.
 
 ## Using it from a lane (0.1.0)
 
@@ -61,18 +104,23 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
 | Exit | Meaning | `run` | `stop` |
 | --- | --- | --- | --- |
 | 0 | ok | `done`, and the stop confirmed | a confirmed stop, or nothing to stop |
-| 1 | user error | a refusal (`REFUSED: …`) or a usage error; no marker was written | a marker that names no session (`SESSION_MARKER_INVALID`), or a usage error |
+| 1 | user error | a refusal (`REFUSED: …`) or a usage error, before the session marker was written | a marker that names no session (`SESSION_MARKER_INVALID`), or a usage error |
 | 2 | runtime error | any end but `done` (whatever its stop did), or `RUN_ERROR` | a stop that was not confirmed, or `STOP_ERROR` |
 | 3 | partial success | `done`, but the stop was not confirmed: `session_open.json` is still there | (not used) |
 
 On 3 the job's work is in the out dir, and the session must still be stopped with `python -m colab_runner stop --out-dir D`.
+
+A refusal after the marker is not an exit 1. A reused `--job`, for one, ends exit 2: the runner owned the session by
+then, so it stopped it, and the last line is `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` with a hint naming
+`--job` on stderr. No `REFUSED:` line is written.
 
 **Refusals and errors** have a code, a message and a hint, and every line is scrubbed:
 - A refusal writes `REFUSED: CODE: message` as the first line on stderr, then `hint: …` (what to change).
 - An error during a run writes `RUN_ERROR: CODE: message`, then `hint: …`. The code is the error's own
   (`BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`), or `UNEXPECTED_ERROR` with the exception's type in the message. `stop` writes `STOP_ERROR: …`
   the same way.
-- A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`) records it in
+- A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`,
+  `QUARANTINE_ESCAPE`) records it in
   `runner_result.json` as `refusal: {code, message, hint, retryable}`. `retryable` is false for every refusal of the
   caller's input: the same call fails the same way again.
 - Every code and its hint is in `colab_runner/errors.py` (`CODES`).
@@ -160,6 +208,32 @@ library's rate and cap functions. A stable rate above `--max-rate` trips `RATE_A
 priced at `--max-rate`: it is a floor, not a loose ceiling. Set it to the card's expected rate; a loose `--max-rate` trips the cap
 early. The account balance is recorded and never prices the window.
 
+## Security and threat model
+
+**What it touches.**
+- The Colab session the lane names: it uploads cell files, starts and kills the job it started, downloads the files
+  it was asked for, and stops the session. It signals no process another run started (`CR_NOT_OURS`).
+- The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the rig. A bare `Colab.download`
+  with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
+- The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
+
+**What it does not touch.** No files outside the out dir, its quarantine and the temp quarantine. No other Colab
+session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab`
+command line and never changes them.
+
+**Network.** Only through the `colab` command line, to Google Colab. colab-runner opens no connection of its own.
+
+**Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
+and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the
+download is refused (above). The lane deletes the quarantine and never ships it.
+
+**Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
+elevation.
+
+**No telemetry.** colab-runner collects and sends nothing.
+
+Reporting a vulnerability: see [SECURITY.md](SECURITY.md).
+
 ## What is not here
 
 No bucket names, account names, launch wrappers or local paths. A caller passes those by flag or
@@ -174,3 +248,7 @@ bash verify.sh
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+<p align="center">Built by <a href="https://mcp-tool-shop.github.io/">MCP Tool Shop</a></p>

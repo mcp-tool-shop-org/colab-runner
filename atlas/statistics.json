@@ -35,7 +35,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "colab_runner",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 2,
       "rebaseline": null
     },
     {
@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     }
   ],
@@ -80,18 +80,23 @@
         "path": ".gitattributes"
       },
       {
-        "commits": 1,
-        "lines": 72,
+        "commits": 3,
+        "lines": 96,
         "path": ".github/workflows/ci.yml"
       },
       {
         "commits": 1,
-        "lines": 9,
+        "lines": 55,
+        "path": ".github/workflows/pages.yml"
+      },
+      {
+        "commits": 2,
+        "lines": 13,
         "path": ".gitignore"
       },
       {
-        "commits": 3,
-        "lines": 102,
+        "commits": 5,
+        "lines": 289,
         "path": "CHANGELOG.md"
       },
       {
@@ -100,13 +105,28 @@
         "path": "LICENSE"
       },
       {
-        "commits": 3,
-        "lines": 158,
+        "commits": 5,
+        "lines": 343,
         "path": "README.md"
       },
       {
-        "commits": 2,
-        "lines": 93,
+        "commits": 1,
+        "lines": 49,
+        "path": "SCORECARD.md"
+      },
+      {
+        "commits": 1,
+        "lines": 37,
+        "path": "SECURITY.md"
+      },
+      {
+        "commits": 1,
+        "lines": 84,
+        "path": "SHIP_GATE.md"
+      },
+      {
+        "commits": 4,
+        "lines": 139,
         "path": "atlas/README.md"
       },
       {
@@ -115,18 +135,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 2,
-        "lines": 217,
+        "commits": 4,
+        "lines": 319,
         "path": "atlas/page.json"
       },
       {
-        "commits": 2,
-        "lines": 314,
+        "commits": 4,
+        "lines": 562,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 2,
-        "lines": 900,
+        "commits": 4,
+        "lines": 2422,
         "path": "atlas/structure.json"
       },
       {
@@ -140,18 +160,23 @@
         "path": "colab_runner/__init__.py"
       },
       {
-        "commits": 2,
-        "lines": 188,
+        "commits": 4,
+        "lines": 528,
         "path": "colab_runner/__main__.py"
       },
       {
-        "commits": 2,
-        "lines": 591,
+        "commits": 4,
+        "lines": 1169,
         "path": "colab_runner/colab_cli.py"
       },
       {
         "commits": 2,
-        "lines": 992,
+        "lines": 232,
+        "path": "colab_runner/errors.py"
+      },
+      {
+        "commits": 4,
+        "lines": 1502,
         "path": "colab_runner/runner.py"
       },
       {
@@ -165,8 +190,8 @@
         "path": "colab_runner/vm/kill.py"
       },
       {
-        "commits": 2,
-        "lines": 293,
+        "commits": 3,
+        "lines": 349,
         "path": "colab_runner/vm/lib.py"
       },
       {
@@ -175,8 +200,8 @@
         "path": "colab_runner/vm/poll.py"
       },
       {
-        "commits": 2,
-        "lines": 54,
+        "commits": 3,
+        "lines": 89,
         "path": "colab_runner/vm/resident.py"
       },
       {
@@ -210,9 +235,79 @@
         "path": "colab_runner/window_lib/remote_runner.py"
       },
       {
-        "commits": 4,
-        "lines": 49,
+        "commits": 5,
+        "lines": 55,
         "path": "pyproject.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 36,
+        "path": "site/astro.config.mjs"
+      },
+      {
+        "commits": 1,
+        "lines": 5818,
+        "path": "site/package-lock.json"
+      },
+      {
+        "commits": 1,
+        "lines": 18,
+        "path": "site/package.json"
+      },
+      {
+        "commits": 1,
+        "lines": 5,
+        "path": "site/public/favicon.svg"
+      },
+      {
+        "commits": 1,
+        "lines": 0,
+        "path": "site/src/assets/logo.png"
+      },
+      {
+        "commits": 1,
+        "lines": 7,
+        "path": "site/src/content.config.ts"
+      },
+      {
+        "commits": 1,
+        "lines": 21,
+        "path": "site/src/content/docs/handbook/getting-started.md"
+      },
+      {
+        "commits": 1,
+        "lines": 16,
+        "path": "site/src/content/docs/handbook/index.md"
+      },
+      {
+        "commits": 1,
+        "lines": 14,
+        "path": "site/src/content/docs/handbook/reference.md"
+      },
+      {
+        "commits": 1,
+        "lines": 35,
+        "path": "site/src/pages/index.astro"
+      },
+      {
+        "commits": 1,
+        "lines": 48,
+        "path": "site/src/site-config.ts"
+      },
+      {
+        "commits": 1,
+        "lines": 3,
+        "path": "site/src/styles/global.css"
+      },
+      {
+        "commits": 1,
+        "lines": 5,
+        "path": "site/src/styles/starlight-custom.css"
+      },
+      {
+        "commits": 1,
+        "lines": 5,
+        "path": "site/tsconfig.json"
       },
       {
         "commits": 1,
@@ -225,19 +320,29 @@
         "path": "tests/fake_colab.py"
       },
       {
-        "commits": 2,
-        "lines": 332,
+        "commits": 4,
+        "lines": 447,
         "path": "tests/fakes.py"
       },
       {
-        "commits": 1,
-        "lines": 365,
+        "commits": 3,
+        "lines": 397,
         "path": "tests/test_bounds.py"
       },
       {
-        "commits": 1,
-        "lines": 314,
+        "commits": 2,
+        "lines": 404,
+        "path": "tests/test_errors.py"
+      },
+      {
+        "commits": 3,
+        "lines": 606,
         "path": "tests/test_exits.py"
+      },
+      {
+        "commits": 2,
+        "lines": 510,
+        "path": "tests/test_followups.py"
       },
       {
         "commits": 1,
@@ -251,32 +356,37 @@
       },
       {
         "commits": 2,
-        "lines": 310,
+        "lines": 524,
+        "path": "tests/test_pr4_fix1.py"
+      },
+      {
+        "commits": 4,
+        "lines": 365,
         "path": "tests/test_resident.py"
       },
       {
-        "commits": 2,
-        "lines": 600,
+        "commits": 4,
+        "lines": 1027,
         "path": "tests/test_runner.py"
       },
       {
-        "commits": 1,
-        "lines": 31,
+        "commits": 3,
+        "lines": 39,
         "path": "tests/test_scaffold.py"
       },
       {
-        "commits": 2,
-        "lines": 1073,
+        "commits": 4,
+        "lines": 1705,
         "path": "tests/test_tokens.py"
       },
       {
-        "commits": 2,
-        "lines": 535,
+        "commits": 3,
+        "lines": 725,
         "path": "tests/test_vm_cells.py"
       },
       {
-        "commits": 2,
-        "lines": 90,
+        "commits": 3,
+        "lines": 123,
         "path": "tests/test_window_lib.py"
       },
       {
@@ -290,13 +400,13 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-17T20:25:03.555Z",
+  "generatedAt": "2026-11-17T21:38:18.287Z",
   "generatedFrom": {
-    "commit": "d5a53737449f1b9d76677dbc7ca888cd0669813d"
+    "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 11.25,
+    "appliedChangesetLimit": 16,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -305,16 +415,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-17T14:49:21-05:00",
-    "inScopeFiles": 45,
+    "headDate": "2026-11-17T16:17:17-05:00",
+    "inScopeFiles": 64,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 2,
+    "qualifyingCommits": 3,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-21T19:49:21.000Z",
+    "since": "2026-05-21T21:17:17.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

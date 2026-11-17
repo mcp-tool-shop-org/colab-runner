@@ -1,11 +1,12 @@
 # Changelog
 
-## 0.1.0 (2026-11-17)
+## [0.1.0] - 2026-11-17
 
-The first release for lanes to vendor. The v0.1.0 tag goes on the merge of PR #4, and carries PR #1 (the detached runner,
+The first release for lanes to vendor. The v0.1.0 tag goes on the merge of PR #5, and carries PR #1 (the detached runner,
 merged as b3703db0), PR #2 (this version and changelog), PR #3 (the binary-safe download scrub, the `--job` refusal and the
-0.1.0 follow-ups) and PR #4 (the ship gate: structured errors, the org's exit codes, log levels, pip-audit in CI, and the
-reviews' follow-ups). How a lane calls it is in the README, "Using it from a lane".
+0.1.0 follow-ups), PR #4 (the ship gate: structured errors, the org's exit codes, log levels, pip-audit in CI, and the
+reviews' follow-ups) and PR #5 (the full treatment: the logo, the landing page and handbook, the threat model,
+SECURITY.md and the filled ship gate). How a lane calls it is in the README, "Using it from a lane".
 
 - **The detached runner.** `python -m colab_runner run` starts a job on a Colab session the lane has already opened, in a process
   that keeps running on the VM if the rig-side process dies. It polls with backoff and follows the job's log (`<job>.run.out`,
@@ -50,8 +51,10 @@ reviews' follow-ups). How a lane calls it is in the README, "Using it from a lan
     `RUN_ERROR: CODE: message` (`BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`, or `UNEXPECTED_ERROR` with the exception's
     type), then `hint: …`, and the stop hint too when `session_open.json` is still there; `stop` prints `STOP_ERROR: …`
     the same way. Every line is scrubbed.
-  - A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`) records
-    `refusal: {code, message, hint, retryable}` in `runner_result.json`, and its `RUN_END` line ends ` code=CODE`.
+  - A run that ends on a named refusal after the marker (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`,
+    `QUARANTINE_ESCAPE`) records `refusal: {code, message, hint, retryable}` in `runner_result.json`. A
+    `JOB_ALREADY_EXISTS` end prints `RUN_END … code=JOB_ALREADY_EXISTS` and exits 2. The two download refusals end
+    `error`, which prints `RUN_ERROR:` and no `RUN_END`.
   - A binary download refused during cleanup turns the end into `error` and keeps the end it replaced (`prior_reason`).
 - **Log levels.** `--quiet`, `--verbose` and `--debug` on `run` and `stop`; normal is the default. Quiet writes only the end
   lines; normal adds the runner's log; verbose adds a line per poll; debug adds an error's traceback. Every level is

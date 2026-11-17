@@ -9,8 +9,12 @@
       "externals": 0,
       "files": [
         {
-          "hash": "4ee7ba8214b5cf4ec4e291d0e0dbe7b2d9ab75a49a0dabffb5fd08038af313d8",
+          "hash": "5445689929cb3624a5991aa43162c6565048434d991a9fa1a650c1648f2a7605",
           "path": ".github/workflows/ci.yml"
+        },
+        {
+          "hash": "2c1a225b2abadc8f00b601576b5a00f54cf3f49eb7509ead7fd1061d332fe2a8",
+          "path": ".github/workflows/pages.yml"
         }
       ],
       "globs": [
@@ -81,17 +85,7 @@
             {
               "in": "stop_command",
               "kind": "raise",
-              "line": 241
-            },
-            {
-              "in": "stop_command",
-              "kind": "except",
-              "line": 242
-            },
-            {
-              "in": "stop_command",
-              "kind": "raise",
-              "line": 243
+              "line": 244
             },
             {
               "in": "stop_command",
@@ -100,15 +94,25 @@
             },
             {
               "in": "stop_command",
+              "kind": "raise",
+              "line": 246
+            },
+            {
+              "in": "stop_command",
               "kind": "except",
-              "line": 247
+              "line": 248
+            },
+            {
+              "in": "stop_command",
+              "kind": "except",
+              "line": 250
             },
             {
               "kind": "raise",
-              "line": 273
+              "line": 276
             }
           ],
-          "hash": "a4586090176ff058eca7a9c2a552d1802a482c3e61d82036478e75360034052e",
+          "hash": "08e1099b9c4795c282615586427b970c0c150510e3596a87ed8c4e6b5d9a66ba",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -137,135 +141,160 @@
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 85
+              "line": 88
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 91
+              "line": 94
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 111
+              "line": 114
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 117
+              "line": 120
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 122
+              "line": 125
+            },
+            {
+              "in": "_byte_twin_source",
+              "kind": "raise",
+              "line": 136
             },
             {
               "in": "default_quarantine_dir",
               "kind": "raise",
-              "line": 203
+              "line": 208
             },
             {
               "in": "is_binary_bytes",
               "kind": "except",
-              "line": 223
+              "line": 228
             },
             {
               "in": "kill_group",
               "kind": "except",
-              "line": 259
+              "line": 264
             },
             {
               "in": "kill_group",
               "kind": "except",
-              "line": 263
+              "line": 268
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 273
+              "line": 278
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 277
+              "line": 282
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 281
+              "line": 286
             },
             {
               "in": "_read",
               "kind": "except",
-              "line": 312
+              "line": 317
             },
             {
               "in": "_kill",
               "kind": "except",
-              "line": 348
+              "line": 353
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 385
+              "line": 390
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 389
+              "line": 394
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 392
+              "line": 397
             },
             {
               "in": "run",
               "kind": "raise",
-              "line": 395
+              "line": 400
             },
             {
               "in": "start_cell",
               "kind": "except",
-              "line": 424
+              "line": 429
             },
             {
               "in": "_unlink_quiet",
               "kind": "except",
-              "line": 455
+              "line": 460
+            },
+            {
+              "in": "_unlink_link",
+              "kind": "except",
+              "line": 468
+            },
+            {
+              "in": "_unlink_link",
+              "kind": "except",
+              "line": 471
             },
             {
               "in": "_quarantine_dest",
-              "kind": "except",
-              "line": 491
+              "kind": "raise",
+              "line": 544
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 538
+              "line": 576
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 547
+              "line": 585
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 559
+              "line": 597
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 573
+              "line": 611
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 575
+              "line": 613
+            },
+            {
+              "in": "cli_from_env",
+              "kind": "except",
+              "line": 623
+            },
+            {
+              "in": "cli_from_env",
+              "kind": "raise",
+              "line": 624
             }
           ],
-          "hash": "c311bae4b8362aace5aeb932cbde90ede72326b09ffd4ab0a241d9d61d817dab",
+          "hash": "87cd69a33cccb4862f0dfd3ea7325b180aefe0d4b95b52ba77a956f223b1b353",
           "importsFiles": [
             "colab_runner/errors.py",
             "colab_runner/window_lib/__init__.py",
@@ -278,7 +307,7 @@
             "error_record",
             "lookup"
           ],
-          "hash": "a11edc887f52d68cdd619342ee9599ff06cb136a69818bab5bd979913c1466f9",
+          "hash": "0aaa678e6c1082613fc008c4ac26239dc09ccf218bebfe5cb5e0bc7733ceb465",
           "path": "colab_runner/errors.py"
         },
         {
@@ -295,130 +324,140 @@
             {
               "in": "parse_poll",
               "kind": "except",
-              "line": 109
+              "line": 113
             },
             {
               "in": "require_number",
               "kind": "raise",
-              "line": 136
+              "line": 140
             },
             {
               "in": "_parse_resident_max_s",
               "kind": "except",
-              "line": 147
+              "line": 151
             },
             {
               "in": "_parse_resident_max_s",
               "kind": "raise",
-              "line": 148
+              "line": 152
             },
             {
               "in": "download",
               "kind": "except",
-              "line": 434
+              "line": 441
             },
             {
               "in": "download",
               "kind": "raise",
-              "line": 437
-            },
-            {
-              "in": "download",
-              "kind": "except",
               "line": 444
             },
             {
               "in": "download",
+              "kind": "except",
+              "line": 451
+            },
+            {
+              "in": "download",
               "kind": "raise",
-              "line": 447
+              "line": 454
             },
             {
               "in": "_fetch_record",
               "kind": "except",
-              "line": 460
+              "line": 467
             },
             {
               "in": "_collect_resident_log",
               "kind": "except",
-              "line": 494
+              "line": 501
             },
             {
               "in": "_collect_resident_log",
               "kind": "raise",
-              "line": 496
+              "line": 503
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 557
+              "line": 564
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 559
+              "line": 566
             },
             {
               "in": "run",
               "kind": "raise",
-              "line": 578
+              "line": 585
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 597
+              "line": 604
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 608
+              "line": 615
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 611
+              "line": 618
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 617
+              "line": 625
+            },
+            {
+              "in": "_check_run",
+              "kind": "except",
+              "line": 627
+            },
+            {
+              "in": "_check_run",
+              "kind": "raise",
+              "line": 628
             },
             {
               "in": "_loop",
               "kind": "except",
-              "line": 748
+              "line": 760
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 791
+              "line": 803
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 798
+              "line": 810
             },
             {
               "in": "_salvage",
               "kind": "except",
-              "line": 854
-            },
-            {
-              "in": "_on_signal",
-              "kind": "raise",
-              "line": 867
-            },
-            {
-              "in": "_on_signal",
-              "kind": "raise",
               "line": 871
+            },
+            {
+              "in": "_on_signal",
+              "kind": "raise",
+              "line": 884
+            },
+            {
+              "in": "_on_signal",
+              "kind": "raise",
+              "line": 888
             },
             {
               "in": "_signal_name",
               "kind": "except",
-              "line": 919
+              "line": 936
             }
           ],
-          "hash": "4db975125e7a425f1d246509cce28239b013fdabf2b592df6d55ef8aafa3bac9",
+          "hash": "05ed777fa806c5bc846f3029d48effc9c36320d63e21592f04765f12614b5a13",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
@@ -690,7 +729,7 @@
       "testRunners": [
         "unittest"
       ],
-      "testedBy": 12,
+      "testedBy": 13,
       "unresolvedSites": 0
     },
     {
@@ -706,11 +745,11 @@
           "path": ".gitattributes"
         },
         {
-          "hash": "d2c9408a02c467abd23efd968315fb51112de7f3f7e743764c4e19b6bee89f09",
+          "hash": "2e119cace277c9e6a314e18f090f97866246a7e850ce8289b1f3f8398a0580ab",
           "path": ".gitignore"
         },
         {
-          "hash": "882d9b29292404bc898f53b4d2ea4ce4869fcbb678c4d478d869a78ca771872d",
+          "hash": "7e062c916dda1932362d7ed303998811b4d0b61a4915a0ace770b2900a7d52a0",
           "path": "CHANGELOG.md"
         },
         {
@@ -718,8 +757,20 @@
           "path": "LICENSE"
         },
         {
-          "hash": "7be73e6bbdde7d0335dde9d1f93c0d3ded9feeef9f682e2dbd305fd1cce05beb",
+          "hash": "4275e0ebe632d79845b07f60182bef3e1f23c888d53be5dab2dcff6907df1aed",
           "path": "README.md"
+        },
+        {
+          "hash": "5dd4e9ee7ee5b1abab153da8abc339bcae1b7e0278da341051f8477d577c53c7",
+          "path": "SCORECARD.md"
+        },
+        {
+          "hash": "233cf24e3487325bb7a761b00513dd526a94b7da5be6e05a3345d74365ad71b5",
+          "path": "SECURITY.md"
+        },
+        {
+          "hash": "cbb5665f81d715663d1bc1a90e490884c7c417e36437791452638678be1051ba",
+          "path": "SHIP_GATE.md"
         },
         {
           "hash": "3430759e0e9dc78320aa93faa7d9140bf540174bf7bfd0a0fcbbba4b5ec0e08d",
@@ -816,7 +867,7 @@
             "library_refusal_codes",
             "source_codes"
           ],
-          "hash": "57050db6ce56817b2f52f69c3768aae5930efabd217dbcb22e9f59e5586e3d72",
+          "hash": "3a4fa0f35516d7593b1ffe67905c72c88d3fe8c055b192ec6d8c233cb04428a4",
           "importOrder": [
             "colab_runner/__main__.py",
             "colab_runner/errors.py",
@@ -909,6 +960,34 @@
             "tests/fakes.py"
           ],
           "path": "tests/test_logs.py",
+          "testFramework": "unittest"
+        },
+        {
+          "exports": [
+            "cli",
+            "poisoned",
+            "snapshot"
+          ],
+          "hash": "b8d68df2983ece48766134b417f79f3c01523b9f7e3e350f8c41809fba271543",
+          "importOrder": [
+            "colab_runner/__init__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/runner.py",
+            "tests/fakes.py",
+            "tests/test_tokens.py",
+            "colab_runner/__main__.py"
+          ],
+          "importsFiles": [
+            "colab_runner/__init__.py",
+            "colab_runner/__main__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/runner.py",
+            "tests/fakes.py",
+            "tests/test_tokens.py"
+          ],
+          "path": "tests/test_pr4_fix1.py",
           "testFramework": "unittest"
         },
         {
@@ -1074,6 +1153,15 @@
           "step": "Atlas check"
         },
         {
+          "dir": "site",
+          "job": "ci",
+          "programs": [
+            "node",
+            "npm"
+          ],
+          "step": "Site build"
+        },
+        {
           "dir": "",
           "job": "ci",
           "programs": [
@@ -1132,7 +1220,12 @@
         }
       ],
       "landings": [],
-      "mentions": [],
+      "mentions": [
+        {
+          "job": "ci",
+          "path": "site/package-lock.json"
+        }
+      ],
       "name": "CI",
       "permissions": [
         "contents:read",
@@ -1153,7 +1246,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 15
+          "files": 16
         }
       ],
       "readers": [],
@@ -1165,6 +1258,21 @@
           "path": "colab_runner/",
           "runKind": "checks",
           "via": "verify.sh → ruff"
+        },
+        {
+          "job": "ci",
+          "matched": true,
+          "path": "site/astro.config.mjs",
+          "runKind": "executes",
+          "via": "astro build"
+        },
+        {
+          "directory": true,
+          "job": "ci",
+          "matched": true,
+          "path": "site/src/",
+          "runKind": "executes",
+          "via": "astro build"
         },
         {
           "directory": true,
@@ -1180,7 +1288,7 @@
           "runKind": "executes"
         }
       ],
-      "runsCount": 3,
+      "runsCount": 5,
       "secrets": [],
       "sends": {
         "deploysPages": false,
@@ -1207,10 +1315,17 @@
         },
         {
           "coverage": true,
-          "files": 15,
+          "files": 16,
           "job": "ci",
           "runner": "unittest",
           "step": "Coverage (floor 90)"
+        },
+        {
+          "dir": "site",
+          "files": 0,
+          "job": "ci",
+          "runner": "node --test",
+          "step": "Site build"
         }
       ],
       "triggers": [
@@ -1226,11 +1341,14 @@
           ],
           "event": "push",
           "paths": [
+            ".github/audit-allowlist.json",
             ".github/workflows/**",
             "atlas/**",
             "codecov.yml",
             "colab_runner/**",
             "pyproject.toml",
+            "scripts/**",
+            "site/**",
             "tests/**",
             "verify.sh"
           ]
@@ -1239,11 +1357,167 @@
           "event": "workflow_dispatch"
         }
       ],
+      "untrackedLandings": [
+        "site/audit-report.json"
+      ],
       "uses": [
         "actions/checkout",
         "actions/setup-node",
         "actions/setup-python",
         "codecov/codecov-action"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Install site dependencies"
+        },
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Build site"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/pages.yml",
+      "gated": [
+        {
+          "jobs": [
+            "deploy"
+          ],
+          "pushes": false,
+          "sends": [
+            "deploysPages"
+          ],
+          "stages": [],
+          "when": {
+            "branches": [
+              "main"
+            ]
+          }
+        }
+      ],
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "github-pages"
+          },
+          "name": "deploy",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [],
+      "name": "Deploy site to GitHub Pages",
+      "permissions": [
+        "contents:read",
+        "id-token:write",
+        "pages:write"
+      ],
+      "pushes": false,
+      "reach": [],
+      "readers": [],
+      "runs": [
+        {
+          "job": "build",
+          "matched": true,
+          "path": "site/astro.config.mjs",
+          "runKind": "executes",
+          "via": "astro build"
+        },
+        {
+          "directory": true,
+          "job": "build",
+          "matched": true,
+          "path": "site/src/",
+          "runKind": "executes",
+          "via": "astro build"
+        }
+      ],
+      "runsCount": 2,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/**",
+            "site/**"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/deploy-pages",
+        "actions/setup-node",
+        "actions/upload-pages-artifact"
       ],
       "usesWorkflowToken": false
     },
@@ -1302,8 +1576,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "d5a53737449f1b9d76677dbc7ca888cd0669813d",
-    "tracked": 40
+    "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
+    "tracked": 59
   },
   "landings": [
     {
@@ -1495,6 +1769,49 @@
       "writers": []
     },
     {
+      "readers": [],
+      "target": "site/audit-report.json",
+      "tracked": false,
+      "writers": [
+        {
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
+        }
+      ]
+    },
+    {
+      "readers": [
+        {
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
+        }
+      ],
+      "target": "site/package-lock.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "content-collection",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "autogenerate",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs/handbook",
+      "writers": []
+    },
+    {
       "readers": [
         {
           "by": "tests/test_vm_cells.py",
@@ -1510,6 +1827,73 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 15,
-  "unassigned": []
+  "testFiles": 16,
+  "unassigned": [
+    {
+      "hash": "ccf07a3ca23dfc6c13f4cc7c572015998ac1de136033b6d7a40af93b28cdf121",
+      "path": "site/astro.config.mjs"
+    },
+    {
+      "hash": "41ec5c228253fea2eace9a25bb51e0315a581e240cb9d4d1765f83af0d2b3df6",
+      "path": "site/package-lock.json"
+    },
+    {
+      "hash": "9c39e620ebae2c5718ecd8c6188bd3451409a614ec8f5308dc15d5fd886e5b91",
+      "path": "site/package.json"
+    },
+    {
+      "hash": "db3c76ae1d22efa9f6c9a1cf3d8b1f45a5e94210d34e4b518006018e7d3d097d",
+      "path": "site/public/favicon.svg"
+    },
+    {
+      "hash": "282a5460ef3a66923bd89207fabfb0b964c2d511879efc2eef8fc83331ab04cf",
+      "path": "site/src/assets/logo.png"
+    },
+    {
+      "constantOnly": true,
+      "hash": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62",
+      "path": "site/src/content.config.ts"
+    },
+    {
+      "hash": "dbad7c9895fc3ca204018ae83b92f399719faf8767c9100ed883f401c926ed70",
+      "path": "site/src/content/docs/handbook/getting-started.md"
+    },
+    {
+      "hash": "5377cc5ef8cd54c39852e21220a07b3ddfe4583a3f84fefc759c35a6e2ef656e",
+      "path": "site/src/content/docs/handbook/index.md"
+    },
+    {
+      "hash": "1ad610ea3327e3c69480627172ba593d85f82e81f25440f12cd4f5cbac1f2eec",
+      "path": "site/src/content/docs/handbook/reference.md"
+    },
+    {
+      "hash": "4fb84a646c4d833c33f4058e1ed1775849e855c65e5adb7e45d2a633674bd603",
+      "importOrder": [
+        "site/src/styles/global.css",
+        "site/src/site-config.ts"
+      ],
+      "importsFiles": [
+        "site/src/site-config.ts",
+        "site/src/styles/global.css"
+      ],
+      "path": "site/src/pages/index.astro"
+    },
+    {
+      "constantOnly": true,
+      "hash": "97f9b4c332f85b25404c5fc57c8ca431a30f3a0c1894454d16fc510417181974",
+      "path": "site/src/site-config.ts"
+    },
+    {
+      "hash": "29ee8df91833e694bdba973126b34a6177de4cf01dab6d9ef7d3126e8e2b67fb",
+      "path": "site/src/styles/global.css"
+    },
+    {
+      "hash": "cdb0845dea4e7835ceb5c750caa9358e03cb03132cd85c17931a9fb96299b94f",
+      "path": "site/src/styles/starlight-custom.css"
+    },
+    {
+      "hash": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9",
+      "path": "site/tsconfig.json"
+    }
+  ]
 }
