@@ -1,3 +1,3 @@
-"""colab-runner: the shared runner for paid Google Colab windows (scaffold)."""
+"""colab-runner: the shared runner for paid Google Colab windows."""
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
