@@ -1,5 +1,8 @@
-# Shared VM-side helpers. The runner prepends this file to every kernel cell (start, poll, resident), so each cell is
-# one self-contained source for `colab exec -f` (an IPython cell: no __file__, no argv, no `if __name__`).
+# Shared VM-side helpers. The runner prepends this file to every kernel cell (start, poll, resident, kill), so each
+# cell is one self-contained source for `colab exec -f` (an IPython cell: no __file__, no argv, no `if __name__`).
+# Ahead of this file the runner puts the cell's environment and the vendored library's token scrub
+# (TOKEN_SCRUB_PATTERNS and scrub_colab_tokens, from launch_guards.py; runner._scrub_source), so the VM scrubs with
+# the library's one implementation.
 # Standard library only. Environment in (all optional except where noted):
 #   CR_CONTENT          the VM working dir, default /content
 #   CR_JOB              the job name, default "job"; files are <CR_CONTENT>/<job>.pid, .status.json, .run.out
@@ -12,10 +15,12 @@
 #   CR_UNITS_GLOB       the count of files matching this glob is the kit's finished-units counter
 #                       (polyglot: one summary per finished README); default none
 #   CR_POLL_LOG_OFFSET  poll cell: byte offset of the next chunk of the job log
+#   CR_KILL_GRACE_S     kill cell: seconds between SIGTERM and SIGKILL to the job's process group, default 5
 import glob
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 
@@ -28,7 +33,6 @@ CR_POLL_FILE = os.path.join(CR_CONTENT, CR_JOB + ".poll.json")
 CR_OUT = os.environ.get("CR_OUT_DIR") or os.path.join(CR_CONTENT, CR_JOB + "_out")
 CR_HB_FILE = os.path.join(CR_OUT, "hold_heartbeat.txt")
 CR_MAX_LOG = 65536
-CR_TOKEN_RE = re.compile(r"\bhf_[A-Za-z0-9]{16,}\b")
 
 # The wrapper runs the job, then writes the status file (rc, end time) atomically, after the job has ended.
 CR_WRAPPER = (
@@ -62,12 +66,14 @@ def cr_read(path):
 
 
 def cr_alive(pid):
+    """Is our job's process alive? A PermissionError means the pid is another user's process (a recycled pid), so
+    not our job: dead, not alive."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return False
     try:
         with open("/proc/%d/stat" % pid) as fh:
             return fh.read().rsplit(")", 1)[1].split()[0] != "Z"
@@ -133,6 +139,48 @@ def cr_start_job():
     return "CR_STARTED pid=%d" % proc.pid
 
 
+def cr_group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def cr_kill_job(grace_s):
+    """Terminate the job's whole process group: SIGTERM, then SIGKILL after `grace_s`. cr_start_job started the job
+    as its own session, so the group id is the pid in the pid file. Touches nothing else."""
+    pid = cr_pid()
+    if pid is None:
+        return "CR_NO_JOB"
+    if not cr_group_alive(pid):
+        return "CR_NOT_RUNNING pid=%d" % pid
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return "CR_NOT_RUNNING pid=%d" % pid
+    end = time.time() + grace_s
+    while time.time() < end and cr_group_alive(pid):
+        time.sleep(0.1)
+    if cr_group_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    return "CR_KILLED pid=%d" % pid
+
+
+def cr_whole_chars(blob):
+    """len(blob), less a UTF-8 character its end splits, so a forced cut never breaks one (and is never 0)."""
+    n = len(blob)
+    for j in range(n - 1, max(n - 4, 0) - 1, -1):
+        b = blob[j]
+        if b & 0xC0 != 0x80:  # the last lead (or ASCII) byte
+            need = 1 if b < 0x80 else 2 if b >> 5 == 0b110 else 3 if b >> 4 == 0b1110 else 4 if b >> 3 == 0b11110 else 1
+            return j if (j + need > n and j > 0) else n
+    return n
+
+
 def cr_collect(offset):
     """One poll record plus the next chunk of the job log. Reads only; never touches the job."""
     pid = cr_pid()
@@ -158,11 +206,14 @@ def cr_collect(offset):
         with open(CR_RUN_LOG, "rb") as fh:
             fh.seek(offset)
             blob = fh.read(CR_MAX_LOG)
-        cut = blob.rfind(b"\n") + 1 if len(blob) == CR_MAX_LOG else len(blob)
-        blob = blob[:cut]
+        if len(blob) == CR_MAX_LOG:
+            # A full chunk is cut after its last line end, \n or \r (progress bars redraw with \r). A chunk with
+            # neither is returned whole, as one line, cut at a character boundary: the offset always advances.
+            cut = max(blob.rfind(b"\n"), blob.rfind(b"\r")) + 1
+            blob = blob[:cut] if cut > 0 else blob[:cr_whole_chars(blob)]
         new_offset = offset + len(blob)
         eof = new_offset >= size
-        lines = [CR_TOKEN_RE.sub("hf_[REDACTED]", ln) for ln in blob.decode("utf-8", errors="replace").splitlines()]
+        lines = [scrub_colab_tokens(ln) for ln in blob.decode("utf-8", errors="replace").splitlines()]
     except OSError:
         pass
     rec = {
