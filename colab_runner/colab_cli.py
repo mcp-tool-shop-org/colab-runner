@@ -24,6 +24,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -472,11 +473,34 @@ def _unlink_link(path: Path) -> None:
             pass
 
 
+_WINDOWS = os.name == "nt"
+# the NTFS junction's reparse tag; the stat module names it on Windows only (its value is fixed by Windows)
+_MOUNT_POINT_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+
+
+def _reparse_tag(path: Path) -> int:
+    """The entry's own reparse tag (os.lstat: never followed), or 0: no tag, no such field off Windows, or no entry."""
+    try:
+        return getattr(os.lstat(path), "st_reparse_tag", 0)
+    except OSError:
+        return 0
+
+
+def _is_junction(path: Path) -> bool:
+    """An NTFS junction, live or broken. `os.path.isjunction` where Python has it (3.12+); before that, on Windows, the
+    mount-point reparse tag. Only that tag: any other reparse kind (a deduplicated file, a cloud placeholder) is not a
+    link, and goes on to the regular-file path (read, scrubbed, and removed only if it cannot be read)."""
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        return isjunction(path)
+    return _WINDOWS and _reparse_tag(path) == _MOUNT_POINT_TAG
+
+
 def _is_link(path: Path) -> bool:
     """A symlink or an NTFS junction, live or broken: removed with `_unlink_link`, never followed. `Path.is_symlink()`
-    is False for a junction, so `os.path.isjunction` (Python 3.12+; always False off Windows) is asked too."""
-    isjunction = getattr(os.path, "isjunction", None)
-    return path.is_symlink() or (isjunction is not None and isjunction(path))
+    is asked first (it catches every symlink, a Windows one included); it is False for a junction, so `_is_junction`
+    is asked only when it is False."""
+    return path.is_symlink() or _is_junction(path)
 
 
 class QuarantineEscape(OSError):

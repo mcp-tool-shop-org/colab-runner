@@ -57,8 +57,8 @@ directories (including partial transfers) are classified by content only (a NUL 
     exit 2), and the session is still stopped.
 - **A directory download** is scrubbed of tokens file by file, and one failure never stops the rest: a hit whose move to quarantine
   fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once all the remaining
-  files have been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
-  followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
+  files have been scrubbed. Only regular files are read. A symlink, to a file or to a directory, and an NTFS junction
+  (found on every supported Python, 3.11 included), is unlinked, never followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
   read.
 - **Where the quarantine is.**
   - Through `Runner` (and so `run`), it is the sibling directory `<out-dir>.quarantine/`. It is outside `--out-dir`, so

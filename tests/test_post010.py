@@ -184,6 +184,139 @@ class JunctionTest(unittest.TestCase):
         self.assert_target_untouched()
 
 
+DEDUP_TAG, CLOUD_TAG = 0x80000013, 0x9000001A  # IO_REPARSE_TAG_DEDUP, IO_REPARSE_TAG_CLOUD: real files, not links
+REAL_LSTAT = os.lstat
+
+
+class _TaggedStat:
+    """A real lstat result with the reparse tag Windows would report for that entry."""
+
+    def __init__(self, real, tag):
+        self._real, self.st_reparse_tag = real, tag
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class JunctionFallbackTest(unittest.TestCase):
+    """PR #6 fix 1, item 2: on a Python with no `os.path.isjunction` (3.11), a junction on Windows is known by its
+    mount-point reparse tag (os.lstat, never followed). Runs on any OS: `os.path.isjunction` is taken away, the
+    platform is Windows, and os.lstat reports the tag set for each entry here."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root, self.t = Path(self._tmp.name), fake_tokens()
+        self.tags: dict[str, object] = {}  # path -> tag; None: an lstat result with no tag field (off Windows)
+        real_unlink_link = colab_cli._unlink_link
+        self.unlinked: list[Path] = []
+
+        def unlink_link(path):
+            self.unlinked.append(Path(path))
+            return real_unlink_link(path)
+
+        for patch in (mock.patch.object(colab_cli.os.path, "isjunction", None, create=True),
+                      mock.patch.object(colab_cli, "_WINDOWS", True),
+                      mock.patch.object(colab_cli.os, "lstat", side_effect=self.lstat),
+                      mock.patch.object(colab_cli, "_unlink_link", side_effect=unlink_link)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def lstat(self, path, *a, **kw):
+        real = REAL_LSTAT(path, *a, **kw)
+        key = os.path.normcase(os.fspath(path))
+        if key in self.tags and self.tags[key] is None:
+            return _NoTag(real)
+        return _TaggedStat(real, self.tags.get(key, 0))
+
+    def tag(self, path: Path, tag) -> Path:
+        self.tags[os.path.normcase(os.fspath(path))] = tag
+        return path
+
+    def token_file(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("Bearer %s\n" % self.t["bearer"], encoding="utf-8")
+        return path
+
+    def test_a_mount_point_tag_is_treated_as_a_link_and_unlinked(self):
+        bundle = self.root / "bundle"
+        empty = self.tag(bundle / "empty_junction", colab_cli._MOUNT_POINT_TAG)
+        empty.mkdir(parents=True)
+        full = self.tag(bundle / "junction_to_secrets", colab_cli._MOUNT_POINT_TAG)
+        inside = self.token_file(full / "notes.txt")  # what a followed junction would scrub
+        before = inside.read_bytes()
+        self.assertTrue(colab_cli._is_link(empty))
+        scrub_local(bundle)
+        self.assertEqual(sorted(self.unlinked), sorted([empty, full]))  # each removed as a link, with _unlink_link
+        self.assertFalse(os.path.lexists(empty))
+        self.assertEqual(inside.read_bytes(), before)  # never walked into: its file is not read or scrubbed
+        root = self.tag(self.root / "junction_root", colab_cli._MOUNT_POINT_TAG)
+        root.mkdir()
+        scrub_local(root)
+        self.assertEqual(self.unlinked[-1], root)
+        self.assertFalse(os.path.lexists(root))
+
+    def test_another_reparse_tag_takes_the_regular_file_path(self):
+        bundle = self.root / "bundle"
+        dedup = self.tag(self.token_file(bundle / "dedup.txt"), DEDUP_TAG)
+        cloud_dir = self.tag(bundle / "cloud_folder", CLOUD_TAG)
+        cloud_file = self.tag(self.token_file(cloud_dir / "placeholder.txt"), CLOUD_TAG)
+        for p in (dedup, cloud_dir, cloud_file):
+            self.assertFalse(colab_cli._is_link(p))
+        self.assertEqual(sorted(colab_cli._iter_files(bundle, [])), sorted([dedup, cloud_file]))  # read, folder walked
+        scrub_local(bundle)
+        self.assertEqual(self.unlinked, [])  # never unlinked as a link
+        for p in (dedup, cloud_file):
+            self.assertEqual(p.read_text(encoding="utf-8"), "Bearer [REDACTED]\n")  # read and scrubbed in place
+
+    def test_an_ordinary_directory_is_not_a_link(self):
+        plain = self.root / "plain"
+        self.token_file(plain / "notes.txt")
+        no_field = self.tag(self.root / "no_tag_field", None)
+        self.token_file(no_field / "notes.txt")
+        self.assertFalse(colab_cli._is_link(plain))  # tag 0
+        self.assertFalse(colab_cli._is_link(no_field))  # no st_reparse_tag at all (an OS that has none)
+        self.tag(plain, colab_cli._MOUNT_POINT_TAG)
+        with mock.patch.object(colab_cli, "_WINDOWS", False):  # off Windows the tag is never read
+            self.assertFalse(colab_cli._is_link(plain))
+        self.tags.clear()
+        scrub_local(self.root)
+        self.assertEqual(self.unlinked, [])
+        self.assertEqual((plain / "notes.txt").read_text(encoding="utf-8"), "Bearer [REDACTED]\n")
+
+    def test_a_symlink_still_takes_the_is_symlink_route_with_the_fallback_active(self):
+        target = self.root / "target"
+        inside = self.token_file(target / "notes.txt")
+        before = inside.read_bytes()
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        link = bundle / "to_target"
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks need privilege on this Windows host (CI runs Linux)")
+        with mock.patch.object(colab_cli, "_reparse_tag", wraps=colab_cli._reparse_tag) as tag_read:
+            self.assertTrue(colab_cli._is_link(link))
+            tag_read.assert_not_called()  # is_symlink() answered first; the mount-point fallback only adds junctions
+            scrub_local(bundle)
+            self.assertNotIn(link, [c.args[0] for c in tag_read.call_args_list])
+        self.assertEqual(self.unlinked, [link])
+        self.assertFalse(os.path.lexists(link))
+        self.assertEqual(inside.read_bytes(), before)
+
+
+class _NoTag:
+    """A real lstat result with no st_reparse_tag field, as on an OS that has none."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        if name == "st_reparse_tag":
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+
 class QuarantineEscapeMarksTheLogTest(unittest.TestCase):
     """Item 3: a QuarantineEscape during the in-loop run-log collection marks the log collected, so _end never
     downloads `<job>.run.out` a second time."""
@@ -287,6 +420,20 @@ class CapTripTest(unittest.TestCase):
                 lines = stderr.splitlines()
                 self.assertEqual(lines[-1], "hint: %s" % CODES[code].hint)  # after RUN_END, as for a refusal
                 self.assertEqual(sum(ln.startswith("hint: ") for ln in lines), 1)
+
+    def test_a_cap_reached_end_keeps_the_0_1_0_detail_byte_for_byte(self):
+        # 0.1.0 (45ecf68e, runner.py:724): `self._end_as(bound, "the %s was reached" % bound)`, bound "cap"
+        detail_010 = "the %s was reached" % "cap"
+        self.assertEqual(detail_010.encode("utf-8"), b"the cap was reached")
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(progress=n))
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/c/x.sh", wall_s=36000, guard=QuietGuard())
+            self.assertEqual((res.reason, res.detail.encode("utf-8")), ("cap", b"the cap was reached"))
+            written = json.loads((runner.out_dir / "runner_result.json").read_bytes())
+            self.assertEqual(written["detail"].encode("utf-8"), detail_010.encode("utf-8"))
+            self.assertEqual(written["cap_trip"]["code"], "CAP_CEILING_REACHED")
+            self.assertEqual(written["cap_trip"]["hint"], CODES["CAP_CEILING_REACHED"].hint)
 
     def test_a_trip_with_no_leading_code_keeps_its_string_and_has_a_null_code(self):
         with tempfile.TemporaryDirectory() as tmp:
