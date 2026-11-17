@@ -21,8 +21,11 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
 
 ## Using it from a lane (0.1.0)
 
-**The session is the lane's.** The lane opens the Colab session and passes its name. `run` stops it on every exit once it has
-written `session_open.json`. Before that (a refusal, exit 3, or a usage error, exit 2), the lane must stop it itself.
+**The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
+`session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.
+- **A marker that stays** means the session may still be open: a stop that failed, or a `run` killed outright (SIGKILL, a lost
+  rig) before its cleanup ran. The lane then runs `python -m colab_runner stop --out-dir D`.
+- **Before the marker exists** (a refusal, exit 3, or a usage error, exit 2), the lane runs `colab stop -s S` itself.
 
 **Required flags of `run`:** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C
 --cleanup-bound-s N`.
@@ -37,7 +40,18 @@ written `session_open.json`. Before that (a refusal, exit 3, or a usage error, e
 no session.
 
 **How a run ends:** `done`, `failed` (non-zero exit), `oom`, `wall`, `cap`, `setup_stall`, `progress_stall`, `dead`,
-`unreachable`, `start_failed`, `interrupted` or `error`. The last line on stdout is `RUN_END reason=… rc=… stopped=…`.
+`unreachable`, `start_failed`, `interrupted` or `error`.
+- Every end but `error` writes `RUN_END reason=… rc=… stopped=…` as the last line on stdout.
+- An `error` end writes `RUN_ERROR: …` on stderr and no `RUN_END` line. Exits 2 and 3 write to stderr only.
+- `runner_result.json` in the out dir records every end after the marker was written, `error` included.
+
+**What `run` writes in the out dir** (`--job` defaults to `job`, `--content` to `/content`):
+- `session_open.json` while the session may be open;
+- `runner_result.json`, the run's end;
+- `<job>.run.out`, the job's log;
+- `stop_confirmed.json` after a confirmed stop, or `stop_pending.json` after a failed one.
+
+**The `colab` command** is `colab` unless `COLAB_RUNNER_CLI` names another command line (split on spaces).
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
@@ -56,8 +70,10 @@ line, error line and downloaded file is scrubbed with the vendored library's `sc
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.
 
-**Pricing.** The window is priced at its own rate times elapsed, through the vendored library's rate and cap functions. A
-window that cannot be priced is priced at `--max-rate`. The account balance is recorded and never prices the window.
+**Pricing.** The window is priced at `max(--max-rate, the highest stable window rate)` times elapsed, through the vendored
+library's rate and cap functions. A stable rate above `--max-rate` trips `RATE_ABOVE_MAX`, so every window that keeps running is
+priced at `--max-rate`: it is a floor, not a loose ceiling. Set it to the card's expected rate; a loose `--max-rate` trips the cap
+early. The account balance is recorded and never prices the window.
 
 ## What is not here
 
