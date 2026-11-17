@@ -1,6 +1,6 @@
 ---
 title: Reference
-description: Every command, flag, exit code, end reason and error code of colab-runner 0.1.0.
+description: Every command, flag, exit code, end reason and error code of colab-runner.
 sidebar:
   order: 3
 ---

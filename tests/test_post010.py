@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -198,6 +199,14 @@ class _TaggedStat:
         return getattr(self._real, name)
 
 
+def _caller() -> str:
+    """The function that called os.lstat, past this stand-in and unittest.mock's own frames."""
+    f = sys._getframe(2)
+    while f is not None and f.f_globals.get("__name__") == "unittest.mock":
+        f = f.f_back
+    return f.f_code.co_name if f is not None else ""
+
+
 class JunctionFallbackTest(unittest.TestCase):
     """PR #6 fix 1, item 2: on a Python with no `os.path.isjunction` (3.11), a junction on Windows is known by its
     mount-point reparse tag (os.lstat, never followed). Runs on any OS: `os.path.isjunction` is taken away, the
@@ -223,8 +232,14 @@ class JunctionFallbackTest(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def lstat(self, path, *a, **kw):
-        real = REAL_LSTAT(path, *a, **kw)
         key = os.path.normcase(os.fspath(path))
+        # an OSError tag is raised into _reparse_tag only; other callers (pathlib's is_symlink, whose OSError handling
+        # differs between Pythons) get the real lstat
+        if isinstance(self.tags.get(key), OSError) and _caller() == "_reparse_tag":
+            raise self.tags[key]
+        real = REAL_LSTAT(path, *a, **kw)
+        if isinstance(self.tags.get(key), OSError):
+            return _TaggedStat(real, 0)
         if key in self.tags and self.tags[key] is None:
             return _NoTag(real)
         return _TaggedStat(real, self.tags.get(key, 0))
@@ -283,6 +298,34 @@ class JunctionFallbackTest(unittest.TestCase):
         scrub_local(self.root)
         self.assertEqual(self.unlinked, [])
         self.assertEqual((plain / "notes.txt").read_text(encoding="utf-8"), "Bearer [REDACTED]\n")
+
+    def test_a_mount_point_tag_in_filenames_is_unlinked_as_a_link(self):
+        # os.walk lists an entry that is not a directory to it under `filenames`: there too a mount-point tag is a link
+        bundle = self.root / "bundle"
+        entry = self.tag(self.token_file(bundle / "sub" / "tagged_entry"), colab_cli._MOUNT_POINT_TAG)
+        plain = self.token_file(bundle / "sub" / "plain.txt")
+        walked = [(Path(d), sorted(f)) for d, _, f in os.walk(bundle)]
+        self.assertIn((bundle / "sub", ["plain.txt", "tagged_entry"]), walked)  # both in filenames, not dirnames
+        files = colab_cli._iter_files(bundle, [])
+        self.assertEqual(files, [plain])
+        self.assertEqual(self.unlinked, [entry])  # removed with _unlink_link, as a link
+        self.assertFalse(os.path.lexists(entry))
+
+    def test_an_oserror_from_lstat_reads_as_not_a_junction(self):
+        # _reparse_tag catches the OSError and returns 0, so _is_junction is False: the entry is not a link, and
+        # _iter_files judges it as any other (is_file()); a regular file is read and scrubbed, never unlinked as a link
+        entry = self.token_file(self.root / "bundle" / "unreadable_tag.txt")
+        self.tag(entry, PermissionError(13, "lstat refused", str(entry)))
+        with mock.patch.object(colab_cli.os, "lstat", side_effect=PermissionError(13, "lstat refused")) as lst:
+            self.assertEqual(colab_cli._reparse_tag(entry), 0)  # the bare path: lstat raises, the tag reads 0
+            lst.assert_called_once_with(entry)
+        self.assertEqual(colab_cli._reparse_tag(entry), 0)  # through the stand-in, which raises into _reparse_tag
+        self.assertFalse(colab_cli._is_junction(entry))
+        self.assertFalse(colab_cli._is_link(entry))
+        self.assertEqual(colab_cli._iter_files(self.root / "bundle", []), [entry])
+        scrub_local(self.root / "bundle")
+        self.assertEqual(self.unlinked, [])
+        self.assertEqual(entry.read_text(encoding="utf-8"), "Bearer [REDACTED]\n")
 
     def test_a_symlink_still_takes_the_is_symlink_route_with_the_fallback_active(self):
         target = self.root / "target"

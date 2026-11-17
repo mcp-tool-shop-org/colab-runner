@@ -163,8 +163,8 @@ def _refused(exc: Refused) -> int:
 
 def _error(tag: str, exc: BaseException, level: int) -> int:
     """`TAG: CODE: message` and `hint: ...` for an error during a run or a stop, scrubbed; the traceback, scrubbed
-    too, only at --debug. An exception with a named code (`BinaryDownloadRefused`) keeps it; any other is
-    UNEXPECTED_ERROR, with its type in the message."""
+    too, only at --debug. An exception with a named code (`BinaryDownloadRefused`, `QuarantineEscape`) keeps it;
+    any other is UNEXPECTED_ERROR, with its type in the message."""
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code in CODES:
         rec = error_record(code, str(getattr(exc, "message", exc)))
