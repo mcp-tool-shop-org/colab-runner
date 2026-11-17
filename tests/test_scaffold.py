@@ -20,10 +20,10 @@ class ScaffoldTest(unittest.TestCase):
             self.assertEqual(main(["--help"]), 0)
         self.assertIn("usage", out.getvalue())
 
-    def test_unknown_argument_exits_2(self):
+    def test_unknown_argument_exits_1(self):
         err = io.StringIO()
         with redirect_stderr(err):
-            self.assertEqual(main(["--nope"]), 2)
+            self.assertEqual(main(["--nope"]), 1)
         self.assertIn("unknown arguments", err.getvalue())
 
 

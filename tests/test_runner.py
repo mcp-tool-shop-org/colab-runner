@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from pathlib import Path
 
 from colab_runner.runner import cell_source, parse_poll
 from colab_runner.spend import SpendGuard, neighbour_warning
@@ -47,6 +48,264 @@ class StartTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runner.run(wall_s=10)
             self.assertEqual(colab.calls, [])
+
+    def test_second_step_reusing_default_job_is_refused_with_job_already_exists(self):
+        from colab_runner.runner import Runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0))
+            step1, _ = make(colab, Path(tmp) / "s1")
+            res1 = step1.run(script="/content/step1.sh", wall_s=3600)
+            self.assertEqual(res1.reason, "done")
+
+            step2 = Runner(colab, "s2", Path(tmp) / "s2" / "out", clock=colab.clock.now, sleep=colab.clock.sleep)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertIn("--job", res2.detail)
+            self.assertEqual(colab.kill_calls, 0)  # step 2 must never kill step 1's job
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+            # Passing a distinct --job succeeds on the same VM.
+            step3 = Runner(
+                colab, "s3", Path(tmp) / "s3" / "out", job="step3", clock=colab.clock.now, sleep=colab.clock.sleep,
+            )
+            res3 = step3.run(script="/content/step3.sh", wall_s=3600)
+            self.assertEqual(res3.reason, "done")
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0), ("s3", 0)])
+
+    def test_second_resident_step_reusing_default_job_is_refused_without_touching_first_job(self):
+        from colab_runner.runner import Runner
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0), run_log="step1-log\n")
+            step1, _ = make(colab, Path(tmp) / "s1")
+            res1 = step1.run(script="/content/step1.sh", wall_s=3600, resident=True)
+            self.assertEqual(res1.reason, "done")
+
+            step2 = Runner(colab, "s2", Path(tmp) / "s2" / "out", clock=colab.clock.now, sleep=colab.clock.sleep)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600, resident=True)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertEqual(colab.kill_calls, 0)
+            self.assertEqual(colab.restart_calls, 0)
+            self.assertFalse((step2.out_dir / "job.run.out").exists())
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+
+class JobRefusalHoldsTest(unittest.TestCase):
+    """PR 3 fix 1, (A1): a `--job` another run holds is refused, and no record of that run ever ends this one."""
+
+    def step1_resident(self, colab, tmp):
+        step1, _ = make(colab, Path(tmp) / "s1")
+        res1 = step1.run(script="/content/step1.sh", wall_s=3600, resident=True)
+        self.assertEqual(res1.reason, "done")
+        key = ("/content", "job")
+        stale = dict(colab.vm_poll_files[key])
+        self.assertEqual((stale["rc"], stale["run_id"]), (0, step1._run_id))  # what step 2 will download first
+        return step1, key, stale
+
+    def step2(self, colab, tmp, **kw):
+        from colab_runner.runner import Runner
+
+        log: list[str] = []
+        runner = Runner(colab, "s2", Path(tmp) / "s2" / "out", clock=colab.clock.now, sleep=colab.clock.sleep,
+                        log=log.append, **kw)
+        return runner, log
+
+    def test_resident_step_2_never_ends_done_on_step_1s_stale_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # step 2's cell runs late: its refusal appears only on the third download of <job>.refused.json, and
+            # until then every download of <job>.poll.json serves step 1's final record (rc 0)
+            colab = FakeColab(vm_poll_file=rec(rc=0), run_log="step1-log\n", refused_after=2)
+            step1, key, stale = self.step1_resident(colab, tmp)
+            step2, log = self.step2(colab, tmp)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600, resident=True)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertIsNone(res2.rc)
+            self.assertEqual((res2.polls_ok, res2.polls_failed), (0, 2))  # the stale record was never taken
+            self.assertEqual(res2.last, {})
+            self.assertEqual(colab.vm_poll_files[key], stale)  # step 1's poll record untouched
+            self.assertEqual((colab.kill_calls, colab.restart_calls), (0, 0))  # step 1's job is never touched
+            self.assertFalse((step2.out_dir / "job.run.out").exists())  # step 1's log is not collected as step 2's
+            self.assertFalse((step2.out_dir / "job.poll.json").exists())  # nor its record kept in step 2's out dir
+            self.assertTrue(any("another run (run_id %s)" % step1._run_id in ln for ln in log))
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+    def test_resident_step_2_whose_cell_never_runs_is_start_failed_not_done(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # step 1's cell still holds the kernel, so step 2's cell never runs: only step 1's record is ever seen
+            colab = FakeColab(vm_poll_file=rec(rc=0), run_log="step1-log\n", refused_after=None)
+            step1, key, stale = self.step1_resident(colab, tmp)
+            step2, _ = self.step2(colab, tmp)
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600, resident=True, setup_stall_s=600)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertIn("JOB_ALREADY_EXISTS", res2.detail)
+            self.assertIn("another run's records (run_id %s)" % step1._run_id, res2.detail)
+            self.assertEqual((res2.rc, res2.polls_ok), (None, 0))
+            self.assertEqual((colab.kill_calls, colab.restart_calls), (0, 0))
+            self.assertFalse((step2.out_dir / "job.run.out").exists())
+            self.assertEqual(colab.vm_poll_files[key], stale)
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+    def test_another_runs_refusal_record_is_not_this_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0), refused_after=None)
+            self.step1_resident(colab, tmp)
+            step2, _ = self.step2(colab, tmp)
+            step2._run_id = "run-b"
+            colab._refused_key = ("/content", "job")
+            colab.refused_after = 0
+            colab._refusal = {"job": "job", "run_id": "run-a", "error": "JOB_ALREADY_EXISTS", "detail": "x"}
+            self.assertIsNone(step2.poll_resident())  # step 1's poll file, then someone else's refusal: neither
+            self.assertFalse((step2.out_dir / "job.refused.json").exists())
+            colab._refusal = dict(colab._refusal, run_id="run-b")
+            got = step2.poll_resident()
+            self.assertEqual(got[0]["run_id"], "run-b")
+
+    def test_a_detached_poll_record_of_another_run_is_a_failed_poll(self):
+        def polls(n, env):
+            if n == 1:
+                return rec(rc=0, run_id="another-run")  # another run's files answered
+            if n == 2:
+                return rec(rc=0, status_run_id="another-run")  # this run's files, another run's status
+            return rec(rc=3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=polls)
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/content/x.sh", wall_s=36000)
+            self.assertEqual((res.reason, res.rc), ("failed", 3))  # never `done` on the two rc-0 records
+            self.assertEqual((res.polls_ok, res.polls_failed), (1, 2))
+
+    def test_every_cell_carries_the_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(progress=n))
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/content/x.sh", wall_s=600)
+            self.assertEqual(res.reason, "wall")
+            self.assertTrue(colab.envs)
+            self.assertEqual({e.get("CR_RUN_ID") for e in colab.envs}, {runner._run_id})  # start, polls and kill
+            self.assertIn("kill", colab.events)
+
+    def test_every_run_gets_a_fresh_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0))
+            runner, _ = make(colab, tmp)
+            self.assertEqual(runner.run(script="/content/x.sh", wall_s=600).reason, "done")
+            self.assertEqual(len(runner._run_id), 32)
+
+    def test_cr_run_id_is_reserved(self):
+        # PR 3 review (C7): a lane id reused across steps would turn the --job refusal off, so the name is refused
+        import contextlib
+        import io
+        from unittest import mock
+
+        from colab_runner.__main__ import main
+        from colab_runner.runner import Refused
+
+        for value in ("run-1", " ", ""):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                colab = FakeColab(polls=lambda n, env: rec(rc=0))
+                runner, _ = make(colab, tmp)
+                with self.assertRaises(Refused) as cm:
+                    runner.run(script="/content/x.sh", wall_s=600, env={"CR_RUN_ID": value})
+                self.assertEqual((cm.exception.code, colab.calls), ("RUN_ID_RESERVED", []))
+                self.assertFalse(runner.out_dir.exists())  # refused before the out dir or the marker
+                err = io.StringIO()
+                with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+                        contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    code = main(["run", "--session", "s", "--out-dir", str(Path(tmp) / "cli"), "--script", "/c/x.sh",
+                                 "--wall-s", "600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "600",
+                                 "--env", "CR_RUN_ID=" + value])
+                self.assertEqual((code, colab.calls), (1, []))
+                self.assertIn("REFUSED: RUN_ID_RESERVED:", err.getvalue())
+                self.assertIn("hint: drop CR_RUN_ID", err.getvalue())
+
+    def test_a_restart_with_the_same_run_id_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # the first start ran on the VM but its reply was lost; the retry carries the same run id
+            colab = FakeColab(polls=lambda n, env: rec(rc=0), starts=["lose_reply"])
+            runner, _ = make(colab, tmp)
+            res = runner.run(script="/content/x.sh", wall_s=3600)
+            self.assertEqual(res.reason, "done")
+            self.assertEqual((colab.start_calls, colab.jobs_started), (2, 1))
+            self.assertEqual([e["CR_RUN_ID"] for e in colab.envs[:2]], [runner._run_id] * 2)
+
+    def test_a_resident_step_that_trips_before_any_record_never_collects_another_runs_log(self):
+        # fix-1 review (B1): step 1 ran detached, so there is no poll file; step 2 reuses --job in --resident mode,
+        # its cell never runs, and its wall trips before any record is seen. The kill cell answers CR_NOT_OURS,
+        # and step 1's <job>.run.out must never be downloaded into step 2's out dir.
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0), run_log="step 1's own log\n", refused_after=None)
+            step1, _ = make(colab, Path(tmp) / "s1")
+            self.assertEqual(step1.run(script="/content/step1.sh", wall_s=3600).reason, "done")
+            step2, log = self.step2(colab, tmp)
+            res2 = step2.run(script="/content/step2.sh", wall_s=100, resident=True, setup_stall_s=600)
+            self.assertEqual((res2.reason, res2.rc, res2.polls_ok), ("wall", None, 0))
+            self.assertTrue(res2.killed.startswith("CR_NOT_OURS"), res2.killed)
+            self.assertFalse((step2.out_dir / "job.run.out").exists())
+            self.assertEqual(sorted(p.name for p in step2.out_dir.iterdir()), ["runner_result.json",
+                                                                                "stop_confirmed.json"])
+            written = json.loads((step2.out_dir / "runner_result.json").read_text())
+            self.assertEqual((written["reason"], written["detail"], written["stopped"], written["refusal"]),
+                             ("wall", "wall 100s reached", True, None))
+            self.assertTrue(any("another run's: its run log is not collected" in ln for ln in log))
+            self.assertEqual(colab.stops, [("sess", 0), ("s2", 0)])
+
+    def test_a_detached_step_1_then_a_resident_step_2_is_refused_on_its_first_poll(self):
+        # fix-1 review (C1): with step 1 detached there is no <job>.poll.json; the download of the missing file fails
+        # at once, so the same poll still reads step 2's own <job>.refused.json
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(polls=lambda n, env: rec(rc=0), run_log="step 1's own log\n")
+            step1, _ = make(colab, Path(tmp) / "s1")
+            self.assertEqual(step1.run(script="/content/step1.sh", wall_s=3600).reason, "done")
+            step2, _ = self.step2(colab, tmp)
+            t0 = colab.clock.now()
+            res2 = step2.run(script="/content/step2.sh", wall_s=3600, resident=True)
+            self.assertEqual(res2.reason, "start_failed")
+            self.assertTrue(res2.detail.startswith("JOB_ALREADY_EXISTS: "), res2.detail)
+            self.assertEqual((res2.polls_ok, res2.polls_failed), (0, 0))  # the first poll found the refusal
+            self.assertLess(colab.clock.now() - t0, step2.poll_timeout_s)
+            self.assertEqual((res2.refusal["code"], res2.refusal["retryable"]), ("JOB_ALREADY_EXISTS", False))
+            self.assertIn("distinct --job", res2.refusal["hint"])
+            written = json.loads((step2.out_dir / "runner_result.json").read_text())
+            self.assertEqual(written["refusal"], res2.refusal)
+            self.assertEqual((colab.kill_calls, colab.restart_calls), (0, 0))
+            self.assertFalse((step2.out_dir / "job.run.out").exists())
+
+    def test_a_null_run_id_is_never_read_as_the_string_none(self):
+        # fix-1 review (C2)
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0, run_id=None, status_run_id=None))
+            runner, _ = make(colab, tmp)
+            runner._run_id = "None"
+            self.assertEqual(runner._other_run({"run_id": None}), "None")  # refused: not this run's
+            self.assertEqual(runner._other_run({"run_id": 5}), "5")
+            self.assertIsNone(runner._other_run({"run_id": " None "}))
+            self.assertEqual(runner._other_run({"run_id": "None", "rc": 0, "status_run_id": None}), "None")
+            self.assertIsNone(runner.poll_resident())  # the poll file's null run id is never "None"
+            colab._refused_key, colab.refused_after = ("/content", "job"), 0
+            colab._refusal = {"job": "job", "run_id": None, "error": "JOB_ALREADY_EXISTS", "detail": "x"}
+            self.assertIsNone(runner.poll_resident())
+
+    def test_runner_start_strips_the_run_id_it_stores(self):
+        # fix-1 review (C2): Runner.start outside run() strips CR_RUN_ID as run() does
+        for given, want in ((" ", None), (" run-x ", "run-x"), ("", None)):
+            with self.subTest(given=given), tempfile.TemporaryDirectory() as tmp:
+                colab = FakeColab()
+                runner, _ = make(colab, tmp)
+                runner._wall_s = 600.0
+                runner._t0 = colab.clock.now()
+                ok, _ = runner.start({"CR_RUN_ID": given, "CR_SCRIPT": "/c/x.sh"})
+                self.assertTrue(ok)
+                sent = colab.envs[-1]["CR_RUN_ID"]
+                self.assertEqual(runner._run_id, sent)
+                if want is None:
+                    self.assertEqual(len(sent), 32)
+                else:
+                    self.assertEqual(sent, want)
 
 
 class PollTest(unittest.TestCase):
@@ -365,10 +624,54 @@ class SpendTest(unittest.TestCase):
         self.assertIsNone(guard.check(1000))
         self.assertIn("CAP_GUARD_TRIPPED", guard.check(1100))
 
+    def test_skipped_usage_read_labels_the_nearer_limit_both_orders(self):
+        from colab_runner.colab_cli import CliResult
+        from tests.fakes import FakeClock, guard
+
+        # 1a. Usage read skipped (< MIN_CALL_S left), wall is nearer than ceiling -> "wall".
+        # 1b. Usage read skipped (< MIN_CALL_S left), ceiling is nearer than wall -> "cap".
+        cases = [
+            ("wall", 10.0, guard(max_rate=1.0, cap=50.0, cleanup_bound_s=600.0)),
+            ("cap", 3600.0, guard(max_rate=3.6, cap=1.01, cleanup_bound_s=1000.0)),  # 0.01 CCU / 3.6/h = 10s ceiling
+        ]
+        for want_reason, wall_s, g in cases:
+            with self.subTest(mode="skipped", want=want_reason), tempfile.TemporaryDirectory() as tmp:
+                clock = FakeClock()
+
+                def advance_on_start(kind, fake, clk=clock):
+                    if kind == "start":
+                        clk.advance(9.5)
+
+                colab = FakeColab(clock=clock, on_call=advance_on_start)
+                runner, _ = make(colab, tmp)
+                res = runner.run(script="/content/x.sh", wall_s=wall_s, guard=g)
+                self.assertEqual(res.reason, want_reason)
+                self.assertEqual(colab.usage_count, 0)
+
+        # 2. Failed usage read whose retry is cut short by the nearer limit -> names nearer limit ("wall" vs "cap").
+        for want_reason, wall_s, g in cases:
+            with self.subTest(mode="cut_retry", want=want_reason), tempfile.TemporaryDirectory() as tmp:
+                clock = FakeClock()
+
+                def advance_on_start_6s(kind, fake, clk=clock):
+                    if kind == "start":
+                        clk.advance(6.0)
+
+                colab = FakeColab(
+                    clock=clock,
+                    on_call=advance_on_start_6s,
+                    usage=lambda n: CliResult(1, "", "Connection was lost"),
+                )
+                runner, _ = make(colab, tmp)
+                res = runner.run(script="/content/x.sh", wall_s=wall_s, guard=g)
+                self.assertEqual(res.reason, want_reason)
+                self.assertEqual(colab.usage_count, 1)
+
 
 class CliEnvTest(unittest.TestCase):
     def test_cli_from_env(self):
         import os
+        import sys
         from unittest import mock
 
         from colab_runner.colab_cli import cli_from_env
@@ -377,6 +680,21 @@ class CliEnvTest(unittest.TestCase):
             self.assertEqual(cli_from_env().argv, ["colab"])
         with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": "python fake.py"}):
             self.assertEqual(cli_from_env().argv, ["python", "fake.py"])
+        with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": '"/opt/my tools/colab" --flag \'x y\''}):
+            self.assertEqual(cli_from_env().argv, ["/opt/my tools/colab", "--flag", "x y"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced = Path(tmp) / "dir with space"
+            spaced.mkdir()
+            script = spaced / "fake cli.py"
+            script.write_text("import sys\nprint('space-ok', sys.argv[1])\n", encoding="utf-8")
+            cmd = '"%s" "%s"' % (Path(sys.executable).as_posix(), script.as_posix())
+            with mock.patch.dict(os.environ, {"COLAB_RUNNER_CLI": cmd}):
+                colab = cli_from_env()
+                self.assertEqual(colab.argv, [Path(sys.executable).as_posix(), script.as_posix()])
+                res = colab.run(["--ping"], 10)
+            self.assertEqual(res.rc, 0, res.err)
+            self.assertIn("space-ok --ping", res.out)
 
 
 if __name__ == "__main__":

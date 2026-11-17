@@ -138,7 +138,10 @@ class ResidentTimeoutTest(unittest.TestCase):
     CR_RESIDENT_MAX_S, for windows short and long, and a job that ends at the window's last second is still done."""
 
     def test_the_exec_timeout_is_never_shorter_than_the_resident_max(self):
+        import math
+
         from colab_runner.colab_cli import kernel_timeout
+        from tests.fakes import FakeClock
 
         for wall_s in (2.0, 9.5, 29.0, 31.0, 600.0, 36000.0):
             with self.subTest(wall_s=wall_s), tempfile.TemporaryDirectory() as tmp:
@@ -148,10 +151,28 @@ class ResidentTimeoutTest(unittest.TestCase):
                 env = next(e for e in colab.envs if "CR_RESIDENT_MAX_S" in e)
                 call = next(c for c in colab.calls if c["kind"] == "resident")
                 self.assertGreaterEqual(kernel_timeout(call["timeout"]), int(env["CR_RESIDENT_MAX_S"]))
-                self.assertEqual(int(env["CR_RESIDENT_MAX_S"]), max(1, int(wall_s)))
+                self.assertEqual(int(env["CR_RESIDENT_MAX_S"]), max(1, math.ceil(wall_s)))
 
-    def test_a_caller_resident_max_gets_the_report_time_too(self):
+        class TickingClock(FakeClock):
+            def now(self):
+                self.now_s += 0.001
+                return self.now_s
+
+        with tempfile.TemporaryDirectory() as tmp:
+            colab = FakeColab(vm_poll_file=rec(rc=0), clock=TickingClock())
+            runner, _ = make(colab, tmp)
+            runner.run(script="/content/x.sh", wall_s=600.0, resident=True)
+            env = next(e for e in colab.envs if "CR_RESIDENT_MAX_S" in e)
+            self.assertEqual(env["CR_RESIDENT_MAX_S"], "600")  # math.ceil avoids truncating 599.998 -> 599
+
+    def test_a_caller_resident_max_gets_the_report_time_too_and_bad_values_are_refused(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from colab_runner.__main__ import main
         from colab_runner.colab_cli import kernel_timeout
+        from colab_runner.runner import Refused
 
         with tempfile.TemporaryDirectory() as tmp:
             colab = FakeColab(vm_poll_file=rec(rc=0))
@@ -159,12 +180,28 @@ class ResidentTimeoutTest(unittest.TestCase):
             runner.run(script="/content/x.sh", wall_s=600, resident=True, env={"CR_RESIDENT_MAX_S": "120"})
             call = next(c for c in colab.calls if c["kind"] == "resident")
             self.assertGreaterEqual(kernel_timeout(call["timeout"]), 120)
-        with tempfile.TemporaryDirectory() as tmp:  # a value that is not a number: the window's own end
-            colab = FakeColab(vm_poll_file=rec(rc=0))
-            runner, _ = make(colab, tmp)
-            runner.run(script="/content/x.sh", wall_s=600, resident=True, env={"CR_RESIDENT_MAX_S": "soon"})
-            call = next(c for c in colab.calls if c["kind"] == "resident")
-            self.assertGreaterEqual(kernel_timeout(call["timeout"]), 600)
+
+        for bad in ("0", "-5", "nan", "inf", "-inf", "soon"):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as tmp:
+                colab = FakeColab(vm_poll_file=rec(rc=0))
+                runner, _ = make(colab, tmp)
+                with self.assertRaises(Refused) as cm:
+                    runner.run(script="/content/x.sh", wall_s=600, resident=True, env={"CR_RESIDENT_MAX_S": bad})
+                self.assertEqual((cm.exception.code, colab.calls), ("RESIDENT_MAX_INVALID", []))
+                with self.assertRaises(Refused) as cm2:
+                    runner._start_resident({"CR_RESIDENT_MAX_S": bad}, 600.0)
+                self.assertEqual((cm2.exception.code, colab.calls), ("RESIDENT_MAX_INVALID", []))
+
+                err, out = io.StringIO(), io.StringIO()
+                with mock.patch("colab_runner.__main__.cli_from_env", return_value=colab), \
+                        contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                    code = main([
+                        "run", "--session", "s", "--out-dir", str(Path(tmp) / "cli_out"), "--script", "/c/x.sh",
+                        "--wall-s", "600", "--max-rate", "1", "--cap", "5", "--cleanup-bound-s", "1200",
+                        "--resident", "--env", "CR_RESIDENT_MAX_S=" + bad,
+                    ])
+                self.assertEqual((code, colab.calls), (1, []))
+                self.assertIn("REFUSED: RESIDENT_MAX_INVALID:", err.getvalue())
 
     def test_a_job_that_ends_in_the_last_seconds_of_the_window_is_done(self):
         from colab_runner.colab_cli import kernel_timeout

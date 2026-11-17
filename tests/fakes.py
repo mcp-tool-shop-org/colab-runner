@@ -10,7 +10,7 @@ from typing import Optional
 from unittest import mock
 
 from colab_runner.colab_cli import CliResult
-from colab_runner.runner import Runner, vm_lib_source
+from colab_runner.runner import VM_DIR, Runner, _scrub_source
 from colab_runner.spend import SpendGuard
 
 USAGE_TEXT = "Current balance: {balance:.2f} compute units\nUsage rate: {rate:.2f} / hr\nActive assignments: {n}\n"
@@ -86,12 +86,21 @@ class FakeColab:
     `vm_poll_file` (resident mode) is a dict, a string, None (not there), or a callable (download_number) -> one.
     `run_log` is the VM's <job>.run.out for resident downloads. `usage` is the `colab usage` text, or a callable
     (usage_number) -> text or CliResult.
-    With a clock, a lost or failed call costs its whole timeout, as a hung call does. Every call is recorded in
+    Run ids, as the VM keeps them: every record served (a poll, a poll file) is stamped with the run id of the job
+    whose files it reports (`run_id`, and `status_run_id` once it has an rc), unless the record sets its own. A
+    start or resident cell for a `--job` another run holds is refused and touches nothing: in resident mode the poll
+    file keeps serving the other run's last record (stale), and the refusal goes to `<job>.refused.json`, which
+    appears only after `refused_after` downloads of it have found nothing (the refused cell has not run yet; None:
+    it never runs).
+    A kill for a job another run holds answers CR_NOT_OURS, as the VM's kill cell does.
+    With a clock, a lost or failed call costs its whole timeout, as a hung call does; a download of a file that is
+    not there fails at once, as the real CLI's does. Every call is recorded in
     `calls` and `events`; `on_call(kind, fake)` runs at each call (tests raise or signal from it)."""
 
     def __init__(self, polls=None, starts=None, stops=None, vm_poll_file=None, run_log=None, usage=None,
                  clock: Optional[FakeClock] = None, resident_result: Optional[CliResult] = None,
-                 resident_done_at_start: bool = False, on_call=None, max_polls: int = 5000):
+                 resident_done_at_start: bool = False, on_call=None, max_polls: int = 5000,
+                 refused_after: Optional[int] = 0):
         self.polls = polls or (lambda n, env: rec())
         self.starts = list(starts or [])
         self.stop_results = list(stops or [])
@@ -103,6 +112,12 @@ class FakeColab:
         self.on_call, self.max_polls = on_call, max_polls
         self.jobs_started = 0
         self.vm_has_job = False
+        self.vm_jobs: dict[tuple[str, str], str] = {}  # (content, job) -> the run id that holds it
+        self.vm_poll_files: dict[tuple[str, str], dict] = {}  # the last poll file each job's resident cell wrote
+        self.refused_after = refused_after
+        self._refusal: Optional[dict] = None  # the refused resident cell's <job>.refused.json
+        self._refused_key: Optional[tuple[str, str]] = None
+        self._refused_misses = 0
         self.poll_count = self.start_calls = self.resident_calls = self.stop_calls = 0
         self.kill_calls = self.restart_calls = self.usage_count = self.poll_file_count = 0
         self.envs: list[dict] = []
@@ -119,6 +134,18 @@ class FakeColab:
         if self.on_call is not None:
             self.on_call(kind, self)
 
+    def _stamp(self, r: dict, key: tuple[str, str], fallback: str = "") -> dict:
+        """`r` as the VM writes it: with the run id of the job whose files it reports."""
+        r = dict(r)
+        r.setdefault("run_id", self.vm_jobs.get(key, fallback))
+        r.setdefault("status_run_id", r["run_id"] if r.get("rc") is not None else None)
+        return r
+
+    @staticmethod
+    def _key_of(remote: str, suffix: str) -> tuple[str, str]:
+        folder, name = remote.rsplit("/", 1)
+        return folder or "/", name[: -len(suffix)]
+
     def _fail(self, timeout, err="RuntimeError: Connection was lost") -> CliResult:
         if self.clock is not None:
             self.clock.advance(timeout)
@@ -131,6 +158,10 @@ class FakeColab:
         if "CR_KILL_GRACE_S" in env:
             self._record("kill", session, timeout)
             self.kill_calls += 1
+            key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+            run_id = env.get("CR_RUN_ID", "")
+            if run_id and key in self.vm_jobs and self.vm_jobs[key] != run_id:
+                return CliResult(0, "CR_NOT_OURS job=%s\n" % key[1])  # vm/lib.py cr_kill_job: signals nothing
             return CliResult(0, "CR_KILLED pid=1\n")
         if "CR_POLL_LOG_OFFSET" in env:
             self._record("poll", session, timeout)
@@ -141,6 +172,8 @@ class FakeColab:
             if r is None:
                 return self._fail(timeout)
             r, lines = r if isinstance(r, tuple) else (r, self.log_lines)
+            key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+            r = self._stamp(r, key, env.get("CR_RUN_ID", ""))
             out = "".join("CR_LOG %s\n" % ln for ln in lines) + "CR_POLL " + json.dumps(r) + "\n"
             return CliResult(0, out)
         self._record("start", session, timeout)
@@ -148,9 +181,17 @@ class FakeColab:
         action = self.starts.pop(0) if self.starts else "ok"
         if action == "drop":
             return self._fail(timeout)
-        if self.vm_has_job:
+        key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+        run_id = env.get("CR_RUN_ID", "")
+        if self.vm_has_job and not self.vm_jobs:
             out = "CR_ALREADY_RUNNING pid=1\n"
+        elif key in self.vm_jobs:
+            if run_id and self.vm_jobs[key] != run_id:
+                out = "CR_JOB_EXISTS job=%s pid=1\n" % key[1]
+            else:
+                out = "CR_ALREADY_RUNNING pid=1\n"
         else:
+            self.vm_jobs[key] = run_id
             self.vm_has_job = True
             self.jobs_started += 1
             out = "CR_STARTED pid=1\n"
@@ -159,9 +200,25 @@ class FakeColab:
         return CliResult(0, out)
 
     def start_cell(self, session, source, env=None, timeout=60.0) -> FakeCall:
-        self.envs.append(dict(env or {}))
+        env = dict(env or {})
+        self.envs.append(env)
         self._record("resident", session, timeout)
         self.resident_calls += 1
+        key = (env.get("CR_CONTENT", "/content"), env.get("CR_JOB", "job"))
+        run_id = env.get("CR_RUN_ID", "")
+        if key in self.vm_jobs and run_id and self.vm_jobs[key] != run_id:
+            # another run holds this --job: its files stay as they are; the refusal goes to a file of its own
+            self._refusal = {
+                "job": key[1], "run_id": run_id, "error": "JOB_ALREADY_EXISTS",
+                "detail": "CR_JOB_EXISTS job=%s pid=1" % key[1],
+            }
+            self._refused_key, self._refused_misses = key, 0
+            self.resident_call = FakeCall(
+                CliResult(0, "CR_JOB_EXISTS job=%s pid=1\nCR_RESIDENT_DONE\n" % key[1]), done=True,
+            )
+            return self.resident_call
+        self._refused_key = None
+        self.vm_jobs[key] = run_id
         self.jobs_started += 1
         self.vm_has_job = True
         self.resident_call = FakeCall(self.resident_result, done=self.resident_done_at_start)
@@ -172,16 +229,34 @@ class FakeColab:
         name = remote.rsplit("/", 1)[-1]
         if name.endswith(".poll.json"):
             self.poll_file_count += 1
-            data = self.vm_poll_file(self.poll_file_count) if callable(self.vm_poll_file) else self.vm_poll_file
-            if isinstance(data, dict) and data.get("rc") is not None and self.resident_call is not None:
-                self.resident_call.done = True  # the resident cell ends once the job's status is in
+            key = self._key_of(remote, ".poll.json")
+            if key == self._refused_key:
+                data = self.vm_poll_files.get(key)  # the other run's last record, untouched
+            else:
+                data = self.vm_poll_file(self.poll_file_count) if callable(self.vm_poll_file) else self.vm_poll_file
+                if isinstance(data, dict):
+                    data = self._stamp(data, key)
+                    self.vm_poll_files[key] = data
+                if isinstance(data, dict) and data.get("rc") is not None and self.resident_call is not None:
+                    self.resident_call.done = True  # the resident cell ends once the job's status is in
+        elif name.endswith(".refused.json"):
+            key = self._key_of(remote, ".refused.json")
+            data = None
+            if key == self._refused_key and self.refused_after is not None:
+                if self._refused_misses >= self.refused_after:
+                    data = self._refusal
+                self._refused_misses += 1
         elif name.endswith(".run.out"):
             data = self.run_log
         else:
             data = None
         if data is None:
-            return self._fail(timeout, "no such file: %s" % remote)
-        Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
+            # a real `colab download` of a missing file fails at once: it does not use up the call's timeout
+            return CliResult(1, "", "no such file: %s" % remote)
+        if isinstance(data, bytes):
+            Path(local).write_bytes(data)
+        else:
+            Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
         return CliResult(0)
 
     def stop(self, session, timeout=120.0) -> CliResult:
@@ -218,6 +293,13 @@ def make(colab: FakeColab, tmp, **kw) -> tuple[Runner, FakeClock]:
     return runner, clock
 
 
+def exec_vm_lib(ns: dict) -> None:
+    """Compile and execute `_scrub_source()` + `colab_runner/vm/lib.py` at its real path for coverage."""
+    exec(compile(_scrub_source(), "<scrub_source>", "exec"), ns)
+    lib = VM_DIR / "lib.py"
+    exec(compile(lib.read_text(encoding="utf-8"), str(lib), "exec"), ns)
+
+
 class VmLog:
     """A VM job log served by the real poll code: vm/lib.py's cr_collect, exec'd here against a temp folder (no pid
     file there, so no process is ever signalled)."""
@@ -226,7 +308,7 @@ class VmLog:
         self.folder, self.job = Path(folder), job
         with mock.patch.dict(os.environ, {"CR_CONTENT": str(self.folder), "CR_JOB": job}):
             self.ns: dict = {"__name__": "cr_vm_lib"}
-            exec(compile(vm_lib_source(), "cr_vm_lib", "exec"), self.ns)
+            exec_vm_lib(self.ns)
 
     def write(self, data: bytes) -> None:
         (self.folder / (self.job + ".run.out")).write_bytes(data)

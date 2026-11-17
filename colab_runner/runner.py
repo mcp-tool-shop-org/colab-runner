@@ -14,11 +14,17 @@ confirmed stop, and a stop that failed leaves `stop_pending.json`, never `stop_c
 Every step is bounded by the wall and by the cap's ceiling: each sleep and each call timeout is clamped to the time
 left to the nearer of the two, and start retries stop when the next attempt could pass it.
 
+Every run has its own id (CR_RUN_ID). The VM stamps it on the job's files, its status file and every poll record;
+the runner accepts only records stamped with its own id, so a record another run left under the same `--job` never
+ends this run, and the VM never touches another run's files or job (a `--job` held by another run is refused,
+JOB_ALREADY_EXISTS).
+
 Kits supply: the job script (or hold seconds), a progress counter (CR_PROGRESS_GLOB / CR_UNITS_GLOB, see vm/lib.py),
 and a phase file (`<out>/phase.txt`: "setup" while installing, anything else once running)."""
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import math
@@ -26,12 +32,23 @@ import os
 import signal
 import threading
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from colab_runner.colab_cli import EXEC_REPORT_S, KILL_WAIT_S, CliResult, Colab, scrub_local
+from colab_runner.colab_cli import (
+    EXEC_REPORT_S,
+    KILL_WAIT_S,
+    BinaryDownloadRefused,
+    QuarantineEscape,
+    CliResult,
+    Colab,
+    default_quarantine_dir,
+    scrub_local,
+)
+from colab_runner.errors import Refused, error_record
 from colab_runner.window_lib import launch_guards as lg
 
 VM_DIR = Path(__file__).parent / "vm"
@@ -43,6 +60,9 @@ REACHED_EPS_S = 1e-6  # less than this left: the wall or the ceiling has been re
 TRIPS = frozenset(
     {"wall", "cap", "setup_stall", "progress_stall", "dead", "unreachable", "start_failed", "interrupted", "error"}
 )
+
+# The kill cell's answers for a job that is this run's own (vm/lib.py cr_kill_job checks the owner first).
+OWN_KILL_ANSWERS = ("CR_KILLED", "CR_NOT_RUNNING", "CR_NO_JOB")
 
 # A fresh `colab exec` kernel handshake can be slower than the CLI's default request timeout, so a start or poll that
 # fails is retried with backoff rather than read as a dead job.
@@ -109,14 +129,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-class Refused(ValueError):
-    """A run refused before any `colab` call, by name (`code`)."""
-
-    def __init__(self, code: str, why: str):
-        super().__init__("%s: %s" % (code, why))
-        self.code, self.why = code, why
-
-
 def require_number(code: str, name: str, value, *, low: float = 0.0, inclusive: bool = False,
                    integer: bool = False) -> None:
     """Refuse (`code`) a value that is not a finite number above `low` (or at it, when `inclusive`)."""
@@ -131,6 +143,15 @@ def require_number(code: str, name: str, value, *, low: float = 0.0, inclusive: 
 
 def _stop_pause(attempt: int) -> float:
     return min(2.0 * attempt, 10.0)
+
+
+def _parse_resident_max_s(raw: Any) -> float:
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        raise Refused("RESIDENT_MAX_INVALID", "CR_RESIDENT_MAX_S must be a finite number > 0 (got %r)" % (raw,)) from None
+    require_number("RESIDENT_MAX_INVALID", "CR_RESIDENT_MAX_S", val)
+    return val
 
 
 @dataclass
@@ -148,6 +169,11 @@ class RunResult:
     killed: Optional[str] = None  # the kill cell's answer on a trip (CR_KILLED / CR_NOT_RUNNING / ...)
     salvaged: Optional[bool] = None
     stopped: Optional[bool] = None
+    quarantined: list[dict[str, str]] = field(default_factory=list)
+    # a run that ended on a named refusal (JOB_ALREADY_EXISTS, BINARY_DOWNLOAD_TOKEN): {code, message, hint, retryable}
+    refusal: Optional[dict] = None
+    # the end that a refusal during cleanup replaced with `error` (wall, cap, ...), else None
+    prior_reason: Optional[str] = None
 
 
 class RunInterrupted(Exception):
@@ -187,6 +213,7 @@ class Runner:
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda s: None,
+        trace: Callable[[str], None] = lambda s: None,
     ):
         require_number("POLL_INVALID", "poll_s", poll_s)
         for name, value in (
@@ -202,6 +229,7 @@ class Runner:
         require_number("SETTING_INVALID", "usage_retries", usage_retries, inclusive=True, integer=True)
         self.usage_retries = int(usage_retries)
         self.colab, self.session, self.out_dir = colab, session, Path(out_dir)
+        self.quarantine_dir = default_quarantine_dir(self.out_dir)
         self.job, self.content = job, content
         self.poll_s, self.poll_timeout_s, self.backoff_max_s = poll_s, poll_timeout_s, backoff_max_s
         self.start_attempts, self.start_timeout_s = int(start_attempts), start_timeout_s
@@ -210,16 +238,68 @@ class Runner:
         self.stop_attempts, self.stop_timeout_s = int(stop_attempts), stop_timeout_s
         self.clock, self.sleep = clock, sleep
         self.log = lambda s: log(scrub(s))  # nothing reaches the log unscrubbed
+        self.trace = lambda s: trace(scrub(s))  # one line per poll (the CLI's --verbose), scrubbed the same way
         self._resident = None
         self._cleanup_signals: list[int] = []
         self._phase = "idle"
+        self._res = RunResult("error")
+        # a download refused in cleanup (BinaryDownloadRefused, or QuarantineEscape): it ends the run as `error`
+        self._download_refusal: Optional[BaseException] = None
+        self._run_id = ""
+        self._job_reused = False
+        self._own_seen = False  # a record of this run (its own run id) has been seen, or its start confirmed
+        self._foreign_id: Optional[str] = None  # the run id of the last record refused as another run's
         self._t0, self._wall_s, self._guard = 0.0, 0.0, None
+        self._result_written = False  # runner_result.json holds this run's end: a later quarantine rewrites it
+        self._prior_detail = ""
 
     # -- environment the cells read -------------------------------------------------------------------------------
     def _env(self, extra: Mapping[str, str] | None = None) -> dict:
         env = {"CR_CONTENT": self.content, "CR_JOB": self.job}
+        if self._run_id:
+            env["CR_RUN_ID"] = self._run_id  # every cell: the VM answers for this run only
         env.update(extra or {})
         return env
+
+    # -- whose record is it -----------------------------------------------------------------------------------------
+    def _other_run(self, rec: Mapping[str, Any]) -> Optional[str]:
+        """None if `rec` is this run's (its run_id, and for a record with an rc its status_run_id, are this run's
+        id); else the other run id it carries. A runner with no run id yet (poll() before any start) checks nothing."""
+        if not self._run_id:
+            return None
+        mine = self._run_id.strip()
+        if not _is_run_id(rec.get("run_id"), mine):  # a JSON null is never compared as the string "None"
+            return str(rec.get("run_id"))
+        if rec.get("rc") is not None and not _is_run_id(rec.get("status_run_id"), mine):
+            return str(rec.get("status_run_id"))
+        return None
+
+    def _refuse_record(self, other: str, where: str) -> None:
+        self._foreign_id = other
+        self.log("%s: a record of another run (run_id %s) refused: it is never this run's" % (where, other))
+
+    def _record_quarantine(self, entry: dict[str, str]) -> None:
+        item = {"path": entry["path"], "source": entry["source"], "pattern": entry["pattern"]}
+        if all(existing.get("path") != item["path"] for existing in self._res.quarantined):
+            self._res.quarantined.append(item)
+            if self._result_written and self._phase == "idle":
+                # a Runner.download after run() returned: runner_result.json is rewritten with it
+                write_json_atomic(self.out_dir / "runner_result.json", asdict(self._res))
+
+    @contextlib.contextmanager
+    def _bind_quarantine(self):
+        if not isinstance(self.colab, Colab):
+            yield
+            return
+        prev = (self.colab.quarantine_dir, self.colab._base_dir, self.colab.log, self.colab.on_quarantine)
+        self.colab.quarantine_dir = self.quarantine_dir
+        self.colab._base_dir = self.out_dir
+        self.colab.log = self.log
+        self.colab.on_quarantine = self._record_quarantine
+        try:
+            yield
+        finally:
+            self.colab.quarantine_dir, self.colab._base_dir, self.colab.log, self.colab.on_quarantine = prev
 
     @staticmethod
     def _clean(res: CliResult) -> CliResult:
@@ -268,6 +348,13 @@ class Runner:
         """Start the job; a lost reply is retried and can never start a second job (the cell is idempotent).
         Each attempt's timeout is clamped to what is left before the wall and the ceiling after its backoff,
         min(start_timeout_s, left - pause); the retries stop when that is under MIN_CALL_S."""
+        full = dict(env)
+        # stripped as run() strips it: a blank id would leave cr_run_id() empty on the VM and turn the refusal off
+        given = full.get("CR_RUN_ID")
+        given = str(given).strip() if given is not None else ""  # None never becomes the string "None"
+        full["CR_RUN_ID"] = given or self._run_id.strip() or uuid.uuid4().hex
+        if not self._run_id.strip():
+            self._run_id = full["CR_RUN_ID"]
         delay, last = 2.0, ""
         for attempt in range(1, self.start_attempts + 1):
             pause = delay if attempt > 1 else 0.0
@@ -279,9 +366,17 @@ class Runner:
             if pause:
                 self.sleep(pause)
                 delay = min(delay * 2, self.backoff_max_s)
-            res = self._clean(self.colab.exec_cell(self.session, cell_source("start"), self._env(env), timeout))
+            res = self._clean(self.colab.exec_cell(self.session, cell_source("start"), self._env(full), timeout))
             text = (res.out or res.err or "").strip()
             last = text.splitlines()[-1] if text else ""
+            if res.ok and "CR_JOB_EXISTS" in res.out:
+                self._job_reused = True
+                msg = (
+                    "JOB_ALREADY_EXISTS: --job %r already exists in %s (%s); pass a distinct --job for each step"
+                    % (self.job, self.content, last)
+                )
+                self.log("start refused: %s" % msg)
+                return False, msg
             if res.ok and ("CR_STARTED" in res.out or "CR_ALREADY_RUNNING" in res.out):
                 self.log("start ok (attempt %d): %s" % (attempt, last))
                 return True, last
@@ -295,66 +390,117 @@ class Runner:
         (kernel_timeout) is never shorter than CR_RESIDENT_MAX_S and cannot end the cell before the window does.
         Nothing bills for the extra: every exit kills the child (_end) before the stop."""
         full = self._env(env)
-        full.setdefault("CR_RESIDENT_MAX_S", str(max(1, int(left))))
-        try:
-            max_s = max(1.0, float(full["CR_RESIDENT_MAX_S"]))
-        except ValueError:
-            max_s = float(max(1, int(left)))
+        ceil_left = max(1, math.ceil(left))
+        if "CR_RESIDENT_MAX_S" in full:
+            max_s = max(1.0, _parse_resident_max_s(full["CR_RESIDENT_MAX_S"]))
+        else:
+            full["CR_RESIDENT_MAX_S"] = str(ceil_left)
+            max_s = float(ceil_left)
         self._resident = self.colab.start_cell(self.session, cell_source("resident"), full, max_s + EXEC_REPORT_S)
 
     # -- poll -----------------------------------------------------------------------------------------------------
     def poll(self, offset: int, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
+        """One poll cell. A record of another run is refused: it counts as a failed poll, never as this job's."""
         res = self._clean(self.colab.exec_cell(
             self.session, cell_source("poll"), self._env({"CR_POLL_LOG_OFFSET": str(offset)}),
             self.poll_timeout_s if timeout is None else timeout,
         ))
-        return parse_poll(res.out) if res.ok else None
+        got = parse_poll(res.out) if res.ok else None
+        if got is not None:
+            other = self._other_run(got[0])
+            if other is not None:
+                self._refuse_record(other, "poll")
+                return None
+        return got
 
-    def _read_usage(self) -> Optional[CliResult]:
+    def _read_usage(self) -> tuple[Optional[CliResult], bool]:
         """One `colab usage` reading: a failed read is retried up to `usage_retries` times, each attempt (and the
-        pause before it) clamped to the time left before the wall and the ceiling. What is returned is the last try;
-        a reading that still failed then folds into COLAB_USAGE_PARSE_FAILED, the library's fail-closed rule. None
-        when no attempt fitted."""
-        last = None
+        pause before it) clamped to the time left before the wall and the ceiling. Returns (last_try, skipped_for_limit)."""
+        last, skipped = None, False
         for attempt in range(self.usage_retries + 1):
             if attempt:
                 self._pause(USAGE_RETRY_PAUSE_S)
             left, _ = self._time_left()
             if left < MIN_CALL_S:
+                skipped = True
                 break
             last = self._clean(self.colab.usage(min(self.usage_timeout_s, left)))
             if last.ok:
                 break
             self.log("colab usage attempt %d failed rc=%s: %s" % (attempt + 1, last.rc, (last.err or "")[-200:]))
-        return last
+        return last, skipped
+
+    def download(self, remote: str, local: Path | str, timeout: float = 120.0) -> CliResult:
+        """`colab download`; whatever is at `local` afterwards passes through `scrub_local` (quarantining binary
+        token hits in `<out-dir>.quarantine`) before anything reads it, in a `finally`."""
+        target = Path(local)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with self._bind_quarantine():
+            try:
+                return self._clean(self.colab.download(self.session, remote, str(target), timeout))
+            except BinaryDownloadRefused as exc:
+                for entry in exc.quarantined:
+                    self._record_quarantine(entry)
+                raise
+            finally:
+                try:
+                    scrub_local(
+                        target, quarantine_dir=self.quarantine_dir, base_dir=self.out_dir,
+                        log=self.log, on_quarantine=self._record_quarantine,
+                    )
+                except BinaryDownloadRefused as exc:
+                    for entry in exc.quarantined:
+                        self._record_quarantine(entry)
+                    raise
 
     def _download(self, remote: str, local: Path, timeout: float) -> CliResult:
-        """`colab download`; whatever is at `local` afterwards is scrubbed in place (scrub_local) before anything
-        reads it, in a `finally`: a timed-out, failed or interrupted transfer can leave partial bytes."""
-        Path(local).parent.mkdir(parents=True, exist_ok=True)
-        try:
-            return self._clean(self.colab.download(self.session, remote, str(local), timeout))
-        finally:
-            scrub_local(local)
+        return self.download(remote, local, timeout)
 
-    def poll_resident(self, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
-        local = self.out_dir / ("%s.poll.json" % self.job)
-        res = self._download(
-            "%s/%s.poll.json" % (self.content.rstrip("/"), self.job), local,
-            self.poll_timeout_s if timeout is None else timeout,
-        )
+    def _fetch_record(self, name: str, timeout: float) -> Optional[dict]:
+        """`<content>/<job>.<name>` downloaded into the out dir and read as a JSON object, or None."""
+        local = self.out_dir / ("%s.%s" % (self.job, name))
+        res = self._download("%s/%s.%s" % (self.content.rstrip("/"), self.job, name), local, timeout)
         if not res.ok or not local.is_file():
             return None
         try:
             rec = json.loads(local.read_text(encoding="utf-8"))
         except ValueError:
             return None
-        return (rec, []) if isinstance(rec, dict) else None
+        return rec if isinstance(rec, dict) else None
+
+    def poll_resident(self, timeout: Optional[float] = None) -> Optional[tuple[dict, list[str]]]:
+        """The resident cell's poll file, if it is this run's. A poll file another run left under this `--job` is
+        refused (it is "not yet seen", and its local copy is removed); then this run's own refusal record, if its
+        cell has written one, `<job>.refused.json` stamped with this run's id. Both downloads share `timeout`."""
+        budget = self.poll_timeout_s if timeout is None else timeout
+        t0 = self.clock()
+        rec = self._fetch_record("poll.json", budget)
+        if rec is not None:
+            other = self._other_run(rec)
+            if other is None:
+                return rec, []
+            self._refuse_record(other, "resident poll file")
+            (self.out_dir / ("%s.poll.json" % self.job)).unlink(missing_ok=True)
+        left = budget - (self.clock() - t0)
+        if left < MIN_CALL_S:
+            return None
+        ref = self._fetch_record("refused.json", left)
+        if ref is None:
+            return None
+        mine = self._run_id.strip()
+        if ref.get("error") == "JOB_ALREADY_EXISTS" and mine and _is_run_id(ref.get("run_id"), mine):
+            return ref, []
+        (self.out_dir / ("%s.refused.json" % self.job)).unlink(missing_ok=True)  # another run's refusal
+        return None
 
     def _collect_resident_log(self, timeout: float) -> bool:
         """Resident mode: the job's whole run log, downloaded (and scrubbed) into the out dir."""
         local = self.out_dir / ("%s.run.out" % self.job)
-        res = self._download("%s/%s.run.out" % (self.content.rstrip("/"), self.job), local, timeout)
+        try:
+            res = self._download("%s/%s.run.out" % (self.content.rstrip("/"), self.job), local, timeout)
+        except BinaryDownloadRefused:
+            self._log_collected = True
+            raise
         if res.ok and local.is_file():
             self._log_collected = True
             if lg.OOM_KILL_RE.search(local.read_text(encoding="utf-8", errors="replace")):
@@ -397,33 +543,44 @@ class Runner:
         self._t0, self._wall_s, self._guard = self.clock(), float(wall_s), guard
         self._resident, self._oom_seen, self._log_collected, self._skip_salvage = None, False, False, False
         self._res = RunResult("error")
+        self._download_refusal = None
+        self._run_id = kit_env["CR_RUN_ID"]
+        self._job_reused = False
+        self._own_seen, self._foreign_id = False, None
+        self._result_written, self._prior_detail = False, ""
         self._cleanup_signals: list[int] = []
         self._phase = "run"
         handlers: Optional[dict] = None
         crash: Optional[BaseException] = None
-        try:
-            handlers = self._arm_signals()  # inside the try: a signal before it is armed still reaches the finally
-            # written inside the try, before the start cell: no gap between the marker and the stop's finally
-            write_json_atomic(
-                self.out_dir / "session_open.json", {"session": self.session, "job": self.job, "content": self.content}
-            )
-            self._run_body(kit_env, wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
-                           unreachable_polls, unreachable_s)
-        except RunInterrupted as exc:
-            self._end_as("interrupted", "signal %s" % _signal_name(exc.signum))
-        except BaseException as exc:  # any crash, KeyboardInterrupt included: stop first, then let it go on
-            self._end_as("interrupted" if isinstance(exc, KeyboardInterrupt) else "error",
-                         "%s: %s" % (type(exc).__name__, exc))
-            crash = exc
-        finally:
-            if self._phase == "run":
-                self._phase = "stopping"
+        with self._bind_quarantine():
             try:
-                self._end(self._res, salvage, resident)
+                handlers = self._arm_signals()  # inside the try: a signal before it is armed still reaches the finally
+                # written inside the try, before the start cell: no gap between the marker and the stop's finally
+                write_json_atomic(
+                    self.out_dir / "session_open.json", {"session": self.session, "job": self.job, "content": self.content}
+                )
+                self._run_body(kit_env, wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
+                               unreachable_polls, unreachable_s)
+            except RunInterrupted as exc:
+                self._end_as("interrupted", "signal %s" % _signal_name(exc.signum))
+            except BaseException as exc:  # any crash, KeyboardInterrupt included: stop first, then let it go on
+                self._end_as("interrupted" if isinstance(exc, KeyboardInterrupt) else "error",
+                             "%s: %s" % (type(exc).__name__, exc))
+                if isinstance(exc, (BinaryDownloadRefused, QuarantineEscape)):
+                    self._res.refusal = error_record(exc.code, scrub(exc.message))
+                crash = exc
             finally:
-                self._phase = "idle"
-                self._disarm_signals(handlers)
-                write_json_atomic(self.out_dir / "runner_result.json", asdict(self._res))
+                if self._phase == "run":
+                    self._phase = "stopping"
+                try:
+                    self._end(self._res, salvage, resident)
+                finally:
+                    self._phase = "idle"
+                    self._disarm_signals(handlers)
+                    write_json_atomic(self.out_dir / "runner_result.json", asdict(self._res))
+                    self._result_written = True
+        if crash is None and self._download_refusal is not None:
+            crash = self._download_refusal
         if crash is not None:
             raise crash
         return self._res
@@ -440,6 +597,13 @@ class Runner:
                        integer=True)
         require_number("UNREACHABLE_INVALID", "unreachable_s", unreachable_s)
         kit_env = dict(env or {})
+        if resident and "CR_RESIDENT_MAX_S" in kit_env:
+            _parse_resident_max_s(kit_env["CR_RESIDENT_MAX_S"])
+        if "CR_RUN_ID" in kit_env:
+            # reserved: a lane id reused across steps would turn the --job refusal off between them
+            raise Refused("RUN_ID_RESERVED", "CR_RUN_ID is the runner's own (every run gets a fresh one); drop it "
+                          "from the run's environment")
+        kit_env["CR_RUN_ID"] = uuid.uuid4().hex  # one id per run
         if hold_s is not None:
             require_number("HOLD_INVALID", "hold_s", hold_s)
             # a heartbeat-only job with no pause between beats spins writes on the VM; 0 has no meaning here
@@ -454,11 +618,15 @@ class Runner:
             raise Refused("CLEANUP_BOUND_TOO_SMALL", "cleanup_bound_s %g is below the runner's own cleanup bound %g s "
                           "(kill, %sstop attempts)" % (bound, self.own_cleanup_bound_s(resident),
                                                        "kernel restart, run log, " if resident else ""))
-        if self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
-            # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
-            # refuses the same: colab_refuse_nonempty_out_dir)
-            raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
-        self.out_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
+                # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
+                # refuses the same: colab_refuse_nonempty_out_dir)
+                raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # refused by name before the marker, so exit 1 keeps meaning "no session was owned"
+            raise Refused("OUT_DIR_INVALID", "%s cannot be created or listed (%s: %s)"
+                          % (self.out_dir, type(exc).__name__, exc)) from None
         return kit_env
 
     def _run_body(self, kit_env, wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
@@ -471,13 +639,34 @@ class Runner:
         else:
             started, last = self.start(kit_env)
             if not started:
+                if self._job_reused:
+                    return self._end_refused("start_failed", "JOB_ALREADY_EXISTS", last.partition(": ")[2])
                 return self._end_as("start_failed", "start not confirmed: %s" % last)
+            self._own_seen = True  # the start cell answered for this run id: the job is this run's
         self._loop(wall_s, guard, progress_stall_s, setup_stall_s, dead_confirm, resident, hold_mode,
                    unreachable_polls, unreachable_s)
 
     def _end_as(self, reason: str, detail: str) -> None:
         self._res.reason, self._res.detail = reason, scrub(detail)
         self._res.elapsed_s = self.clock() - self._t0
+
+    def _end_refused(self, reason: str, code: str, message: str) -> None:
+        """An end on a named refusal: the detail is `CODE: message`, and runner_result.json records the refusal."""
+        self._end_as(reason, "%s: %s" % (code, message))
+        self._res.refusal = error_record(code, scrub(message))
+
+    def _end_on_download_refusal(self) -> None:
+        """A binary download refused in cleanup ends the run as `error`; the end it replaced is kept
+        (`prior_reason`, and named in the detail)."""
+        exc = self._download_refusal
+        if self._res.reason != "error" and self._res.prior_reason is None:
+            self._res.prior_reason, self._prior_detail = self._res.reason, self._res.detail
+        detail = "%s: %s" % (type(exc).__name__, exc)
+        if self._res.prior_reason is not None:
+            prior = self._res.prior_reason + (": %s" % self._prior_detail if self._prior_detail else "")
+            detail += " (the run had ended %s)" % prior
+        self._end_as("error", detail)
+        self._res.refusal = error_record(exc.code, scrub(exc.message))
 
     def _finished(self, rc: int) -> None:
         """The job's status file is in: `oom` on rc 137 or an OOM kill line in its log, `failed` on any other
@@ -505,19 +694,31 @@ class Runner:
             if lg.evaluate_wall_guard(elapsed_s=self.clock() - self._t0, wall_s=wall_s, grace_s=0.0)["tripped"]:
                 return self._end_as("wall", "wall %.0fs reached" % wall_s)
             if guard is not None:
+                u, usage_skipped = None, False
                 if fold is not None and (usage_t is None or self.clock() - usage_t >= self.poll_s):
-                    u = self._read_usage()
+                    u, usage_skipped = self._read_usage()
                     if u is not None:
                         usage_t = self.clock()
                         fold(u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
+                left_now, nearer = self._time_left()
                 trip = guard.check(self.clock() - self._t0)
                 if trip:
-                    return self._end_as("cap", trip)
+                    usage_cut = usage_skipped or (u is not None and not u.ok and left_now < MIN_CALL_S)
+                    return self._end_as(nearer if usage_cut else "cap", trip)
             # resident mode: until its poll file has appeared, the start is unverified and has the setup window
             until = loop_t0 + setup_stall_s if resident and not file_seen else None
             left, bound = self._budget(until)
             if left < REACHED_EPS_S:
                 if bound == "setup":
+                    if self._foreign_id is not None:
+                        # only another run's records under this --job: this run's cell never ran its start
+                        self._job_reused = True
+                        return self._end_refused(
+                            "start_failed", "JOB_ALREADY_EXISTS",
+                            "--job %r in %s holds another run's records (run_id %s); this run's own record did not "
+                            "appear within %.0fs; pass a distinct --job for each step"
+                            % (self.job, self.content, self._foreign_id, setup_stall_s),
+                        )
                     return self._end_as("start_failed", "the resident poll file did not appear within %.0fs"
                                         % setup_stall_s)
                 return self._end_as(bound, "the %s was reached" % bound)
@@ -530,6 +731,7 @@ class Runner:
             if got is None:
                 res.polls_failed += 1
                 failed_run += 1
+                self.trace("poll failed (%d in a row)" % failed_run)
                 res.max_consecutive_failed = max(res.max_consecutive_failed, failed_run)
                 if until is None and (failed_run >= unreachable_polls or now - last_good_t >= unreachable_s):
                     return self._end_as("unreachable", "%d polls failed in a row, %.0fs without a good poll"
@@ -538,7 +740,16 @@ class Runner:
                 self._pause(delay, until)
                 continue
             rec, lines = got
-            file_seen = True
+            if rec.get("error") == "JOB_ALREADY_EXISTS":
+                self._job_reused = True
+                return self._end_refused(
+                    "start_failed", "JOB_ALREADY_EXISTS",
+                    "--job %r already exists in %s (%s); pass a distinct --job for each step"
+                    % (self.job, self.content, rec.get("detail", "")),
+                )
+            file_seen = self._own_seen = True
+            self.trace("poll ok: phase=%s progress=%s units=%s alive=%s rc=%s" % (
+                rec.get("phase"), rec.get("progress"), rec.get("units_done"), rec.get("alive"), rec.get("rc")))
             res.polls_ok += 1
             failed_run, delay, last_good_t = 0, self.poll_s, now
             res.last = scrub_obj(rec)
@@ -589,6 +800,13 @@ class Runner:
         """One cleanup step; whatever it raises is logged, and the next step (the stop above all) still runs."""
         try:
             return fn()
+        except (BinaryDownloadRefused, QuarantineEscape) as exc:
+            if self._download_refusal is None:
+                self._download_refusal = exc
+            for entry in getattr(exc, "quarantined", []):
+                self._record_quarantine(entry)
+            self.log("cleanup step %s failed: %s: %s" % (name, type(exc).__name__, exc))
+            return None
         except BaseException as exc:
             self.log("cleanup step %s failed: %s: %s" % (name, type(exc).__name__, exc))
             return None
@@ -598,11 +816,25 @@ class Runner:
         run's own session, always. Nothing here is clamped to the wall: the cap's cleanup reserve pays for it."""
         if self._resident is not None:
             self._step("resident child", self._resident.kill)
-        if res.reason in TRIPS:
+        # a job this run never owned (refused, or only another run's records seen) is never killed or collected
+        not_ours = self._job_reused or (self._foreign_id is not None and not self._own_seen)
+        if res.reason in TRIPS and not not_ours:
             self._step("kill", lambda: self._kill_job(res, resident))
-        if resident and not self._log_collected:
+            if (res.killed or "").startswith("CR_NOT_OURS"):
+                # the VM says the job under this --job is another run's (a trip before any record was seen): its
+                # run log is never collected into this run's out dir
+                not_ours = True
+                self.log("the job under --job %r is another run's: its run log is not collected" % self.job)
+        # the job is known to be this run's: a record of its own was seen, or the kill cell answered for this run id
+        # (it answers CR_NOT_OURS for another run's job); a kill cell that failed outright proves nothing
+        owned = self._own_seen or (res.killed or "").startswith(OWN_KILL_ANSWERS)
+        if resident and not self._log_collected and not not_ours and not owned:
+            self.log("the job under --job %r was never shown to be this run's: its run log is not collected" % self.job)
+        if resident and not self._log_collected and not not_ours and owned:
             self._step("run log", lambda: self._collect_resident_log(self.log_timeout_s))
-            if res.reason == "done" and self._oom_seen:
+            if self._download_refusal is not None:
+                self._end_on_download_refusal()
+            elif res.reason == "done" and self._oom_seen:
                 res.reason, res.detail = "oom", "the job was OOM-killed: an OOM kill line in the job log (OOM_KILL_RE)"
         if res.reason != "done" and salvage is not None:
             if self._skip_salvage:
@@ -610,6 +842,8 @@ class Runner:
                 self.log("salvage skipped: a signal arrived during cleanup")
             else:
                 self._step("salvage", lambda: self._salvage(res, salvage))
+        if self._download_refusal is not None:
+            self._end_on_download_refusal()
         self._phase = "stop"
         res.stopped = bool(self._step("stop", self.stop_session))
         for signum in self._cleanup_signals:
@@ -689,6 +923,11 @@ class Runner:
             if i < attempts:
                 self.sleep(_stop_pause(i))
         return False
+
+
+def _is_run_id(value: Any, mine: str) -> bool:
+    """`value` is this run's id: a string equal to `mine` once stripped (a JSON null or a number never is)."""
+    return isinstance(value, str) and value.strip() == mine
 
 
 def _signal_name(signum: int) -> str:

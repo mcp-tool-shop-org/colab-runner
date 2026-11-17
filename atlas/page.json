@@ -17,51 +17,51 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 2,
+      "added": 10,
+      "changed": 17,
       "moved": 0,
-      "parts": 3,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
         "kind": "landing",
-        "sentence": "colab_runner/vm/lib.py is now also read by tests/test_window_lib.py.",
+        "sentence": "colab_runner/ is now read by tests/test_errors.py.",
         "subjects": [
-          "colab_runner/vm/lib.py",
+          "colab_runner/",
+          "tests/test_errors.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "colab_runner/**/*.py is now read by tests/test_errors.py.",
+        "subjects": [
+          "colab_runner/**/*.py",
+          "tests/test_errors.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "colab_runner/vm/kill.py is now read by tests/test_window_lib.py.",
+        "subjects": [
+          "colab_runner/vm/kill.py",
           "tests/test_window_lib.py"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "colab_runner/vm/poll.py is now read by tests/test_window_lib.py.",
-        "subjects": [
-          "colab_runner/vm/poll.py",
-          "tests/test_window_lib.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "colab_runner/window_lib/PROVENANCE.md is now read by tests/test_window_lib.py.",
-        "subjects": [
-          "colab_runner/window_lib/PROVENANCE.md",
-          "tests/test_window_lib.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "And 3 more new writers and readers of places.",
+        "sentence": "And 4 more new writers and readers of places.",
         "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "1 file added and 2 changed content, across 3 parts.",
+        "sentence": "10 files added and 17 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "ba58165c0d51d3b9fbbaf61fece2b5784237d391",
-      "generatedAt": "2026-11-12T20:52:34.403Z"
+      "commit": "cc633abb7abd43fd4544ca8a309269d9a64fe34e",
+      "generatedAt": "2026-11-12T20:56:07.709Z"
     },
     "unchanged": false
   },
@@ -70,9 +70,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "cc633abb7abd43fd4544ca8a309269d9a64fe34e",
+  "commit": "d5a53737449f1b9d76677dbc7ca888cd0669813d",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (19 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
+  "derived": "4 parts, mostly Python (29 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.",
   "doors": [
     {
       "checks": [
@@ -89,7 +89,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 12
+          "files": 14
         },
         {
           "boundary": "root",
@@ -99,7 +99,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 7
+          "files": 15
         }
       ],
       "runs": [
@@ -152,10 +152,11 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-12T20:56:07.709Z",
+  "generatedAt": "2026-11-17T20:25:03.555Z",
   "limits": [
-    "4 writes and 2 reads use paths built at run time and are not named here.",
-    "7 writes and 13 reads go to a path their caller passes, not to this repository.",
+    "7 writes and 6 reads use paths built at run time and are not named here.",
+    "9 writes and 15 reads go to a path their caller passes, not to this repository.",
+    "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -174,12 +175,12 @@
   "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 7,
+  "testFiles": 15,
   "testedBy": {
-    "colab_runner": 4
+    "colab_runner": 12
   },
   "testedCodeParts": 1,
-  "unnamedWrites": 4,
+  "unnamedWrites": 7,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],

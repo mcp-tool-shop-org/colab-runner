@@ -1,18 +1,18 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-12 from commit cc633ab by Atlas 1.26.0.
+Mapped at 2026-11-17 from commit d5a5373 by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (19 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
+4 parts, mostly Python (29 files) and shell (2). Work enters through 2 doors; the busiest is CI, which reaches 3 parts.
 
-## What changed since 2026-11-12 (ba58165)
+## What changed since 2026-11-12 (cc633ab)
 
-- colab_runner/vm/lib.py is now also read by tests/test_window_lib.py.
-- colab_runner/vm/poll.py is now read by tests/test_window_lib.py.
-- colab_runner/window_lib/PROVENANCE.md is now read by tests/test_window_lib.py.
-- And 3 more new writers and readers of places.
-- 1 file added and 2 changed content, across 3 parts.
+- colab_runner/ is now read by tests/test_errors.py.
+- colab_runner/**/*.py is now read by tests/test_errors.py.
+- colab_runner/vm/kill.py is now read by tests/test_window_lib.py.
+- And 4 more new writers and readers of places.
+- 10 files added and 17 changed content, across 4 parts.
 
 ## What comes in
 
@@ -60,7 +60,7 @@ Nothing in this repository writes to a tracked place this map can see.
 
 ## Hand-authored
 
-People write .github/ and the repository root; 4 writes with paths built at run time may land here.
+People write .github/ and the repository root; 7 writes with paths built at run time may land here.
 
 ## Where to start
 
@@ -68,8 +68,9 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 
 ## What this map cannot see
 
-- 4 writes and 2 reads use paths built at run time and are not named here.
-- 7 writes and 13 reads go to a path their caller passes, not to this repository.
+- 7 writes and 6 reads use paths built at run time and are not named here.
+- 9 writes and 15 reads go to a path their caller passes, not to this repository.
+- 1 write goes to a temporary directory or a path its caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
