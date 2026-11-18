@@ -163,8 +163,8 @@ def _refused(exc: Refused) -> int:
 
 def _error(tag: str, exc: BaseException, level: int) -> int:
     """`TAG: CODE: message` and `hint: ...` for an error during a run or a stop, scrubbed; the traceback, scrubbed
-    too, only at --debug. An exception with a named code (`BinaryDownloadRefused`) keeps it; any other is
-    UNEXPECTED_ERROR, with its type in the message."""
+    too, only at --debug. An exception with a named code (`BinaryDownloadRefused`, `QuarantineEscape`) keeps it;
+    any other is UNEXPECTED_ERROR, with its type in the message."""
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code in CODES:
         rec = error_record(code, str(getattr(exc, "message", exc)))
@@ -220,6 +220,8 @@ def run_command(argv: list[str]) -> int:
     _out("RUN_END reason=%s rc=%s stopped=%s%s" % (result.reason, result.rc, result.stopped, code))
     if result.refusal:
         _err("hint: %s" % result.refusal["hint"])
+    if result.cap_trip:  # a cap end: what to change, from runner_result.json's cap_trip
+        _err("hint: %s" % result.cap_trip["hint"])
     if not result.stopped:
         _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)
     return run_exit_code(result, Path(args.out_dir))

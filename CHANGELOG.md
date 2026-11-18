@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1] - 2026-11-17
+
+The follow-ups the reviews of PRs #4 and #5 left for after 0.1.0. Exit codes and `detail` are as they were.
+
+- **An OOM kill line makes a `--resident` run `oom` whatever the rc, in the cleanup fallback too.** When the job's run log is first collected in cleanup (less than `MIN_CALL_S`, one second, was left in the window, or the in-loop download failed), a run that had ended `failed` on a non-zero rc other than 137 now ends `oom` if the log has an out-of-memory kill line, as one that had ended `done` already did. One with no such line stays `failed`.
+- **NTFS junctions in a download are unlinked, never walked, on every supported Python (3.11 included).** A junction inside a downloaded directory, as the download's root, or broken, is removed like a symlink, with `_unlink_link`: the junction only, never its target or anything in it. It is found with `os.path.isjunction` (Python 3.12 and later), and on 3.11 on Windows by its mount-point reparse tag (`os.lstat(p).st_reparse_tag == IO_REPARSE_TAG_MOUNT_POINT`). Only that tag counts: any other reparse kind (a deduplicated file, a cloud placeholder) is read and scrubbed as a regular file, and a symlink is still found by `is_symlink()` first.
+- **A `QUARANTINE_ESCAPE` while the run log is collected in the window marks the log collected**, as `BINARY_DOWNLOAD_TOKEN` already did, so cleanup never downloads `<job>.run.out` a second time.
+- **A `cap` end records its trip in `runner_result.json` as `cap_trip: {code, message, hint, retryable}`**, and prints the hint on stderr after `RUN_END`. The code is the trip string's leading `CODE:` (`CAP_GUARD_TRIPPED`, `COLAB_USAGE_PARSE_FAILED`, `RATE_ABOVE_MAX` or `ASSIGNMENTS_UNREADABLE`), or `CAP_CEILING_REACHED`, a code new in 0.1.1, when the clock reached the ceiling before the guard tripped (its `detail` stays `the cap was reached`, byte for byte as in 0.1.0); a trip string with no leading code (a stand-in guard's) has a null code. Every other end has `cap_trip: null`. The hints are in `colab_runner/errors.py` (`CODES`); `ASSIGNMENTS_UNREADABLE` and `COLAB_USAGE_PARSE_FAILED` are retryable.
+- **The `RunResult.refusal` comment names `QUARANTINE_ESCAPE`**, beside `JOB_ALREADY_EXISTS` and `BINARY_DOWNLOAD_TOKEN`.
+
 ## [0.1.0] - 2026-11-17
 
 The first release for lanes to vendor. The v0.1.0 tag goes on the merge of PR #5, and carries PR #1 (the detached runner,
