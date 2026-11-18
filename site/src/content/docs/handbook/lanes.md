@@ -67,13 +67,34 @@ unquoted backslash is dropped. One that cannot be split (an unclosed quote) is r
 
 **What the job must write, so the stall guards can see it.** Paths are on the VM; the out dir is `CR_OUT_DIR`, by default
 `<content>/<job>_out`.
-- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Jobs started with `--hold-s` skip the setup phase.
+- `phase.txt`: absent, empty or `setup` while installing, anything else once running. Once the job leaves setup,
+  colab-runner keeps the last known phase on an empty or missing read of `phase.txt` and never returns to setup; if
+  `phase.txt` reads `setup` again after a run phase, colab-runner resets the setup stall clock. Jobs started with
+  `--hold-s` skip the setup phase.
 - `setup.log`: during setup, a run whose `setup.log` stops growing for `--setup-stall-s` (default 600) ends `setup_stall`.
 - **Progress:** after setup, a run ends `progress_stall` when nothing it can see moves for `--progress-stall-s` (default 900).
   What it sees is the sum of the first integer in each file matching `CR_PROGRESS_GLOB` (default `<out>/progress/*`), the count
   of files matching `CR_UNITS_GLOB`, and the hold heartbeats.
 - A run with no good poll for `--unreachable-polls` polls in a row (default 10), or for `--unreachable-s` (default 1800), ends
   `unreachable`.
+
+**Write `phase.txt` atomically.** The kit writes `phase.txt`; colab-runner reads it. Rewriting `phase.txt` in place
+(for example `echo run > phase.txt`) truncates the file first, so colab-runner can read an empty file. Write the new phase
+to a temporary file in the same directory, then rename the temporary file to `phase.txt`:
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 Secrets, the download scrub and the quarantine are on the [Security](../security/) page.
 

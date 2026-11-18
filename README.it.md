@@ -122,11 +122,27 @@ che utilizza le virgolette POSIX: su Windows, scrivi il percorso con barre obliq
 barra rovesciata non racchiusa tra virgolette viene eliminata. Un comando che non può essere suddiviso (una virgoletta non chiusa) viene rifiutato (`CLI_INVALID`, uscita 1).
 
 **Cosa il job deve scrivere, in modo che i controlli di stallo possano visualizzarlo.** I percorsi si trovano sulla VM; la directory di output è `CR_OUT_DIR`, per impostazione predefinita `<content>/<job>_out`.
-- `phase.txt`: assente, vuoto o `setup` durante l'installazione, qualsiasi altra cosa una volta in esecuzione. I job avviati con `--hold-s` saltano la fase di configurazione.
+- `phase.txt`: assente, vuoto o `setup` durante l'installazione, qualsiasi altra cosa una volta in esecuzione. Una volta che il job lascia la configurazione, colab-runner mantiene l'ultima fase nota in caso di lettura vuota o mancante di `phase.txt` e non torna mai alla configurazione; se `phase.txt` legge di nuovo `setup` dopo una fase di esecuzione, colab-runner azzera il timer di stallo della configurazione. I job avviati con `--hold-s` saltano la fase di configurazione.
 - `setup.log`: durante la configurazione, un'esecuzione il cui `setup.log` smette di aumentare per `--setup-stall-s` (predefinito 600) termina `setup_stall`.
 - **Progresso:** dopo la configurazione, un'esecuzione termina `progress_stall` quando nulla di ciò che può vedere si muove per `--progress-stall-s` (predefinito 900).
 Ciò che vede è la somma del primo numero intero in ogni file corrispondente a `CR_PROGRESS_GLOB` (predefinito `<out>/progress/*`), il numero di file corrispondenti a `CR_UNITS_GLOB` e i battiti di cuore di attesa.
 - Un'esecuzione senza un buon sondaggio per `--unreachable-polls` sondaggi consecutivi (predefinito 10), o per `--unreachable-s` (predefinito 1800), termina `unreachable`.
+
+**Scrivi `phase.txt` in modo atomico.** Il kit scrive `phase.txt`; colab-runner lo legge. Sovrascrivere `phase.txt` sul posto (ad esempio `echo run > phase.txt`) tronca prima il file, quindi colab-runner può leggere un file vuoto. Scrivi la nuova fase in un file temporaneo nella stessa directory, poi rinomina il file temporaneo in `phase.txt`:
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 **Segreti e pulizia dei download per garantire la sicurezza binaria.** Passa un segreto come `--env NAME`, con NAME impostato nell'ambiente del processo. `--env NAME=VALUE`
 inserisce il valore nella riga di comando del processo. I valori raggiungono la VM all'interno del file della cella del notebook caricato, mai come argomenti per la CLI `colab`.

@@ -691,6 +691,7 @@ class Runner:
         offset, delay, failed_run, dead_seen = 0, self.poll_s, 0, 0
         loop_t0 = self.clock()
         last_key, key_t, last_setup, setup_t, last_phase_setup = None, loop_t0, None, loop_t0, True
+        last_phase: Optional[str] = None
         last_good_t, file_seen, usage_t = loop_t0, False, None
         run_log = self.out_dir / ("%s.run.out" % self.job)
         fold = getattr(guard, "fold_usage", None)
@@ -787,9 +788,14 @@ class Runner:
                     return self._end_as("dead", "job not alive and no status file")
             else:
                 dead_seen = 0
-            in_setup = rec.get("phase") in SETUP_PHASES and not hold_mode
+            raw_phase = rec.get("phase")
+            if raw_phase not in (None, ""):
+                last_phase = raw_phase
+            in_setup = last_phase in SETUP_PHASES and not hold_mode
             if in_setup:
-                if rec.get("setup_bytes") != last_setup:
+                if not last_phase_setup:  # a real return to setup starts its own stall clock
+                    last_setup, setup_t = rec.get("setup_bytes"), now
+                elif rec.get("setup_bytes") != last_setup:
                     last_setup, setup_t = rec.get("setup_bytes"), now
                 elif now - setup_t >= setup_stall_s:
                     return self._end_as("setup_stall", "setup.log unchanged for %.0fs" % (now - setup_t))

@@ -108,10 +108,26 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 **`colab` 命令** 默认为 `colab`，除非 `COLAB_RUNNER_CLI` 指定了另一个命令行。它使用 `shlex.split` 进行拆分，该命令使用 POSIX 引用：在 Windows 上，使用正斜杠写入路径或对其进行引用（`"C:\tools\colab.exe"`），因为未引用的反斜杠会被删除。无法拆分（未关闭的引用）的命令会被拒绝（`CLI_INVALID`，退出代码 1）。
 
 **作业必须写入的内容，以便停滞保护机制可以检测到。** 路径位于虚拟机上；输出目录默认为 `CR_OUT_DIR`，即 `<content>/<job>_out`。
-- `phase.txt`：在安装期间不存在、为空或为 `setup`，运行后则为其他状态。使用 `--hold-s` 启动的作业会跳过设置阶段。
+- `phase.txt`：在安装期间不存在、为空或为 `setup`，运行后则为其他状态。作业离开设置阶段后，如果读取 `phase.txt` 得到空内容或文件不存在，colab-runner 会保留上一次已知的阶段，绝不会退回设置阶段；如果在运行阶段之后 `phase.txt` 再次读取到 `setup`，colab-runner 会重置设置停滞计时器。使用 `--hold-s` 启动的作业会跳过设置阶段。
 - `setup.log`：在设置期间，如果运行的 `setup.log` 停止增长 `--setup-stall-s`（默认值为 600），则该运行将结束（`setup_stall`）。
 - **进度：** 在设置之后，如果运行的任何可见内容在 `--progress-stall-s`（默认值为 900）内没有移动，则该运行将结束（`progress_stall`）。它所看到的内容是与 `CR_PROGRESS_GLOB`（默认值为 `<out>/progress/*`）匹配的每个文件中第一个整数的总和，以及与 `CR_UNITS_GLOB` 匹配的文件数，以及保持心跳。
 - 如果在连续 `--unreachable-polls` 次轮询中没有有效的轮询（默认值为 10），或者在 `--unreachable-s`（默认值为 1800）内没有有效的轮询，则该运行将结束（`unreachable`）。
+
+**以原子方式写入 `phase.txt`。** 工具包（kit）写入 `phase.txt`；colab-runner 读取它。就地重写 `phase.txt`（例如 `echo run > phase.txt`）会先将文件截断为空，因此 colab-runner 可能会读到空文件。请先将新阶段写入同一目录下的临时文件，再将该临时文件重命名为 `phase.txt`：
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 **机密信息与二进制安全下载清理。** 将机密信息作为 `--env NAME` 传递，并在通道的环境中设置 NAME。`--env NAME=VALUE` 将该值放入运行器的命令行中。这些值会进入上传的笔记本单元文件中的虚拟机中，但不会作为参数传递给 `colab` CLI。
 每个 CLI 输出行和错误行都将使用捆绑库的 `scrub_colab_tokens` 进行清理。下载的文件和目录（包括部分传输）仅根据内容进行分类（一个 NULL 字节或失败的严格 UTF-8 解码表示二进制）：

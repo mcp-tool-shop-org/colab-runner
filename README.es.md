@@ -148,13 +148,29 @@ barra diagonal sin comillas se elimina. Uno que no se puede dividir (una comilla
 
 **Qué debe escribir el trabajo para que los guardianes de inactividad puedan verlo.** Las rutas están en la máquina virtual; el directorio de salida es `CR_OUT_DIR`, por defecto
 `<content>/<job>_out`.
-- `phase.txt`: ausente, vacío o `setup` durante la instalación, cualquier otra cosa una vez que se está ejecutando. Los trabajos iniciados con `--hold-s` omiten la fase de configuración.
+- `phase.txt`: ausente, vacío o `setup` durante la instalación, cualquier otra cosa una vez que se está ejecutando. Una vez que el trabajo sale de la configuración, colab-runner conserva la última fase conocida si lee un `phase.txt` vacío o ausente y nunca vuelve a la configuración; si `phase.txt` vuelve a leer `setup` después de una fase de ejecución, colab-runner reinicia el reloj de inactividad de configuración. Los trabajos iniciados con `--hold-s` omiten la fase de configuración.
 - `setup.log`: durante la configuración, una ejecución cuyo `setup.log` deja de crecer durante `--setup-stall-s` (predeterminado 600) termina `setup_stall`.
 - **Progreso:** después de la configuración, una ejecución termina `progress_stall` cuando nada de lo que puede ver se mueve durante `--progress-stall-s` (predeterminado 900).
 Lo que ve es la suma del primer entero de cada archivo que coincide con `CR_PROGRESS_GLOB` (predeterminado `<out>/progress/*`), el recuento
 de archivos que coinciden con `CR_UNITS_GLOB` y los latidos del corazón de espera.
 - Una ejecución sin un sondeo válido durante `--unreachable-polls` sondeos consecutivos (predeterminado 10), o durante `--unreachable-s` (predeterminado 1800), termina
 `unreachable`.
+
+**Escriba `phase.txt` de forma atómica.** El kit escribe `phase.txt`; colab-runner lo lee. Reescribir `phase.txt` directamente (por ejemplo, `echo run > phase.txt`) trunca el archivo primero, por lo que colab-runner puede leer un archivo vacío. Escriba la nueva fase en un archivo temporal en el mismo directorio y luego renombre el archivo temporal a `phase.txt`:
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 **Secretos y limpieza de descargas seguras para archivos binarios.** Pase un secreto como `--env NAME`, con NAME establecido en el entorno del canal. `--env NAME=VALUE` coloca el valor en la línea de comandos del ejecutor. Los valores llegan a la VM dentro del archivo de celda del cuaderno cargado, nunca como argumentos para la CLI `colab`.
 Cada línea de salida de la CLI y cada línea de error se limpian con la biblioteca incluida `scrub_colab_tokens`. Los archivos y directorios descargados (incluidas las transferencias parciales) se clasifican solo por su contenido (un byte NUL o una decodificación estricta fallida UTF-8 es binario):
