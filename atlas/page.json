@@ -17,82 +17,30 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 13,
-      "changed": 0,
+      "added": 3,
+      "changed": 24,
       "moved": 0,
-      "parts": 2,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "CI now also runs scripts/check-audit-allowlist.mjs and scripts/check-audit-allowlist.test.mjs.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "scripts/check-audit-allowlist.mjs",
-          "scripts/check-audit-allowlist.test.mjs"
-        ]
-      },
-      {
         "kind": "landing",
-        "sentence": ".github/audit-allowlist.json is now read by .github/workflows/ci.yml and scripts/check-audit-allowlist.test.mjs.",
+        "sentence": "colab_runner/spend.py is now read by tests/test_errors.py.",
         "subjects": [
-          ".github/audit-allowlist.json",
-          ".github/workflows/ci.yml",
-          "scripts/check-audit-allowlist.test.mjs"
+          "colab_runner/spend.py",
+          "tests/test_errors.py"
         ]
-      },
-      {
-        "kind": "landing",
-        "sentence": ".github/workflows/ci.yml is now read by scripts/check-audit-allowlist.test.mjs.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "scripts/check-audit-allowlist.test.mjs"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "scripts/check-audit-allowlist.mjs is now read by scripts/check-audit-allowlist.test.mjs.",
-        "subjects": [
-          "scripts/check-audit-allowlist.mjs",
-          "scripts/check-audit-allowlist.test.mjs"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "scripts/check-audit-allowlist.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "scripts/check-audit-allowlist.mjs"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "scripts/check-audit-allowlist.test.mjs is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "scripts/check-audit-allowlist.test.mjs"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "site/src/content/docs/handbook/lanes.md is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "site/src/content/docs/handbook/lanes.md"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "And 1 more new file that belongs to no part.",
-        "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "13 files added, across 2 parts.",
+        "sentence": "3 files added and 24 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "71aaee49a8898ca336b73e32c72b30fb4bdebb93",
-      "generatedAt": "2026-11-17T21:38:18.287Z"
+      "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
+      "generatedAt": "2026-11-17T21:43:26.878Z"
     },
     "unchanged": false
   },
@@ -101,9 +49,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
+  "commit": "a048a6785628951417d8cf74b5118d9b6eca5037",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (30 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
+  "derived": "4 parts, mostly Python (32 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
     {
       "checks": [
@@ -130,7 +78,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 16
+          "files": 18
         }
       ],
       "runs": [
@@ -142,7 +90,7 @@
         "tests/"
       ],
       "runsCount": 6,
-      "runsMore": 19,
+      "runsMore": 21,
       "sends": [
         "uploads coverage to Codecov"
       ],
@@ -213,7 +161,7 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-17T21:43:26.878Z",
+  "generatedAt": "2026-11-18T23:51:55.876Z",
   "limits": [
     "7 writes and 6 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
@@ -238,9 +186,9 @@
   "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 17,
+  "testFiles": 19,
   "testedBy": {
-    "colab_runner": 13
+    "colab_runner": 15
   },
   "testedCodeParts": 1,
   "unnamedWrites": 7,

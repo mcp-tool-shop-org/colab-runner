@@ -1,26 +1,19 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-17 from commit 5a80108 by Atlas 1.26.0.
+Mapped at 2026-11-18 from commit a048a67 by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (30 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
+4 parts, mostly Python (32 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-17 (71aaee4)
+## What changed since 2026-11-17 (5a80108)
 
-- CI now also runs scripts/check-audit-allowlist.mjs and scripts/check-audit-allowlist.test.mjs.
-- .github/audit-allowlist.json is now read by .github/workflows/ci.yml and scripts/check-audit-allowlist.test.mjs.
-- .github/workflows/ci.yml is now read by scripts/check-audit-allowlist.test.mjs.
-- scripts/check-audit-allowlist.mjs is now read by scripts/check-audit-allowlist.test.mjs.
-- scripts/check-audit-allowlist.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
-- scripts/check-audit-allowlist.test.mjs is new and belongs to no part, so atlas check fails on it against the previous map.
-- site/src/content/docs/handbook/lanes.md is new and belongs to no part, so atlas check fails on it against the previous map.
-- And 1 more new file that belongs to no part.
-- 13 files added, across 2 parts.
+- colab_runner/spend.py is now read by tests/test_errors.py.
+- 3 files added and 24 changed content, across 3 parts.
 
 ## What comes in
 
-1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, verify.sh and 19 more; checks colab_runner/.
+1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, verify.sh and 21 more; checks colab_runner/.
 2. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 3. **colab_runner** (the package's entry, not published from here). Loads colab_runner/__init__.py.
 
