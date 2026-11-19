@@ -16,7 +16,7 @@ L’exécuteur partagé du studio pour les instances Google Colab payantes : un
 Il lance une tâche sur une VM Colab dans un processus qui dépasse la durée de vie de l’environnement, surveille son exécution
 dans les limites d’un budget, supprime les jetons de tous les éléments qu’il récupère et tente toujours d’arrêter la session.
 
-**État : 0.1.0.** L’exécuteur détaché (élément 1 ci-dessous) est construit. Les éléments 2 à 5 ne sont pas encore construits.
+**État : 0.1.4.** L’exécuteur détaché (élément 1 ci-dessous) est construit. Les éléments 2 à 5 ne sont pas encore construits.
 
 1. **L’exécuteur détaché (0.1.0).** Lance une tâche sur la VM avec un fichier d’état, le surveille avec une politique de réessai, un mode de signalement `--hold-s` et un indicateur qui bascule vers une boucle résidant dans le noyau. La sauvegarde est un hook d’API Python (ci-dessous).
 2. **Gardes de démarrage et de carte.** Une assertion de carte lors de la première étape de la VM (capacité de calcul et VRAM par type de carte, refusant `CARD_MISMATCH`), un journal de refus côté environnement avec un disjoncteur par carte
@@ -35,7 +35,7 @@ Les instances utilisent une version épinglée de ce dépôt, une instance par d
 colab-runner n’est pas disponible sur PyPI. Une instance utilise une version épinglée ou l’installe à partir de la balise :
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 ou version ultérieure. Le package n’a aucune dépendance d’exécution.
@@ -57,7 +57,7 @@ Les chiffres sont des espaces réservés. Définissez `--max-rate` sur le nombre
 
 `python -m colab_runner --help` répertorie toutes les commandes ; `run --help` répertorie tous les indicateurs.
 
-## Utilisation à partir d’une instance (0.1.0)
+## Utilisation à partir d’une instance (0.1.4)
 
 **La session appartient à l’instance.** L’instance ouvre la session Colab et transmet son nom. Une fois que `run` a écrit
 `session_open.json` dans le répertoire de sortie, chaque sortie tente d’arrêter la session, et le marqueur n’est supprimé qu’après un arrêt confirmé.

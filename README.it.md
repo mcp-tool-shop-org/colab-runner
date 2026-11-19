@@ -14,7 +14,7 @@
 
 Lo strumento condiviso dello studio per le istanze Google Colab a pagamento: un unico punto di accesso per il codice di ogni istanza Colab utilizzata. Avvia un job su una VM Colab in un processo che sopravvive alla configurazione, monitora l'esecuzione entro un limite di spesa, elimina i token da tutto ciò che riporta e cerca sempre di interrompere la sessione.
 
-**Stato: 0.1.0.** Lo strumento indipendente (elemento 1 di seguito) è stato creato. Gli elementi da 2 a 5 non sono ancora stati creati.
+**Stato: 0.1.4.** Lo strumento indipendente (elemento 1 di seguito) è stato creato. Gli elementi da 2 a 5 non sono ancora stati creati.
 
 1. **Lo strumento indipendente (0.1.0).** Avvia un job sulla VM con un file di stato, lo controlla con un meccanismo di ripetizione, una modalità di heartbeat `--hold-s` e un flag che attiva un ciclo residente nel kernel. Il salvataggio è un hook Python-API (di seguito).
 2. **Protezioni per l'avvio e la scheda grafica.** Un controllo sulla VM al primo passaggio (capacità di calcolo e VRAM per tipo di scheda grafica, rifiuta `CARD_MISMATCH`), un registro di rifiuto lato configurazione con un interruttore automatico per scheda grafica (`CARD_CIRCUIT_OPEN`) e `OMP_NUM_THREADS` impostato prima del caricamento di torch.
@@ -29,7 +29,7 @@ Le istanze utilizzano una versione specifica di questo repository, una istanza p
 colab-runner non è disponibile su PyPI. Un'istanza utilizza una versione specifica o la installa dal tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 o successivo. Il pacchetto non ha dipendenze in fase di esecuzione.
@@ -50,7 +50,7 @@ Le cifre sono segnaposto. Imposta `--max-rate` sulle unità orarie previste per 
 
 `python -m colab_runner --help` elenca ogni comando; `run --help` elenca ogni flag.
 
-## Utilizzo da un'istanza (0.1.0)
+## Utilizzo da un'istanza (0.1.4)
 
 **La sessione appartiene all'istanza.** L'istanza apre la sessione Colab e ne passa il nome. Una volta che `run` ha scritto `session_open.json` nella directory di output, ogni uscita tenta di interrompere la sessione e il marcatore viene rimosso solo dopo un'interruzione confermata.
 - **Un marcatore che rimane** significa che la sessione potrebbe essere ancora aperta: un'interruzione non riuscita o un processo `run` terminato immediatamente (SIGKILL, un'istanza persa) prima che venga eseguita la pulizia. L'istanza esegue quindi `python -m colab_runner stop --out-dir D`.

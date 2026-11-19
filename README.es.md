@@ -16,7 +16,7 @@ El entorno compartido del estudio para las instancias de Google Colab de pago: u
 Inicia un trabajo en una máquina virtual de Colab en un proceso que perdura más que la instancia, supervisa el proceso
 dentro de un límite de gasto, elimina los tokens de todo lo que recupera y siempre intenta detener la sesión.
 
-**Estado: 0.1.0.** El entorno independiente (elemento 1 a continuación) está construido. Los elementos 2 a 5 aún no están construidos.
+**Estado: 0.1.4.** El entorno independiente (elemento 1 a continuación) está construido. Los elementos 2 a 5 aún no están construidos.
 
 1. **El entorno independiente (0.1.0).** Inicia un trabajo en la máquina virtual con un archivo de estado, lo supervisa con reintentos, un modo de señalización `--hold-s` y
 una marca que cambia a un bucle residente en el kernel. La recuperación es un enlace de API de Python (a continuación).
@@ -37,7 +37,7 @@ Las instancias utilizan una versión específica de este repositorio, una instan
 colab-runner no está en PyPI. Una instancia utiliza una versión específica o la instala desde la etiqueta:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 o posterior. El paquete no tiene dependencias en tiempo de ejecución.
@@ -59,7 +59,7 @@ Las cifras son marcadores de posición. Establezca `--max-rate` en las unidades 
 
 `python -m colab_runner --help` enumera cada comando; `run --help` enumera cada marca.
 
-## Usándolo desde una instancia (0.1.0)
+## Usándolo desde una instancia (0.1.4)
 
 **La sesión pertenece a la instancia.** La instancia abre la sesión de Colab y pasa su nombre. Una vez que `run` ha escrito
 `session_open.json` en el directorio de salida, cada salida intenta detener la sesión y el marcador se elimina solo después de una detención confirmada.
