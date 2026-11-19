@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 L’exécuteur partagé du studio pour les instances Google Colab payantes : un emplacement unique pour le code de chaque instance Colab.
 Il lance une tâche sur une VM Colab dans un processus qui dépasse la durée de vie de l’environnement, surveille son exécution
 dans les limites d’un budget, supprime les jetons de tous les éléments qu’il récupère et tente toujours d’arrêter la session.

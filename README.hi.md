@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-रनर
-
 पेड Google Colab विंडोज़ के लिए स्टूडियो का साझा रनर: प्रत्येक Colab लेन के लिए एक ही स्थान पर कोड।
 यह अपनी कॉपी का उपयोग करता है। यह एक Colab VM पर एक कार्य शुरू करता है, जो उपकरण से अधिक समय तक चलता है, इसकी निगरानी करता है
 एक निश्चित सीमा के भीतर, यह जो कुछ भी वापस लाता है, उससे टोकन हटाता है, और हमेशा सत्र को रोकने का प्रयास करता है।

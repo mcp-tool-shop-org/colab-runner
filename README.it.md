@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 Lo strumento condiviso dello studio per le istanze Google Colab a pagamento: un unico punto di accesso per il codice di ogni istanza Colab utilizzata. Avvia un job su una VM Colab in un processo che sopravvive alla configurazione, monitora l'esecuzione entro un limite di spesa, elimina i token da tutto ciò che riporta e cerca sempre di interrompere la sessione.
 
 **Stato: 0.1.0.** Lo strumento indipendente (elemento 1 di seguito) è stato creato. Gli elementi da 2 a 5 non sono ancora stati creati.
