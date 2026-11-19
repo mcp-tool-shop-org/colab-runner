@@ -2,6 +2,7 @@
 --max-rate are refused as the library refuses them, and the CLI wrapper kills a call's whole process group."""
 
 import os
+import signal
 import sys
 import tempfile
 import textwrap
@@ -179,12 +180,29 @@ GRANDCHILD_CLI = textwrap.dedent("""
 def gone(pid, secs=5.0):
     end = time.time() + secs
     while time.time() < end:
+        if POSIX:
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
         try:
             os.kill(pid, 0)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return True
         time.sleep(0.05)
     return False
+
+
+def _kill_pid_or_group(pid):
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    except PermissionError:
+        pass
 
 
 class ProcessGroupTest(unittest.TestCase):
@@ -193,9 +211,20 @@ class ProcessGroupTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self._reap_grandchild)
         self.cli = Path(self._tmp.name) / "cli.py"
         self.cli.write_text(GRANDCHILD_CLI)
         self.pid_file = Path(self._tmp.name) / "grandchild.pid"
+
+    def _reap_grandchild(self):
+        if not POSIX or not self.pid_file.is_file():
+            return
+        raw = self.pid_file.read_text(encoding="utf-8").strip()
+        if not raw.isdigit():
+            return
+        pid = int(raw)
+        _kill_pid_or_group(pid)
+        self.assertTrue(gone(pid), "detached grandchild survived cleanup")
 
     def run_cli(self, mode, timeout):
         colab = Colab([sys.executable, str(self.cli), str(self.pid_file), mode])
@@ -221,7 +250,8 @@ class ProcessGroupTest(unittest.TestCase):
             self.assertEqual(res.rc, TIMEOUT_RC)
             self.assertLess(took, 1.0 + 2 * 0.3 + 1.0)
         finally:
-            os.kill(pid, 9)
+            _kill_pid_or_group(pid)
+            self.assertTrue(gone(pid), "the escaped grandchild survived cleanup")
 
     def test_a_hung_cli_returns_rc_124_within_its_timeout(self):
         hang = Path(self._tmp.name) / "hang.py"

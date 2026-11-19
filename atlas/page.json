@@ -17,39 +17,31 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 3,
-      "changed": 24,
+      "added": 0,
+      "changed": 15,
       "moved": 0,
       "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "colab_runner/spend.py is now read by tests/test_errors.py.",
-        "subjects": [
-          "colab_runner/spend.py",
-          "tests/test_errors.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "3 files added and 24 changed content, across 3 parts.",
+        "sentence": "Nothing structural changed since 2026-11-18; 15 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
-      "generatedAt": "2026-11-17T21:43:26.878Z"
+      "commit": "a048a6785628951417d8cf74b5118d9b6eca5037",
+      "generatedAt": "2026-11-18T23:51:55.876Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "a048a6785628951417d8cf74b5118d9b6eca5037",
+  "commit": "b1a522a6a8872f7b1cf9d898e63e4aef047f14af",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Python (32 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
@@ -161,7 +153,7 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-18T23:51:55.876Z",
+  "generatedAt": "2026-11-19T01:46:30.630Z",
   "limits": [
     "7 writes and 6 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",

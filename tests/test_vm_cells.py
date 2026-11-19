@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -63,6 +64,61 @@ def gone(pid, secs=10.0):
             return True
         time.sleep(0.05)
     return False
+
+
+def _pid_or_group_alive(pid):
+    if POSIX:
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        return False
+    if POSIX:
+        try:
+            os.killpg(pid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            pass
+    return False
+
+
+def _wait_group_gone(pgid, secs):
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        if not _pid_or_group_alive(pgid):
+            return True
+        time.sleep(0.02)
+    return not _pid_or_group_alive(pgid)
+
+
+def _signal_job(pid, sig):
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+    except PermissionError:
+        pass
+
+
+def reap_job(pid, *, wait_s=0.5, kill_grace_s=1.0, kill_wait_s=5.0):
+    """Wait briefly for a detached job (process group `pid`) to finish, else SIGTERM then SIGKILL its group,
+    reaping any direct child and returning True once the process and its entire group are gone."""
+    if _wait_group_gone(pid, wait_s):
+        return True
+    _signal_job(pid, signal.SIGTERM)
+    if _wait_group_gone(pid, kill_grace_s):
+        return True
+    _signal_job(pid, signal.SIGKILL)
+    return _wait_group_gone(pid, kill_wait_s)
 
 
 class VmLibTest(unittest.TestCase):
@@ -198,7 +254,32 @@ class VmCellTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.vm = self._tmp.name
         self.env = {"CR_CONTENT": self.vm, "CR_JOB": "j"}
+        self._started_pids = []
         self.addCleanup(self._tmp.cleanup)
+        self.addCleanup(self._reap_jobs)
+
+    def _run_cell(self, name, env, timeout=60):
+        vm = Path(self.vm)
+        before = {p.name: p.read_text(encoding="utf-8") for p in vm.glob("*.pid")}
+        try:
+            proc = run_cell(name, env, timeout=timeout)
+        finally:
+            for p in vm.glob("*.pid"):
+                raw = p.read_text(encoding="utf-8").strip()
+                if raw.isdigit() and before.get(p.name, "").strip() != raw:
+                    pid = int(raw)
+                    if pid not in self._started_pids:
+                        self._started_pids.append(pid)
+        for ln in proc.stdout.splitlines():
+            if ln.startswith("CR_STARTED pid="):
+                pid = int(ln.split("=", 1)[1])
+                if pid not in self._started_pids:
+                    self._started_pids.append(pid)
+        return proc
+
+    def _reap_jobs(self, *, wait_s=0.5):
+        alive = [pid for pid in self._started_pids if not reap_job(pid, wait_s=wait_s)]
+        self.assertEqual(alive, [], "detached job(s) still alive before tempdir cleanup")
 
     def script(self, body):
         p = Path(self.vm) / "job.sh"
@@ -206,7 +287,7 @@ class VmCellTest(unittest.TestCase):
         return {"CR_MODE": "script", "CR_SCRIPT": str(p)}
 
     def poll(self, offset=0):
-        proc = run_cell("poll", dict(self.env, CR_POLL_LOG_OFFSET=str(offset)))
+        proc = self._run_cell("poll", dict(self.env, CR_POLL_LOG_OFFSET=str(offset)))
         rec, logs = None, []
         for ln in proc.stdout.splitlines():
             if ln.startswith("CR_POLL "):
@@ -217,7 +298,7 @@ class VmCellTest(unittest.TestCase):
 
     def test_start_runs_the_job_detached_and_writes_the_status_after_it_ends(self):
         env = dict(self.env, **self.script("echo hello; sleep 0.3; exit 3\n"))
-        out = run_cell("start", env).stdout
+        out = self._run_cell("start", env).stdout
         self.assertIn("CR_STARTED", out)
         self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
         rec, logs = self.poll()
@@ -227,25 +308,27 @@ class VmCellTest(unittest.TestCase):
 
     def test_second_start_never_launches_a_second_job(self):
         env = dict(self.env, **self.script("sleep 2\n"))
-        first = run_cell("start", env).stdout
-        second = run_cell("start", env).stdout
+        first = self._run_cell("start", env).stdout
+        second = self._run_cell("start", env).stdout
         self.assertIn("CR_STARTED", first)
         self.assertIn("CR_ALREADY_RUNNING", second)
         pid = int((Path(self.vm) / "j.pid").read_text())
         self.assertIn("pid=%d" % pid, second)
         # also after the job has ended: a finished job is not restarted by a retried start
         self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
-        self.assertIn("CR_ALREADY_RUNNING", run_cell("start", env).stdout)
+        self.assertIn("CR_ALREADY_RUNNING", self._run_cell("start", env).stdout)
 
     def test_a_stale_pid_without_status_is_restarted(self):
         (Path(self.vm) / "j.pid").write_text("999999\n")
         env = dict(self.env, **self.script("exit 0\n"))
-        self.assertIn("CR_STARTED", run_cell("start", env).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env).stdout)
 
     def test_poll_reports_phase_progress_units_setup_bytes_and_log_chunks(self):
         out = Path(self.vm) / "j_out"
         (out / "progress").mkdir(parents=True)
-        (out / "phase.txt").write_text("run\n")
+        phase_tmp = out / "phase.tmp"
+        phase_tmp.write_text("run\n", encoding="utf-8")
+        os.replace(phase_tmp, out / "phase.txt")
         (out / "remote_step.txt").write_text("translate\n")
         (out / "setup.log").write_text("x" * 42)
         (out / "progress" / "a").write_text("5\n")
@@ -256,7 +339,7 @@ class VmCellTest(unittest.TestCase):
         (units / "s2.json").write_text("{}")
         (Path(self.vm) / "j.run.out").write_text("line one\nline two with hf_" + "A" * 30 + "\n")
         env = dict(self.env, CR_UNITS_GLOB=str(units / "*.json"))
-        proc = run_cell("poll", dict(env, CR_POLL_LOG_OFFSET="0"))
+        proc = self._run_cell("poll", dict(env, CR_POLL_LOG_OFFSET="0"))
         rec = json.loads([ln for ln in proc.stdout.splitlines() if ln.startswith("CR_POLL ")][0][8:])
         self.assertEqual((rec["phase"], rec["step"], rec["setup_bytes"]), ("run", "translate", 42))
         self.assertEqual((rec["progress"], rec["units_done"]), (12, 2))
@@ -266,9 +349,9 @@ class VmCellTest(unittest.TestCase):
         self.assertNotIn("A" * 30, proc.stdout)  # a token in the job log never leaves the VM
         self.assertIn("hf_[REDACTED]", proc.stdout)
         # the offset resumes after what was read; an offset past the end restarts from zero
-        again = run_cell("poll", dict(env, CR_POLL_LOG_OFFSET=str(rec["log_offset"])))
+        again = self._run_cell("poll", dict(env, CR_POLL_LOG_OFFSET=str(rec["log_offset"])))
         self.assertNotIn("line one", again.stdout)
-        past = run_cell("poll", dict(env, CR_POLL_LOG_OFFSET="99999"))
+        past = self._run_cell("poll", dict(env, CR_POLL_LOG_OFFSET="99999"))
         self.assertIn("line one", past.stdout)
 
     def test_large_log_is_cut_at_a_line_boundary(self):
@@ -285,7 +368,7 @@ class VmCellTest(unittest.TestCase):
 
     def test_hold_job_writes_heartbeats_and_ends_with_rc_0(self):
         env = dict(self.env, CR_MODE="hold", CR_HOLD_S="0.4", CR_HEARTBEAT_S="0.1")
-        self.assertIn("CR_STARTED", run_cell("start", env).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env).stdout)
         self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
         rec, _ = self.poll()
         self.assertEqual(rec["rc"], 0)
@@ -294,7 +377,7 @@ class VmCellTest(unittest.TestCase):
 
     def test_resident_cell_stays_busy_until_the_job_ends_and_writes_the_poll_file(self):
         env = dict(self.env, **self.script("sleep 0.5\n"), CR_POLL_EVERY_S="0.1")
-        proc = run_cell("resident", env)
+        proc = self._run_cell("resident", env)
         self.assertIn("CR_STARTED", proc.stdout)
         self.assertIn("CR_RESIDENT_DONE", proc.stdout)
         self.assertGreaterEqual(proc.stdout.count("CR_RESIDENT_BEAT"), 3)
@@ -303,51 +386,51 @@ class VmCellTest(unittest.TestCase):
 
     def test_resident_cell_gives_up_at_its_max(self):
         env = dict(self.env, **self.script("sleep 5\n"), CR_POLL_EVERY_S="0.1", CR_RESIDENT_MAX_S="0.3")
-        proc = run_cell("resident", env)
+        proc = self._run_cell("resident", env)
         self.assertIn("CR_RESIDENT_DONE", proc.stdout)
-        self.addCleanup(lambda: subprocess.run(["pkill", "-f", "j.status.json"], check=False))
+        self.addCleanup(self._reap_jobs, wait_s=0.0)
 
     def test_the_kill_cell_terminates_the_whole_process_group(self):
         bg = Path(self.vm) / "bg.pid"
         env = dict(self.env, **self.script("sleep 30 &\necho $! > %s\nsleep 30\n" % bg))
-        self.assertIn("CR_STARTED", run_cell("start", env).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env).stdout)
         self.assertTrue(wait_for(bg))
         time.sleep(0.2)
         wrapper, child = int((Path(self.vm) / "j.pid").read_text()), int(bg.read_text())
-        out = run_cell("kill", dict(self.env, CR_KILL_GRACE_S="2")).stdout
+        out = self._run_cell("kill", dict(self.env, CR_KILL_GRACE_S="2")).stdout
         self.assertIn("CR_KILLED pid=%d" % wrapper, out)
         self.assertTrue(gone(child), "the job's background child survived")
         self.assertTrue(gone(wrapper), "the job's wrapper survived")
 
     def test_the_kill_cell_with_no_job_or_an_ended_job_kills_nothing(self):
-        self.assertIn("CR_NO_JOB", run_cell("kill", self.env).stdout)
+        self.assertIn("CR_NO_JOB", self._run_cell("kill", self.env).stdout)
         env = dict(self.env, **self.script("exit 0\n"))
-        run_cell("start", env)
+        self._run_cell("start", env)
         self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
         pid = int((Path(self.vm) / "j.pid").read_text())
         self.assertTrue(gone(pid))
-        self.assertIn("CR_NOT_RUNNING", run_cell("kill", self.env).stdout)
+        self.assertIn("CR_NOT_RUNNING", self._run_cell("kill", self.env).stdout)
 
     def test_the_kill_cell_escalates_to_sigkill_when_sigterm_is_ignored(self):
         env = dict(self.env, **self.script("trap '' TERM\nsleep 30\n"))
-        self.assertIn("CR_STARTED", run_cell("start", env).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env).stdout)
         time.sleep(0.1)
         pid = int((Path(self.vm) / "j.pid").read_text())
-        out = run_cell("kill", dict(self.env, CR_KILL_GRACE_S="0.2")).stdout
+        out = self._run_cell("kill", dict(self.env, CR_KILL_GRACE_S="0.2")).stdout
         self.assertIn("CR_KILLED pid=%d" % pid, out)
         self.assertTrue(gone(pid))
 
     def test_reused_job_with_different_run_id_is_refused_in_start_and_resident_cells(self):
         env1 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-1")
-        self.assertIn("CR_STARTED", run_cell("start", env1).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env1).stdout)
         self.assertTrue(wait_for(Path(self.vm) / "j.status.json"))
 
         rec1, _ = self.poll()
         self.assertEqual((rec1["run_id"], rec1["status_run_id"], rec1["rc"]), ("run-1", "run-1", 0))
 
         env2 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-2")
-        self.assertIn("CR_JOB_EXISTS", run_cell("start", env2).stdout)
-        res_out = run_cell("resident", env2).stdout
+        self.assertIn("CR_JOB_EXISTS", self._run_cell("start", env2).stdout)
+        res_out = self._run_cell("resident", env2).stdout
         self.assertIn("CR_JOB_EXISTS", res_out)
         self.assertFalse((Path(self.vm) / "j.poll.json").exists())  # the refusal never writes the poll file
         refused = json.loads((Path(self.vm) / "j.refused.json").read_text())
@@ -356,16 +439,16 @@ class VmCellTest(unittest.TestCase):
 
     def test_a_killed_job_with_no_status_file_is_still_another_runs(self):
         env1 = dict(self.env, **self.script("echo step-1\nsleep 30\n"), CR_RUN_ID="run-1")
-        self.assertIn("CR_STARTED", run_cell("start", env1).stdout)
+        self.assertIn("CR_STARTED", self._run_cell("start", env1).stdout)
         self.assertTrue(wait_for(Path(self.vm) / "j.run.out"))
         pid = int((Path(self.vm) / "j.pid").read_text())
-        self.assertIn("CR_NOT_OURS", run_cell("kill", dict(self.env, CR_RUN_ID="run-2", CR_KILL_GRACE_S="1")).stdout)
-        self.assertIn("CR_KILLED", run_cell("kill", dict(self.env, CR_RUN_ID="run-1", CR_KILL_GRACE_S="1")).stdout)
+        self.assertIn("CR_NOT_OURS", self._run_cell("kill", dict(self.env, CR_RUN_ID="run-2", CR_KILL_GRACE_S="1")).stdout)
+        self.assertIn("CR_KILLED", self._run_cell("kill", dict(self.env, CR_RUN_ID="run-1", CR_KILL_GRACE_S="1")).stdout)
         self.assertTrue(gone(pid))
         self.assertFalse((Path(self.vm) / "j.status.json").exists())  # killed: the wrapper never wrote one
         env2 = dict(self.env, **self.script("exit 0\n"), CR_RUN_ID="run-2")
         files = {p.name: p.read_bytes() for p in Path(self.vm).iterdir() if p.is_file()}
-        self.assertIn("CR_JOB_EXISTS", run_cell("start", env2).stdout)
+        self.assertIn("CR_JOB_EXISTS", self._run_cell("start", env2).stdout)
         self.assertEqual({p.name: p.read_bytes() for p in Path(self.vm).iterdir() if p.is_file()}, files)
 
 
@@ -383,6 +466,18 @@ class EndToEndTest(unittest.TestCase):
         self.env = dict(os.environ, FAKE_COLAB_STATE=str(self.state), FAKE_COLAB_VM=str(self.vm),
                         FAKE_COLAB_FAULTS=str(self.faults))
         self.colab = Colab([sys.executable, FAKE], env=self.env)
+        self.addCleanup(self._reap_jobs)
+
+    def _reap_jobs(self):
+        if not POSIX:
+            return
+        pids = []
+        for p in sorted(self.vm.glob("*.pid")):
+            raw = p.read_text(encoding="utf-8").strip()
+            if raw.isdigit():
+                pids.append(int(raw))
+        alive = [pid for pid in pids if not reap_job(pid)]
+        self.assertEqual(alive, [], "detached job(s) still alive before tempdir cleanup")
 
     def runner(self, **kw):
         return Runner(self.colab, "s", self.out, content=str(self.vm), poll_s=0.2, poll_timeout_s=10, backoff_max_s=0.4,
@@ -398,8 +493,13 @@ class EndToEndTest(unittest.TestCase):
 
     def test_lost_start_reply_and_lost_polls_still_complete_with_one_job(self):
         self.faults.write_text(json.dumps({"lose_reply": {"exec": [1]}, "drop_call": {"exec": [3, 4, 5, 6]}}))
-        script = self.job("mkdir -p $CR_OUT_DIR/progress; echo run > $CR_OUT_DIR/phase.txt; echo 3 > $CR_OUT_DIR/progress/a; "
-                          "sleep 1; echo done-line\n")
+        script = self.job(
+            'mkdir -p "$CR_OUT_DIR/progress"\n'
+            '''printf 'run\\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"\n'''
+            'echo 3 > "$CR_OUT_DIR/progress/a"\n'
+            "sleep 1\n"
+            "echo done-line\n"
+        )
         res = self.runner().run(script=script, env={"CR_OUT_DIR": str(self.vm / "j_out")}, wall_s=120)
         self.assertEqual((res.reason, res.rc), ("done", 0))
         self.assertGreaterEqual(res.max_consecutive_failed, 1)

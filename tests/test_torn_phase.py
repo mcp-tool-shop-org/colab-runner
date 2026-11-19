@@ -110,6 +110,76 @@ class TornPhaseReadTest(unittest.TestCase):
             self.assertEqual(res.elapsed_s, 1200.0)
             self.assertIn("setup.log unchanged for 300s", res.detail)
 
+    def test_hold_mode_torn_read_preserves_setup_state_and_progress_clock(self):
+        def stalled_hold_polls(n):
+            if n == 1:
+                return rec(phase=None, hold_beats=1, setup_bytes=0)
+            if n in (3, 4):
+                return rec(phase="", hold_beats=1, setup_bytes=0)
+            return rec(phase="run", hold_beats=1, setup_bytes=0)
+
+        for resident in (False, True):
+            with self.subTest(case="stalled_hold_across_torn_read", resident=resident), tempfile.TemporaryDirectory() as tmp:
+                if resident:
+                    colab = FakeColab(vm_poll_file=stalled_hold_polls)
+                else:
+                    colab = FakeColab(polls=lambda n, env: stalled_hold_polls(n))
+                runner, _ = make(colab, tmp)
+                res = runner.run(
+                    hold_s=3600, heartbeat_s=30, wall_s=36000,
+                    setup_stall_s=60, progress_stall_s=300, resident=resident,
+                )
+                self.assertEqual(res.reason, "progress_stall")
+                self.assertEqual(res.elapsed_s, 300.0)
+                self.assertEqual(res.polls_ok, 6)
+                self.assertIn("no progress for 300s", res.detail)
+
+        def healthy_hold_polls(n):
+            phases = {1: None, 2: "", 3: "run", 4: "", 5: "", 6: ""}
+            return rec(phase=phases[n], hold_beats=n, setup_bytes=0, rc=0 if n == 6 else None)
+
+        for resident in (False, True):
+            with self.subTest(case="healthy_hold_across_torn_read", resident=resident), tempfile.TemporaryDirectory() as tmp:
+                if resident:
+                    colab = FakeColab(vm_poll_file=healthy_hold_polls)
+                else:
+                    colab = FakeColab(polls=lambda n, env: healthy_hold_polls(n))
+                runner, _ = make(colab, tmp)
+                res = runner.run(
+                    hold_s=3600, heartbeat_s=30, wall_s=36000,
+                    setup_stall_s=60, progress_stall_s=300, resident=resident,
+                )
+                self.assertEqual((res.reason, res.rc, res.polls_ok), ("done", 0, 6))
+
+    def test_torn_read_during_run_does_not_reset_progress_clock(self):
+        def make_poll(torn_value):
+            def poll(n):
+                if n == 1:
+                    return rec(phase="setup", setup_bytes=100)
+                if n == 5:
+                    return rec(phase=torn_value, progress=5, setup_bytes=100)
+                return rec(phase="run", progress=5, setup_bytes=100)
+
+            return poll
+
+        for torn_value in ("", None):
+            for resident in (False, True):
+                with self.subTest(torn_value=torn_value, resident=resident), tempfile.TemporaryDirectory() as tmp:
+                    poll_fn = make_poll(torn_value)
+                    if resident:
+                        colab = FakeColab(vm_poll_file=poll_fn)
+                    else:
+                        colab = FakeColab(polls=lambda n, env, fn=poll_fn: fn(n))
+                    runner, _ = make(colab, tmp)
+                    res = runner.run(
+                        script="/content/x.sh", wall_s=36000,
+                        setup_stall_s=900, progress_stall_s=300, resident=resident,
+                    )
+                    self.assertEqual(res.reason, "progress_stall")
+                    self.assertEqual(res.elapsed_s, 360.0)
+                    self.assertEqual(res.polls_ok, 7)
+                    self.assertIn("no progress for 300s", res.detail)
+
 
 if __name__ == "__main__":
     unittest.main()

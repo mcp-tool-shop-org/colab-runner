@@ -43,7 +43,7 @@
       "files": [
         {
           "constantOnly": true,
-          "hash": "d9a87c8a9f797c1d5271f648d5781ddd71ae87d36361829bdc462311fbe58437",
+          "hash": "139e320bf213ec1375d9d151891c9bb418fc36ea85f3957b2feeb80c3941271f",
           "path": "colab_runner/__init__.py"
         },
         {
@@ -763,7 +763,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "64b63c8f897d410dbced44147d156acf010d4f3186f6791cda2b3af3ae3510b4",
+          "hash": "b3f0f60f07cfab9a0a7eef2c935798dd64a7048b648de22b950c738faf0d95ee",
           "path": "CHANGELOG.md"
         },
         {
@@ -771,35 +771,35 @@
           "path": "LICENSE"
         },
         {
-          "hash": "ec6ca62b5e40d99f5d46733c0f18516d88a40e7b39d3d8300ab4ec8bd62b4366",
+          "hash": "1315506a46e3fe4a9731da6230396b38225e2a47ff0b1563a111d2e195218c50",
           "path": "README.es.md"
         },
         {
-          "hash": "69c0808b7980f96667c35911b347e55a58ce72ad2760007a0d6fcacc29d4c473",
+          "hash": "86a7f6f36cae485080e03f56cb332d1e8353d7418e7edf12d913f10b2edfa5b9",
           "path": "README.fr.md"
         },
         {
-          "hash": "46aa8f7164325d33720f59e7757cdaf275bcaf27ff6bcd464a8b45d78559c506",
+          "hash": "0f432983a0bbfcf9a25bbf504a8dbf57e09477d142f7bfa88483f46efbd62f76",
           "path": "README.hi.md"
         },
         {
-          "hash": "d3cd04e78349c4156b3b53d603130ca32c792c47b47f33e923f7f1e10599ed46",
+          "hash": "65e412072455dd782ddf2d9d44d29c4a31b0c8d61d2d5a2524c969b35c793fe7",
           "path": "README.it.md"
         },
         {
-          "hash": "9b835751e51d361ab6ca23007beff00baaf0ed261522e7d3e64ae4ce16758494",
+          "hash": "f3cd7b0e503bb9c241cf0bfd05201c3efbe652aba0b38f9cef6d83cbd9336b19",
           "path": "README.ja.md"
         },
         {
-          "hash": "0555cc6edb13d3cc6523b390bfc4b6288f47da27c8cbe2ed43dda7edf4f0061e",
+          "hash": "ce96e68a083a52749de9fbaf02ff80ad3e40e5c5f9832882e4157b21c2dfd4de",
           "path": "README.md"
         },
         {
-          "hash": "b5b1596ddf36869c990f2779d61b71e2ea31c920a17ffe08582db080abf8e24d",
+          "hash": "482157758e5964b6568b9bb4d4bf5d9f2545ddc3de776b3c5006035e6fab854d",
           "path": "README.pt-BR.md"
         },
         {
-          "hash": "1aaa23fde1e8c0e5ea24fa279f4a08263be785d71eb2d935d630582b54dea28a",
+          "hash": "4a6e968bd40b5e141dbdb2ad2690e8711c55b3baa7502e16d0d315142952f0df",
           "path": "README.zh.md"
         },
         {
@@ -819,11 +819,11 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "a72d6cc747251e9a57c31928df9e204cf5ba5e81ea75c7f883746319d7c3cea3",
+          "hash": "17fc889299034652a3fc5d0d1f42e51ac7c4629e22012d8574e257ee762c2529",
           "path": "pyproject.toml"
         },
         {
-          "hash": "e1b9d2eb69e01b14ab4837287a6427a870ebdf4411e45e9f1732e6e06d1c2045",
+          "hash": "d25bf0cbb783e251bd3f6908084f4fea901b503792a85e5bb80598a939a22789",
           "path": "uv.lock"
         },
         {
@@ -986,7 +986,7 @@
             "gone",
             "library_alone"
           ],
-          "hash": "4c588a63b7143216f6059b7d8e41abb76a6fe23b58041fec7ff20a0428919c2b",
+          "hash": "7a0454436ca87237f3d4d61995c4c60cf9dda8e15bba5d534207d176c48436c3",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -1147,7 +1147,7 @@
           "testFramework": "unittest"
         },
         {
-          "hash": "7250b87e292ab7288da969674107454172f23f12896f1dc4fbe96144e0e76313",
+          "hash": "a4ce5d3b0099363f37ee0fd6b14238032d69fda6b73ed8dfbf4c39c33e3caf6d",
           "importsFiles": [
             "tests/fakes.py"
           ],
@@ -1157,10 +1157,11 @@
         {
           "exports": [
             "gone",
+            "reap_job",
             "run_cell",
             "wait_for"
           ],
-          "hash": "1da792fcf2cf9b0c4e1a04b8b6624ccc0e5e44657b793e6ad32eefdb456612c8",
+          "hash": "a570dd349877d406cf4369da42a689bcf0c0e1222cc059aebe5eb4aeb4f99659",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py",
@@ -1676,7 +1677,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "a048a6785628951417d8cf74b5118d9b6eca5037",
+    "commit": "b1a522a6a8872f7b1cf9d898e63e4aef047f14af",
     "tracked": 75
   },
   "landings": [

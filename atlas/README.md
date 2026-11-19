@@ -1,15 +1,14 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-18 from commit a048a67 by Atlas 1.26.0.
+Mapped at 2026-11-19 from commit b1a522a by Atlas 1.26.0.
 
 ## What this is
 
 4 parts, mostly Python (32 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-17 (5a80108)
+## What changed since 2026-11-18 (a048a67)
 
-- colab_runner/spend.py is now read by tests/test_errors.py.
-- 3 files added and 24 changed content, across 3 parts.
+Nothing structural changed since 2026-11-18; 15 files changed content.
 
 ## What comes in
 

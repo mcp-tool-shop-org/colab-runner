@@ -35,7 +35,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "colab_runner",
-      "qualifyingSourceCommits": 5,
+      "qualifyingSourceCommits": 6,
       "rebaseline": null
     },
     {
@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 4,
+      "qualifyingSourceCommits": 5,
       "rebaseline": null
     }
   ],
@@ -105,8 +105,8 @@
         "path": ".polyglot-pins.json"
       },
       {
-        "commits": 7,
-        "lines": 212,
+        "commits": 8,
+        "lines": 220,
         "path": "CHANGELOG.md"
       },
       {
@@ -115,43 +115,43 @@
         "path": "LICENSE"
       },
       {
-        "commits": 2,
-        "lines": 240,
+        "commits": 3,
+        "lines": 242,
         "path": "README.es.md"
       },
       {
-        "commits": 2,
-        "lines": 216,
+        "commits": 3,
+        "lines": 218,
         "path": "README.fr.md"
       },
       {
-        "commits": 2,
-        "lines": 219,
+        "commits": 3,
+        "lines": 221,
         "path": "README.hi.md"
       },
       {
-        "commits": 2,
-        "lines": 224,
+        "commits": 3,
+        "lines": 226,
         "path": "README.it.md"
       },
       {
-        "commits": 2,
-        "lines": 195,
+        "commits": 3,
+        "lines": 197,
         "path": "README.ja.md"
       },
       {
-        "commits": 6,
-        "lines": 359,
+        "commits": 7,
+        "lines": 361,
         "path": "README.md"
       },
       {
-        "commits": 2,
-        "lines": 222,
+        "commits": 3,
+        "lines": 224,
         "path": "README.pt-BR.md"
       },
       {
-        "commits": 2,
-        "lines": 194,
+        "commits": 3,
+        "lines": 196,
         "path": "README.zh.md"
       },
       {
@@ -170,8 +170,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 4,
-        "lines": 152,
+        "commits": 5,
+        "lines": 171,
         "path": "atlas/README.md"
       },
       {
@@ -180,18 +180,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 4,
-        "lines": 383,
+        "commits": 5,
+        "lines": 467,
         "path": "atlas/page.json"
       },
       {
-        "commits": 4,
-        "lines": 713,
+        "commits": 5,
+        "lines": 920,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 4,
-        "lines": 2331,
+        "commits": 5,
+        "lines": 2581,
         "path": "atlas/structure.json"
       },
       {
@@ -200,8 +200,8 @@
         "path": "codecov.yml"
       },
       {
-        "commits": 4,
-        "lines": 11,
+        "commits": 5,
+        "lines": 13,
         "path": "colab_runner/__init__.py"
       },
       {
@@ -280,8 +280,8 @@
         "path": "colab_runner/window_lib/remote_runner.py"
       },
       {
-        "commits": 6,
-        "lines": 53,
+        "commits": 7,
+        "lines": 55,
         "path": "pyproject.toml"
       },
       {
@@ -410,8 +410,8 @@
         "path": "tests/test_followups.py"
       },
       {
-        "commits": 1,
-        "lines": 276,
+        "commits": 2,
+        "lines": 310,
         "path": "tests/test_library.py"
       },
       {
@@ -450,13 +450,13 @@
         "path": "tests/test_tokens.py"
       },
       {
-        "commits": 1,
-        "lines": 115,
+        "commits": 2,
+        "lines": 185,
         "path": "tests/test_torn_phase.py"
       },
       {
-        "commits": 2,
-        "lines": 535,
+        "commits": 3,
+        "lines": 695,
         "path": "tests/test_vm_cells.py"
       },
       {
@@ -465,8 +465,8 @@
         "path": "tests/test_window_lib.py"
       },
       {
-        "commits": 3,
-        "lines": 172,
+        "commits": 4,
+        "lines": 174,
         "path": "uv.lock"
       },
       {
@@ -480,17 +480,45 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-18T23:51:55.876Z",
+  "generatedAt": "2026-11-19T01:46:30.630Z",
   "generatedFrom": {
-    "commit": "a048a6785628951417d8cf74b5118d9b6eca5037"
+    "commit": "b1a522a6a8872f7b1cf9d898e63e4aef047f14af"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
-      "b": "pyproject.toml",
-      "either": 5,
+      "b": "README.md",
+      "either": 7,
+      "shared": 4,
+      "strength": 0.571429
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "colab_runner/__init__.py",
+      "either": 6,
       "shared": 5,
+      "strength": 0.833333
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "pyproject.toml",
+      "either": 6,
+      "shared": 6,
       "strength": 1
+    },
+    {
+      "a": "README.md",
+      "b": "pyproject.toml",
+      "either": 7,
+      "shared": 4,
+      "strength": 0.571429
+    },
+    {
+      "a": "colab_runner/__init__.py",
+      "b": "pyproject.toml",
+      "either": 6,
+      "shared": 5,
+      "strength": 0.833333
     }
   ],
   "parameters": {
@@ -503,16 +531,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-18T18:51:36-05:00",
+    "headDate": "2026-11-18T20:46:27-05:00",
     "inScopeFiles": 80,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 6,
+    "qualifyingCommits": 8,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-22T23:51:36.000Z",
+    "since": "2026-05-23T01:46:27.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
