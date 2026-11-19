@@ -16,7 +16,7 @@ The studio's shared runner for paid Google Colab windows: one place for the code
 used to carry its own copy of. It starts a job on a Colab VM in a process that outlives the rig, watches it
 inside a spending cap, scrubs tokens from everything it brings back, and always tries to stop the session.
 
-**Status: 0.1.0.** The detached runner (item 1 below) is built. Items 2 to 5 are not built yet.
+**Status: 0.1.4.** The detached runner (item 1 below) is built. Items 2 to 5 are not built yet.
 
 1. **The detached runner (0.1.0).** Start a job on the VM with a status file, poll it with backoff, a `--hold-s` heartbeat mode,
    and a flag that switches to a kernel-resident loop. Salvage is a Python-API hook (below).
@@ -37,7 +37,7 @@ Lanes vendor a pinned release of this repo, one lane per pull request.
 colab-runner is not on PyPI. A lane vendors a pinned release, or installs it from the tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 or later. The package has no runtime dependencies.
@@ -60,7 +60,7 @@ budget in compute units (see Pricing).
 
 `python -m colab_runner --help` lists every command; `run --help` lists every flag.
 
-## Using it from a lane (0.1.0)
+## Using it from a lane (0.1.4)
 
 **The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.

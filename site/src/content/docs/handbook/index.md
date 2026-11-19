@@ -21,7 +21,18 @@ It does four things:
 
 ## Status
 
-**0.1.0** ships the detached runner. Still to come: boot and card guards, the token-file secrets route, a Hugging Face
+**0.1.4** is the current release. It ships the detached runner (0.1.0) with these fixes since:
+
+- **0.1.1** marks an out-of-memory kill as `oom`, never walks an NTFS junction in a download, and records a cap trip in
+  `runner_result.json` with its code and hint.
+- **0.1.2** keeps the last known phase when a read of `phase.txt` comes back empty, so a healthy running job is never
+  ended as `setup_stall`. A kit should still write `phase.txt` in one step: see [Using it from a lane](./lanes/).
+- **0.1.3** makes the tests reap every job they start, which ends an intermittent CI failure on Python 3.12.
+- **0.1.4** brings the README, this handbook and the landing page up to date.
+
+The full list is in the [CHANGELOG](https://github.com/mcp-tool-shop-org/colab-runner/blob/main/CHANGELOG.md).
+
+Still to come: boot and card guards, the token-file secrets route, a Hugging Face
 Storage Bucket module, and a dated `PLATFORM.md` of what Colab actually does.
 
 ## Where to go next

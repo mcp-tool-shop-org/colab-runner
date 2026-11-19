@@ -43,7 +43,7 @@
       "files": [
         {
           "constantOnly": true,
-          "hash": "139e320bf213ec1375d9d151891c9bb418fc36ea85f3957b2feeb80c3941271f",
+          "hash": "0d83166d67f2d92e94f32e831bdd7124e8009e823d34f60b1b87a3534e358562",
           "path": "colab_runner/__init__.py"
         },
         {
@@ -763,7 +763,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "b3f0f60f07cfab9a0a7eef2c935798dd64a7048b648de22b950c738faf0d95ee",
+          "hash": "d33a7065ae0aeab8771014dc4502ec3286a55a1e0bbcbe07d7d2e0d72e125644",
           "path": "CHANGELOG.md"
         },
         {
@@ -771,35 +771,35 @@
           "path": "LICENSE"
         },
         {
-          "hash": "1315506a46e3fe4a9731da6230396b38225e2a47ff0b1563a111d2e195218c50",
+          "hash": "513f16c00060a65749de9a977f4936d272d66e76d481b18c515aa648354a3543",
           "path": "README.es.md"
         },
         {
-          "hash": "86a7f6f36cae485080e03f56cb332d1e8353d7418e7edf12d913f10b2edfa5b9",
+          "hash": "afdfa679777d579e79139b29caa3895698c95b783632d067080492f716ddc5c7",
           "path": "README.fr.md"
         },
         {
-          "hash": "0f432983a0bbfcf9a25bbf504a8dbf57e09477d142f7bfa88483f46efbd62f76",
+          "hash": "ed1f5fa5e45b0b763bb623bb3f4c1714151671c976ea2482f93dd0597d137d8a",
           "path": "README.hi.md"
         },
         {
-          "hash": "65e412072455dd782ddf2d9d44d29c4a31b0c8d61d2d5a2524c969b35c793fe7",
+          "hash": "54dbbf79b704415b167a3c1395093fff780fd794c60e045ddd62bb839f0f10a3",
           "path": "README.it.md"
         },
         {
-          "hash": "f3cd7b0e503bb9c241cf0bfd05201c3efbe652aba0b38f9cef6d83cbd9336b19",
+          "hash": "be840d925d6fe94a3eec5c94ebfd9712b726daebfb3d26bb73546d52e84450c5",
           "path": "README.ja.md"
         },
         {
-          "hash": "ce96e68a083a52749de9fbaf02ff80ad3e40e5c5f9832882e4157b21c2dfd4de",
+          "hash": "3cf29fe28e513589b98621e6dfdfcb5e5ac2f370215bbebbde51ff9131cd19f7",
           "path": "README.md"
         },
         {
-          "hash": "482157758e5964b6568b9bb4d4bf5d9f2545ddc3de776b3c5006035e6fab854d",
+          "hash": "cc9d823fec1cc885f45772ce5ebc2f45f55f853a80575ef91ccd1fae1c0bf5c4",
           "path": "README.pt-BR.md"
         },
         {
-          "hash": "4a6e968bd40b5e141dbdb2ad2690e8711c55b3baa7502e16d0d315142952f0df",
+          "hash": "2ac6912094671cf45a55dc1e9b8044155500279606e69cf372fcd96ad05d8ab8",
           "path": "README.zh.md"
         },
         {
@@ -819,11 +819,11 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "17fc889299034652a3fc5d0d1f42e51ac7c4629e22012d8574e257ee762c2529",
+          "hash": "11d710d67dffe40f4cb2b3256b140ae3c900cf2b804a7556f8d4fb7183765da9",
           "path": "pyproject.toml"
         },
         {
-          "hash": "d25bf0cbb783e251bd3f6908084f4fea901b503792a85e5bb80598a939a22789",
+          "hash": "b0fc97c4c9f87207dbc3341de1ca7ec6ce926ad550be112d5237f03498705d08",
           "path": "uv.lock"
         },
         {
@@ -1677,7 +1677,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "b1a522a6a8872f7b1cf9d898e63e4aef047f14af",
+    "commit": "a9abaff22452dd46edb890806be3a9022a1e926d",
     "tracked": 75
   },
   "landings": [
@@ -2050,11 +2050,11 @@
       "path": "site/src/content.config.ts"
     },
     {
-      "hash": "a28577958be6dd51573871eec1808143cc11f50acb6058ccb374fd89cc1d4ddd",
+      "hash": "e6ec4113e0253423b1f2399b174a7cf2cbb2e55e34792b8a4db926d2589d5ad5",
       "path": "site/src/content/docs/handbook/getting-started.md"
     },
     {
-      "hash": "5377cc5ef8cd54c39852e21220a07b3ddfe4583a3f84fefc759c35a6e2ef656e",
+      "hash": "0fcc93b0c94b1f6a889c89b24a1e6693e7c26d682770f29231ba2bdaee9531ec",
       "path": "site/src/content/docs/handbook/index.md"
     },
     {
@@ -2083,7 +2083,7 @@
     },
     {
       "constantOnly": true,
-      "hash": "99caf7a8433c3538617afdc90adcc9e77a8d38a8d94e051fa20e500f33b5be55",
+      "hash": "d7d8d8a338fbd0b5e8c1d9053383837b14ea8af9ead3f4eae05d6b8e0fbe853f",
       "path": "site/src/site-config.ts"
     },
     {

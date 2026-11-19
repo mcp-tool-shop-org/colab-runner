@@ -14,7 +14,7 @@
 
 工作室为付费的 Google Colab 窗口提供的共享运行器：所有 Colab 任务的代码都放在这里。它启动一个 Colab 虚拟机上的任务，该任务的生命周期超过了运行环境，并在预算限制内监控它，清除所有返回数据中的令牌，并始终尝试停止会话。
 
-**状态：0.1.0。** 独立的运行器（如下面的项目 1）已构建。项目 2 到 5 尚未构建。
+**状态：0.1.4。** 独立的运行器（如下面的项目 1）已构建。项目 2 到 5 尚未构建。
 
 1. **独立的运行器 (0.1.0)。** 在虚拟机上启动一个任务，使用状态文件进行轮询，采用回退机制、`--hold-s`心跳模式，以及一个用于切换到内核驻留循环的标志。恢复功能是一个 Python API 钩子（如下所示）。
 2. **启动和卡片保护。** 在虚拟机的第一个步骤中进行卡片断言（计算能力和每张卡片的 VRAM 类型，拒绝 `CARD_MISMATCH`），在运行环境端进行拒绝日志记录，并使用每张卡片的断路器（`CARD_CIRCUIT_OPEN`），并在加载 torch 之前设置 `OMP_NUM_THREADS`。
@@ -29,7 +29,7 @@
 colab-runner 尚未发布到 PyPI。各个任务使用固定版本，或者从标签安装它：
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 或更高版本。该软件包没有运行时依赖项。
@@ -50,7 +50,7 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 
 `python -m colab_runner --help` 列出所有命令；`run --help` 列出所有标志。
 
-## 从任务中使用 (0.1.0)
+## 从任务中使用 (0.1.4)
 
 **会话属于任务。** 任务打开 Colab 会话并传递其名称。一旦 `run` 在输出目录中写入 `session_open.json`，每次退出都会尝试停止会话，并且只有在确认停止后才会删除该标记。
 - **一个保留的标记** 表示会话可能仍然打开：停止失败，或者 `run` 直接终止（SIGKILL，丢失的运行环境）在清理操作运行之前。然后，任务运行 `python -m colab_runner stop --out-dir D`。

@@ -16,7 +16,7 @@ O executor compartilhado do estúdio para instâncias pagas do Google Colab: um 
 Ele inicia um trabalho em uma VM do Colab em um processo que perdura além do tempo de execução, monitora-o
 dentro de um limite de gastos, remove tokens de tudo o que traz de volta e sempre tenta interromper a sessão.
 
-**Status: 0.1.0.** O executor independente (item 1 abaixo) foi criado. Os itens 2 a 5 ainda não foram criados.
+**Status: 0.1.4.** O executor independente (item 1 abaixo) foi criado. Os itens 2 a 5 ainda não foram criados.
 
 1. **O executor independente (0.1.0).** Inicia um trabalho na VM com um arquivo de status, verifica-o com repetição, um modo de "heartbeat" `--hold-s`
 e um sinalizador que alterna para um loop residente no kernel. A recuperação é um hook da API Python (abaixo).
@@ -37,7 +37,7 @@ As instâncias usam uma versão fixa deste repositório, uma instância por soli
 colab-runner não está em PyPI. Uma instância usa uma versão fixa ou a instala a partir da tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 ```
 
 - **Python** 3.11 ou posterior. O pacote não tem dependências de tempo de execução.
@@ -60,7 +60,7 @@ em unidades de computação (veja Preços).
 
 `python -m colab_runner --help` lista todos os comandos; `run --help` lista todos os sinalizadores.
 
-## Usando-o em uma instância (0.1.0)
+## Usando-o em uma instância (0.1.4)
 
 **A sessão pertence à instância.** A instância abre a sessão do Colab e passa seu nome. Depois que `run` gravar
 `session_open.json` no diretório de saída, todas as saídas tentarão interromper a sessão, e o marcador será removido somente após uma interrupção confirmada.

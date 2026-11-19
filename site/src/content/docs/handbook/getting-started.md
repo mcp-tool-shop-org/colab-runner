@@ -17,7 +17,7 @@ sidebar:
 colab-runner is not on PyPI. Vendor a pinned release into the lane, or install it from the tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
 python -m colab_runner --version
 ```
 

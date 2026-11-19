@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.4] - 2026-11-19
+
+Docs release: the README, handbook and landing page caught up with 0.1.1 to 0.1.3. No code changes.
+
+- **Install lines pin `v0.1.4`.** `README.md`, the 7 translated READMEs, `handbook/getting-started.md` and the landing page
+  had pinned `v0.1.0`, which predates the 0.1.2 `phase.txt` fix.
+- **Status shows 0.1.4.** The README status line and the "Using it from a lane" heading in all 8 READMEs (the version
+  number only; no translated sentence changed), the landing-page badge, and the handbook's status section, which now
+  summarizes 0.1.1 to 0.1.4 and links here.
+
 ## [0.1.3] - 2026-11-19
 
 Test-hygiene and PR #7 review follow-ups; no changes to the runner or VM cells.

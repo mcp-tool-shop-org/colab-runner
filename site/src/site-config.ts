@@ -11,7 +11,7 @@ export const config: SiteConfig = {
     'MIT Licensed — built by <a href="https://mcp-tool-shop.github.io/" style="color:var(--color-muted);text-decoration:underline">MCP Tool Shop</a>',
 
   hero: {
-    badge: '0.1.0 · Python 3.11+',
+    badge: '0.1.4 · Python 3.11+',
     headline: 'Colab Runner',
     headlineAccent: 'paid windows that always stop.',
     description:
@@ -19,7 +19,7 @@ export const config: SiteConfig = {
     primaryCta: { href: 'handbook/getting-started/', label: 'Get started' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
-      { label: 'Install', code: 'pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.0"' },
+      { label: 'Install', code: 'pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"' },
       {
         label: 'Run',
         code: 'python -m colab_runner run --session S --out-dir D --script /content/job.sh --wall-s 3600 --max-rate R --cap C --cleanup-bound-s 600',
