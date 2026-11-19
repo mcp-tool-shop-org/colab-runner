@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 O executor compartilhado do estúdio para instâncias pagas do Google Colab: um local para o código que cada instância do Colab usa.
 Ele inicia um trabalho em uma VM do Colab em um processo que perdura além do tempo de execução, monitora-o
 dentro de um limite de gastos, remove tokens de tudo o que traz de volta e sempre tenta interromper a sessão.

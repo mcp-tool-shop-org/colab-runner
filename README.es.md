@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 El entorno compartido del estudio para las instancias de Google Colab de pago: un único lugar para el código que utiliza cada instancia de Colab.
 Inicia un trabajo en una máquina virtual de Colab en un proceso que perdura más que la instancia, supervisa el proceso
 dentro de un límite de gasto, elimina los tokens de todo lo que recupera y siempre intenta detener la sesión.

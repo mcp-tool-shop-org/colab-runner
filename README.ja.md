@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 有料のGoogle Colab環境向けの、スタジオが共有するランナー。各Colab環境で利用されるコードはすべて、このランナーに集約されます。このランナーは、Colab VM上でジョブを開始し、そのジョブはランナーのライフサイクルを超えて実行されます。また、予算内で実行され、取得したトークンをすべて削除し、セッションを停止しようとします。
 
 **ステータス：0.1.0。** 独立したランナー（以下1）がビルドされました。2から5はまだビルドされていません。

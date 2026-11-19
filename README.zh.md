@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 工作室为付费的 Google Colab 窗口提供的共享运行器：所有 Colab 任务的代码都放在这里。它启动一个 Colab 虚拟机上的任务，该任务的生命周期超过了运行环境，并在预算限制内监控它，清除所有返回数据中的令牌，并始终尝试停止会话。
 
 **状态：0.1.0。** 独立的运行器（如下面的项目 1）已构建。项目 2 到 5 尚未构建。

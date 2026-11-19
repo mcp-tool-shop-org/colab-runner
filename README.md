@@ -12,8 +12,6 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-# colab-runner
-
 The studio's shared runner for paid Google Colab windows: one place for the code every Colab lane
 used to carry its own copy of. It starts a job on a Colab VM in a process that outlives the rig, watches it
 inside a spending cap, scrubs tokens from everything it brings back, and always tries to stop the session.
