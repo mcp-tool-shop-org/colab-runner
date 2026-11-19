@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.3] - 2026-11-19
+
+Test-hygiene and PR #7 review follow-ups; no changes to the runner or VM cells.
+
+- **Reap detached test jobs before temp-dir cleanup.** `tests/test_vm_cells.py` (`VmCellTest`, `EndToEndTest`) now waits briefly for every detached job it starts, terminates lingering process groups (`SIGTERM`, then `SIGKILL`), reaps direct children, and asserts all started processes and groups are gone before `TemporaryDirectory.cleanup()` runs — eliminating the `test_a_stale_pid_without_status_is_restarted` `Directory not empty` race on Python 3.12 and replacing `pkill -f` in `test_resident_cell_gives_up_at_its_max`. `tests/test_library.py` (`ProcessGroupTest`) adds the same process-group cleanup and exit assertion for detached grandchildren.
+- **Write `phase.txt` atomically in the tests.** `tests/test_vm_cells.py` uses `os.replace` (`test_poll_reports_phase_progress_units_setup_bytes_and_log_chunks`) and `printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv …` (`test_lost_start_reply_and_lost_polls_still_complete_with_one_job`), matching the README.
+- **Torn `phase.txt` regression coverage.** `tests/test_torn_phase.py` adds `test_hold_mode_torn_read_preserves_setup_state_and_progress_clock` (torn reads under `hold_mode` change neither setup state nor the progress-stall clock) and `test_torn_read_during_run_does_not_reset_progress_clock` (a transient torn `""` or `None` read during `run` never resets or extends the progress-stall window).
+
 ## [0.1.2] - 2026-11-18
 
 A torn `phase.txt` read after setup never ends a healthy running job as `setup_stall`.
