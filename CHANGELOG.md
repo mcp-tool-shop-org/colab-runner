@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2] - 2026-11-18
+
+A torn `phase.txt` read after setup never ends a healthy running job as `setup_stall`.
+
+- **Never fall back to setup on a torn `phase.txt` read.** Once the job has left setup, an empty (`""`) or missing (`None`) `phase` read in `Runner._loop` keeps the last known phase (`last_phase`) instead of re-entering setup. An empty or missing read during setup keeps setup unchanged.
+- **Reset the setup clock on any real return to setup.** If `phase.txt` genuinely reads `"setup"` again after a run phase (`not last_phase_setup`), `Runner._loop` resets `last_setup` and `setup_t` at that transition, so a stale setup clock can never fire on its own.
+- **Docs and translations.** `README.md`, the kit handbook (`site/src/content/docs/handbook/lanes.md`), and the 7 translated READMEs (`README.es.md`, `README.fr.md`, `README.hi.md`, `README.it.md`, `README.ja.md`, `README.pt-BR.md`, `README.zh.md`, with `.polyglot-pins.json` updated for the 5 pinnable languages) document the phase rule and add shell (`printf … > phase.tmp && mv …`) and Python (`os.replace`) atomic-write snippets for `phase.txt`.
+
 ## [0.1.1] - 2026-11-17
 
 The follow-ups the reviews of PRs #4 and #5 left for after 0.1.0. Exit codes and `detail` are as they were.

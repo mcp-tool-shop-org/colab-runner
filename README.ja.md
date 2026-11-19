@@ -109,10 +109,26 @@ echo "exit $?"                    # 0 done and stopped; see the exit codes below
 **`colab`コマンド**は、`COLAB_RUNNER_CLI`が別のコマンドラインを指定しない限り、`colab`です。これは、POSIX引用符を使用する`shlex.split`で分割されます。Windowsでは、パスをスラッシュで記述するか、引用符で囲みます（`"C:\tools\colab.exe"`）。これは、引用符で囲まれていないバックスラッシュが削除されるためです。分割できないもの（閉じられていない引用符）は、拒否されます（`CLI_INVALID`、終了コード1）。
 
 **ジョブが書き込む必要のある内容。これにより、ストールガードがそれを確認できます。** パスはVM上にあり、出力ディレクトリはデフォルトで`CR_OUT_DIR`、`<content>/<job>_out`です。
-- `phase.txt`：インストール中に存在しない、空である、または`setup`である。それ以外の場合は、実行中に存在します。`--hold-s`で開始されたジョブは、セットアップフェーズをスキップします。
+- `phase.txt`：インストール中は存在しない、空、または`setup`、実行開始後はそれ以外の値にします。ジョブがセットアップを離れた後、`phase.txt`が空または存在しない状態で読み取られても、colab-runnerは最後に確認されたフェーズを保持し、セットアップには戻りません。実行フェーズの後に`phase.txt`が再び`setup`として読み取られた場合、colab-runnerはセットアップストールタイマーをリセットします。`--hold-s`で開始されたジョブは、セットアップフェーズをスキップします。
 - `setup.log`：セットアップ中、その`setup.log`の増加が`--setup-stall-s`（デフォルトは600）の間停止した実行は、`setup_stall`で終了します。
 - **進行状況：** セットアップ後、実行は、自身が確認できるものが`--progress-stall-s`（デフォルトは900）の間移動しなくなった場合に、`progress_stall`で終了します。確認できるものは、`CR_PROGRESS_GLOB`（デフォルトは`<out>/progress/*`）に一致する各ファイルの最初の整数の合計、`CR_UNITS_GLOB`に一致するファイルの数、およびホールドハートビートの合計です。
 - 連続して`--unreachable-polls`回のポーリングで有効なポーリングがない（デフォルトは10）、または`--unreachable-s`（デフォルトは1800）の実行は、`unreachable`で終了します。
+
+**`phase.txt`をアトミックに書き込む。** キットが`phase.txt`を書き込み、colab-runnerがそれを読み取ります。`phase.txt`をその場で上書きすると（例：`echo run > phase.txt`）、先にファイルが空に切り詰められるため、colab-runnerが空のファイルを読み取る可能性があります。新しいフェーズは同じディレクトリ内の一時ファイルに書き込み、その一時ファイルを`phase.txt`にリネームしてください：
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 **機密情報とバイナリセーフなダウンロード処理。** 機密情報を `--env NAME` として渡し、レーンの環境で NAME を設定します。`--env NAME=VALUE` は、その値をランナー自身のコマンドラインに配置します。値は、アップロードされたノートブックセルのファイル内の VM に到達しますが、決して `colab` CLI への引数としては渡されません。
 

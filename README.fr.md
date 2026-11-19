@@ -116,10 +116,26 @@ Un refus après le marqueur n’est pas une sortie 1. Un `--job` réutilisé, pa
 **La commande `colab`** est `colab`, sauf si `COLAB_RUNNER_CLI` indique une autre ligne de commande. Elle est divisée avec `shlex.split`, qui utilise les guillemets POSIX : sous Windows, écrivez le chemin avec des barres obliques ou mettez-le entre guillemets (`"C:\tools\colab.exe"`), car une barre oblique inversée non entre guillemets est supprimée. Une commande qui ne peut pas être divisée (une guillemet non fermée) est refusée (`CLI_INVALID`, sortie 1).
 
 **Ce que la tâche doit écrire, afin que les mécanismes de surveillance puissent le voir.** Les chemins se trouvent sur la machine virtuelle ; le répertoire de sortie est `CR_OUT_DIR`, par défaut `<content>/<job>_out`.
-- `phase.txt` : absent, vide ou `setup` pendant l’installation, tout autre contenu une fois l’exécution lancée. Les tâches démarrées avec `--hold-s` ignorent la phase de configuration.
+- `phase.txt` : absent, vide ou `setup` pendant l’installation, tout autre contenu une fois l’exécution lancée. Une fois que la tâche quitte la configuration, colab-runner conserve la dernière phase connue lors d’une lecture vide ou manquante de `phase.txt` et ne revient jamais en configuration ; si `phase.txt` lit de nouveau `setup` après une phase d’exécution, colab-runner réinitialise le minuteur de blocage de configuration. Les tâches démarrées avec `--hold-s` ignorent la phase de configuration.
 - `setup.log` : pendant la configuration, une exécution dont le `setup.log` cesse de croître pendant `--setup-stall-s` (par défaut 600) se termine `setup_stall`.
 - **Progression :** après la configuration, une exécution se termine `progress_stall` lorsque rien de ce qu’elle peut voir ne bouge pendant `--progress-stall-s` (par défaut 900). Ce qu’elle voit est la somme du premier entier de chaque fichier correspondant à `CR_PROGRESS_GLOB` (par défaut `<out>/progress/*`), du nombre de fichiers correspondant à `CR_UNITS_GLOB` et des pulsations cardiaques.
 - Une exécution sans sondage valide pendant `--unreachable-polls` sondages consécutifs (par défaut 10), ou pendant `--unreachable-s` (par défaut 1800), se termine `unreachable`.
+
+**Écrivez `phase.txt` de manière atomique.** Le kit écrit `phase.txt` ; colab-runner le lit. Réécrire `phase.txt` sur place (par exemple `echo run > phase.txt`) tronque d’abord le fichier, de sorte que colab-runner peut lire un fichier vide. Écrivez la nouvelle phase dans un fichier temporaire dans le même répertoire, puis renommez le fichier temporaire en `phase.txt` :
+
+```bash
+printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
+```
+
+```python
+import os
+from pathlib import Path
+
+out = Path(os.environ["CR_OUT_DIR"])
+tmp = out / "phase.tmp"
+tmp.write_text("run\n", encoding="utf-8")
+os.replace(tmp, out / "phase.txt")
+```
 
 **Secrets et nettoyage des téléchargements pour assurer la sécurité des données binaires.** Passez un secret en tant que `--env NAME`, en définissant NAME dans l’environnement du processus. `--env NAME=VALUE`
 place la valeur dans la ligne de commande du processus. Les valeurs atteignent la VM à l’intérieur du fichier de cellule du notebook téléchargé, et non en tant qu’arguments pour l’interface CLI `colab`.

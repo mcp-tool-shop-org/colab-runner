@@ -43,7 +43,7 @@
       "files": [
         {
           "constantOnly": true,
-          "hash": "9768692e2cc1db2aaa4064e34d8a54c84c152c07ffc33792007647ad0baa284f",
+          "hash": "d9a87c8a9f797c1d5271f648d5781ddd71ae87d36361829bdc462311fbe58437",
           "path": "colab_runner/__init__.py"
         },
         {
@@ -89,21 +89,16 @@
             {
               "in": "stop_command",
               "kind": "raise",
-              "line": 244
-            },
-            {
-              "in": "stop_command",
-              "kind": "except",
-              "line": 245
-            },
-            {
-              "in": "stop_command",
-              "kind": "raise",
               "line": 246
             },
             {
               "in": "stop_command",
               "kind": "except",
+              "line": 247
+            },
+            {
+              "in": "stop_command",
+              "kind": "raise",
               "line": 248
             },
             {
@@ -112,11 +107,16 @@
               "line": 250
             },
             {
+              "in": "stop_command",
+              "kind": "except",
+              "line": 252
+            },
+            {
               "kind": "raise",
-              "line": 276
+              "line": 278
             }
           ],
-          "hash": "08e1099b9c4795c282615586427b970c0c150510e3596a87ed8c4e6b5d9a66ba",
+          "hash": "d5d8a64c79e4b5afa159b8016bfb3350c5bc44d7e230de3a7b7f6b68e96abba1",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -145,160 +145,165 @@
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 88
+              "line": 89
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 94
+              "line": 95
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 114
+              "line": 115
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 120
+              "line": 121
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 125
+              "line": 126
             },
             {
               "in": "_byte_twin_source",
               "kind": "raise",
-              "line": 136
+              "line": 137
             },
             {
               "in": "default_quarantine_dir",
               "kind": "raise",
-              "line": 208
+              "line": 209
             },
             {
               "in": "is_binary_bytes",
               "kind": "except",
-              "line": 228
+              "line": 229
             },
             {
               "in": "kill_group",
               "kind": "except",
-              "line": 264
+              "line": 265
             },
             {
               "in": "kill_group",
               "kind": "except",
-              "line": 268
+              "line": 269
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 278
+              "line": 279
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 282
+              "line": 283
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 286
+              "line": 287
             },
             {
               "in": "_read",
               "kind": "except",
-              "line": 317
+              "line": 318
             },
             {
               "in": "_kill",
               "kind": "except",
-              "line": 353
+              "line": 354
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 390
+              "line": 391
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 394
+              "line": 395
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 397
+              "line": 398
             },
             {
               "in": "run",
               "kind": "raise",
-              "line": 400
+              "line": 401
             },
             {
               "in": "start_cell",
               "kind": "except",
-              "line": 429
+              "line": 430
             },
             {
               "in": "_unlink_quiet",
               "kind": "except",
-              "line": 460
+              "line": 461
             },
             {
               "in": "_unlink_link",
               "kind": "except",
-              "line": 468
+              "line": 469
             },
             {
               "in": "_unlink_link",
               "kind": "except",
-              "line": 471
+              "line": 472
+            },
+            {
+              "in": "_reparse_tag",
+              "kind": "except",
+              "line": 485
             },
             {
               "in": "_quarantine_dest",
               "kind": "raise",
-              "line": 544
+              "line": 578
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 576
+              "line": 610
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 585
+              "line": 619
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 597
+              "line": 631
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 611
+              "line": 645
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 613
+              "line": 647
             },
             {
               "in": "cli_from_env",
               "kind": "except",
-              "line": 623
+              "line": 657
             },
             {
               "in": "cli_from_env",
               "kind": "raise",
-              "line": 624
+              "line": 658
             }
           ],
-          "hash": "87cd69a33cccb4862f0dfd3ea7325b180aefe0d4b95b52ba77a956f223b1b353",
+          "hash": "155e94015f996bc4b9577170cab06f25d1fdd73f43ae3a7e90957cb66ce3ece9",
           "importsFiles": [
             "colab_runner/errors.py",
             "colab_runner/window_lib/__init__.py",
@@ -308,10 +313,11 @@
         },
         {
           "exports": [
+            "cap_trip_record",
             "error_record",
             "lookup"
           ],
-          "hash": "0aaa678e6c1082613fc008c4ac26239dc09ccf218bebfe5cb5e0bc7733ceb465",
+          "hash": "6677735195d68f3466b54f2bb346688485e8a72ceca67632bf46b1938b4054e9",
           "path": "colab_runner/errors.py"
         },
         {
@@ -348,120 +354,120 @@
             {
               "in": "download",
               "kind": "except",
-              "line": 441
+              "line": 445
             },
             {
               "in": "download",
               "kind": "raise",
-              "line": 444
+              "line": 448
             },
             {
               "in": "download",
               "kind": "except",
-              "line": 451
+              "line": 455
             },
             {
               "in": "download",
               "kind": "raise",
-              "line": 454
+              "line": 458
             },
             {
               "in": "_fetch_record",
               "kind": "except",
-              "line": 467
+              "line": 471
             },
             {
               "in": "_collect_resident_log",
               "kind": "except",
-              "line": 501
+              "line": 505
             },
             {
               "in": "_collect_resident_log",
               "kind": "raise",
-              "line": 503
+              "line": 507
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 564
+              "line": 568
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 566
+              "line": 570
             },
             {
               "in": "run",
               "kind": "raise",
-              "line": 585
+              "line": 591
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 604
+              "line": 610
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 615
+              "line": 621
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 618
+              "line": 624
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 625
+              "line": 631
             },
             {
               "in": "_check_run",
               "kind": "except",
-              "line": 627
+              "line": 633
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 628
+              "line": 634
             },
             {
               "in": "_loop",
               "kind": "except",
-              "line": 760
+              "line": 772
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 803
+              "line": 820
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 810
+              "line": 827
             },
             {
               "in": "_salvage",
               "kind": "except",
-              "line": 871
-            },
-            {
-              "in": "_on_signal",
-              "kind": "raise",
-              "line": 884
-            },
-            {
-              "in": "_on_signal",
-              "kind": "raise",
               "line": 888
+            },
+            {
+              "in": "_on_signal",
+              "kind": "raise",
+              "line": 901
+            },
+            {
+              "in": "_on_signal",
+              "kind": "raise",
+              "line": 905
             },
             {
               "in": "_signal_name",
               "kind": "except",
-              "line": 936
+              "line": 953
             }
           ],
-          "hash": "05ed777fa806c5bc846f3029d48effc9c36320d63e21592f04765f12614b5a13",
+          "hash": "e43b2e92690faeefd7b766d3ccd7f4a9662ba56f4e0462e40f4e3e00cbbe2579",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
@@ -733,7 +739,7 @@
       "testRunners": [
         "unittest"
       ],
-      "testedBy": 13,
+      "testedBy": 15,
       "unresolvedSites": 0
     },
     {
@@ -753,7 +759,11 @@
           "path": ".gitignore"
         },
         {
-          "hash": "7e062c916dda1932362d7ed303998811b4d0b61a4915a0ace770b2900a7d52a0",
+          "hash": "3e153bdea775848418c568918bd7f3479e509a735cb155d151d4d57febb08f7f",
+          "path": ".polyglot-pins.json"
+        },
+        {
+          "hash": "64b63c8f897d410dbced44147d156acf010d4f3186f6791cda2b3af3ae3510b4",
           "path": "CHANGELOG.md"
         },
         {
@@ -761,35 +771,35 @@
           "path": "LICENSE"
         },
         {
-          "hash": "f15e9c6494e4ed80be96ea72b66bb76f8e88e6f1a6f25f08689d8530b14b4ea7",
+          "hash": "ec6ca62b5e40d99f5d46733c0f18516d88a40e7b39d3d8300ab4ec8bd62b4366",
           "path": "README.es.md"
         },
         {
-          "hash": "7428bcbc0999f0bd6ace4bd18ff283ea1a872e947ca5e07f8136573809a97d6f",
+          "hash": "69c0808b7980f96667c35911b347e55a58ce72ad2760007a0d6fcacc29d4c473",
           "path": "README.fr.md"
         },
         {
-          "hash": "7fad672f6bca4643820837b07992fc3f53c15a7282d9bf1f697de5f89f453504",
+          "hash": "46aa8f7164325d33720f59e7757cdaf275bcaf27ff6bcd464a8b45d78559c506",
           "path": "README.hi.md"
         },
         {
-          "hash": "c05d8ee85e99fe20d1843da4cc89aef30cbafa2ce5fc029bc7aff3a2b4a7b2e5",
+          "hash": "d3cd04e78349c4156b3b53d603130ca32c792c47b47f33e923f7f1e10599ed46",
           "path": "README.it.md"
         },
         {
-          "hash": "28bf34cb31c58655e7ef32eac329ccb04256f40cdef46714435a3c146f550b6a",
+          "hash": "9b835751e51d361ab6ca23007beff00baaf0ed261522e7d3e64ae4ce16758494",
           "path": "README.ja.md"
         },
         {
-          "hash": "4275e0ebe632d79845b07f60182bef3e1f23c888d53be5dab2dcff6907df1aed",
+          "hash": "0555cc6edb13d3cc6523b390bfc4b6288f47da27c8cbe2ed43dda7edf4f0061e",
           "path": "README.md"
         },
         {
-          "hash": "4f64d841c47f23e30600376dd0738fd6800d7b7d870afcab631ecbd4043ac62b",
+          "hash": "b5b1596ddf36869c990f2779d61b71e2ea31c920a17ffe08582db080abf8e24d",
           "path": "README.pt-BR.md"
         },
         {
-          "hash": "2334ca1012f6350efe3364e58978f4426cf77ca326f979400897848caec57b8b",
+          "hash": "1aaa23fde1e8c0e5ea24fa279f4a08263be785d71eb2d935d630582b54dea28a",
           "path": "README.zh.md"
         },
         {
@@ -797,11 +807,11 @@
           "path": "SCORECARD.md"
         },
         {
-          "hash": "233cf24e3487325bb7a761b00513dd526a94b7da5be6e05a3345d74365ad71b5",
+          "hash": "93287594d7f21628bbd7968f7a557a7d3e58ddb74a1dbd0482baa608b8fbe7a4",
           "path": "SECURITY.md"
         },
         {
-          "hash": "cbb5665f81d715663d1bc1a90e490884c7c417e36437791452638678be1051ba",
+          "hash": "4929823374f78dc0e52305a171c179fad6493a246392a553ed2d5379f636bd77",
           "path": "SHIP_GATE.md"
         },
         {
@@ -809,11 +819,11 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "9050d4947d3e11be7f8e029d98bb200c7c4da25f5c1edb63dc8cf78d0ceaaf84",
+          "hash": "a72d6cc747251e9a57c31928df9e204cf5ba5e81ea75c7f883746319d7c3cea3",
           "path": "pyproject.toml"
         },
         {
-          "hash": "2501c269fdba2aa9a8e7fe28a3886bcbcd661f49237c9030c408c84befc3c569",
+          "hash": "e1b9d2eb69e01b14ab4837287a6427a870ebdf4411e45e9f1732e6e06d1c2045",
           "path": "uv.lock"
         },
         {
@@ -901,9 +911,10 @@
           "exports": [
             "cli",
             "library_refusal_codes",
-            "source_codes"
+            "source_codes",
+            "trip_codes"
           ],
-          "hash": "3a4fa0f35516d7593b1ffe67905c72c88d3fe8c055b192ec6d8c233cb04428a4",
+          "hash": "a12e04e5e3435cb8f74ab869cf5d16aed5b1c8588d7a54ea7a1e020cc1bd3f7f",
           "importOrder": [
             "colab_runner/__main__.py",
             "colab_runner/errors.py",
@@ -996,6 +1007,37 @@
             "tests/fakes.py"
           ],
           "path": "tests/test_logs.py",
+          "testFramework": "unittest"
+        },
+        {
+          "exports": [
+            "cli",
+            "count_downloads",
+            "overrun_first_poll",
+            "poisoned",
+            "snapshot",
+            "trip_scenarios"
+          ],
+          "hash": "7f3751ae989f5cde19c6d107bb903ccea503aa28507c71794d1eedac959895b2",
+          "importOrder": [
+            "colab_runner/__init__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/runner.py",
+            "tests/fakes.py",
+            "tests/test_tokens.py",
+            "colab_runner/__main__.py"
+          ],
+          "importsFiles": [
+            "colab_runner/__init__.py",
+            "colab_runner/__main__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/runner.py",
+            "tests/fakes.py",
+            "tests/test_tokens.py"
+          ],
+          "path": "tests/test_post010.py",
           "testFramework": "unittest"
         },
         {
@@ -1102,6 +1144,14 @@
             "tests/fakes.py"
           ],
           "path": "tests/test_tokens.py",
+          "testFramework": "unittest"
+        },
+        {
+          "hash": "7250b87e292ab7288da969674107454172f23f12896f1dc4fbe96144e0e76313",
+          "importsFiles": [
+            "tests/fakes.py"
+          ],
+          "path": "tests/test_torn_phase.py",
           "testFramework": "unittest"
         },
         {
@@ -1286,7 +1336,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 16
+          "files": 18
         }
       ],
       "readers": [],
@@ -1365,7 +1415,7 @@
         },
         {
           "coverage": true,
-          "files": 16,
+          "files": 18,
           "job": "ci",
           "runner": "unittest",
           "step": "Coverage (floor 90)"
@@ -1626,8 +1676,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "5a80108e36f5e9d71c3c37634da57cfb58b514c2",
-    "tracked": 72
+    "commit": "a048a6785628951417d8cf74b5118d9b6eca5037",
+    "tracked": 75
   },
   "landings": [
     {
@@ -1691,6 +1741,24 @@
         }
       ],
       "target": "colab_runner/**/*.py",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_errors.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        },
+        {
+          "by": "tests/test_errors.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "colab_runner/spend.py",
       "writers": []
     },
     {
@@ -1917,7 +1985,7 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 17,
+  "testFiles": 19,
   "unassigned": [
     {
       "entry": "failClosed",
@@ -1981,7 +2049,7 @@
       "path": "site/src/content.config.ts"
     },
     {
-      "hash": "dbad7c9895fc3ca204018ae83b92f399719faf8767c9100ed883f401c926ed70",
+      "hash": "a28577958be6dd51573871eec1808143cc11f50acb6058ccb374fd89cc1d4ddd",
       "path": "site/src/content/docs/handbook/getting-started.md"
     },
     {
@@ -1989,15 +2057,15 @@
       "path": "site/src/content/docs/handbook/index.md"
     },
     {
-      "hash": "5cfed6bba750cf567a4a1861e59d6038ea0b02f3d7a9bf8295ef119934437568",
+      "hash": "91129b1a0ae6a03d5f2c5d621271dc5f68b0cc48acfdcd4b44a163dabcdb9fdd",
       "path": "site/src/content/docs/handbook/lanes.md"
     },
     {
-      "hash": "1ad610ea3327e3c69480627172ba593d85f82e81f25440f12cd4f5cbac1f2eec",
+      "hash": "f2082a994f5262f92c960ddc74823ccc8287abb81a9ae82e2426fb699ad24647",
       "path": "site/src/content/docs/handbook/reference.md"
     },
     {
-      "hash": "50773047329beba2602b8e1e4f8b26da785e4a7585d595cf47fac3d879d36a8a",
+      "hash": "869259f8300e901c6a28728e3a601e91b598bb670bb6da3d36c1ddcc44b04abd",
       "path": "site/src/content/docs/handbook/security.md"
     },
     {
@@ -2014,7 +2082,7 @@
     },
     {
       "constantOnly": true,
-      "hash": "97f9b4c332f85b25404c5fc57c8ca431a30f3a0c1894454d16fc510417181974",
+      "hash": "99caf7a8433c3538617afdc90adcc9e77a8d38a8d94e051fa20e500f33b5be55",
       "path": "site/src/site-config.ts"
     },
     {
