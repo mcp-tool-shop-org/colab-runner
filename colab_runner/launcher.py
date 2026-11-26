@@ -7,9 +7,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import asdict
@@ -23,11 +25,14 @@ from colab_runner.cards import (
     CardSpec,
     CircuitBreaker,
     StudyLedger,
+    pool_key_for_card,
+    pool_key_for_session_row,
     shape_row_label,
     utc_day_str,
     validate_card_and_shape,
 )
 from colab_runner.colab_cli import (
+    KILL_WAIT_S,
     BackgroundCall,
     BinaryDownloadRefused,
     CliResult,
@@ -40,19 +45,20 @@ from colab_runner.colab_cli import (
     scrub_local,
     write_cell,
 )
-from colab_runner.errors import Refused, error_record
-from colab_runner.manifest import StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
-from colab_runner.runner import Runner, require_number, write_json_atomic
+from colab_runner.errors import Refused, cap_trip_record, error_record
+from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
+from colab_runner.runner import RunInterrupted, Runner, require_number, write_json_atomic
 from colab_runner.spend import SpendGuard, neighbour_warning
 from colab_runner.window_lib import launch_guards as lg
 
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DEFAULT_SALVAGE_ALLOWANCE_S = 120.0
 DEFAULT_CLEANUP_FLOOR_S = 600.0
+OPEN_LOCK_STALE_MTIME_S = 10.0
 
 
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _utc_now(dt: Optional[datetime] = None) -> str:
+    return (dt or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _slug(value: str) -> str:
@@ -61,7 +67,7 @@ def _slug(value: str) -> str:
 
 
 def default_session_name(spec: WindowSpec, card: str) -> str:
-    """Build a unique Colab session name from the study, card, and a short random suffix."""
+    """Build a unique Colab session name from the job, card, and a short random suffix."""
     return "cr-%s-%s-%s" % (_slug(spec.job), card.lower().replace("_", "-"), uuid.uuid4().hex[:6])
 
 
@@ -87,6 +93,94 @@ def default_cleanup_bound_s(resident: bool, runner_cls: type[Runner] = Runner) -
     return max(DEFAULT_CLEANUP_FLOOR_S, probe.own_cleanup_bound_s(resident) + DEFAULT_SALVAGE_ALLOWANCE_S)
 
 
+def open_phase_bound_s(
+    card_spec: CardSpec,
+    *,
+    local_cpu: bool = False,
+    shape_attempts: int = 3,
+    sessions_timeout_s: float = 30.0,
+    post_open_polls: int = 6,
+    usage_timeout_s: float = 60.0,
+    rate_poll_interval_s: float = 5.0,
+    upload_timeout_s: float = 120.0,
+) -> float:
+    """Worst-case seconds after `colab new` succeeds until `Runner.run` starts polling."""
+    uploads_bound = 2 * (float(upload_timeout_s) + 2.0 * KILL_WAIT_S)
+    if local_cpu or card_spec.card_class == "cpu":
+        return uploads_bound
+    shape_pauses = sum(2.0 * i for i in range(1, max(1, int(shape_attempts))))
+    shape_bound = int(shape_attempts) * (float(sessions_timeout_s) + 2.0 * KILL_WAIT_S) + shape_pauses
+    rate_pauses = max(0, int(post_open_polls) - 1) * float(rate_poll_interval_s)
+    rate_bound = int(post_open_polls) * (float(usage_timeout_s) + 2.0 * KILL_WAIT_S) + rate_pauses
+    return shape_bound + rate_bound + uploads_bound
+
+
+def compute_launch_budget(guard: SpendGuard, open_bound_s: float) -> dict[str, Any]:
+    """Combine `SpendGuard.budget()` with open-phase worst-case spend after `colab new`."""
+    base = dict(guard.budget())
+    priced_rate = float(base["priced_rate"])
+    open_units = round((max(0.0, float(open_bound_s)) / 3600.0) * priced_rate, 6)
+    base_cap_path = float(base["worst_case_cap_path"])
+    base_death_path = float(base["worst_case_launcher_death_path"])
+    wc_cap = round(base_cap_path + open_units, 6)
+    wc_death = round(base_death_path + open_units, 6)
+    wc_total = round(max(wc_cap, wc_death), 6)
+    base["open_phase_bound_s"] = round(float(open_bound_s), 2)
+    base["open_phase_bound_units"] = open_units
+    base["worst_case_runner_cap_path"] = base_cap_path
+    base["worst_case_runner_launcher_death_path"] = base_death_path
+    base["worst_case_cap_path"] = wc_cap
+    base["worst_case_launcher_death_path"] = wc_death
+    base["worst_case_total_spend"] = wc_total
+    base["worst_case_total_spend_units"] = wc_total
+    return base
+
+
+def _cap_eq_tag(val: float, cap_v: float, label: str = "cap") -> str:
+    return f" (= {label} {cap_v})" if abs(float(val) - float(cap_v)) < 1e-6 else ""
+
+
+def format_launch_budget(rec: dict[str, Any]) -> str:
+    """Format human-readable budget lines including open-phase spend bounds (never false '= cap')."""
+    assumptions = rec.get("assumptions") or {}
+    cap_v = float(rec["cap"])
+    lines = [
+        f"formula: {rec['formula']}",
+        f"cap: {rec['cap']}",
+        f"margin: {rec['margin']}",
+        f"cleanup_bound_s: {rec['cleanup_bound_s']}",
+        f"open_phase_bound_s: {rec['open_phase_bound_s']}",
+        f"priced_rate: {rec['priced_rate']}/h",
+        f"max_rate: {rec['max_rate']}/h",
+        f"reserve (cleanup_reserve): {rec['cleanup_reserve_units']} ({rec['cleanup_bound_s']} / 3600 * {rec['priced_rate']})",
+        f"open_phase_bound_units: {rec['open_phase_bound_units']} ({rec['open_phase_bound_s']} / 3600 * {rec['priced_rate']})",
+        f"effective_trip: {rec['effective_trip_units']} ({rec['cap']} - {rec['margin']} - {rec['cleanup_reserve_units']})",
+        f"runtime_to_trip (priced_rate {rec['priced_rate']}/h): {rec['runtime_at_priced_rate_s']} s",
+        f"runtime_to_trip (--max-rate {rec['max_rate']}/h): {rec['runtime_at_max_rate_s']} s",
+        (
+            f"worst_case_cap_path: {rec['worst_case_cap_path']}"
+            f" (runner {rec['worst_case_runner_cap_path']} + open_phase {rec['open_phase_bound_units']}"
+            f"{_cap_eq_tag(rec['worst_case_cap_path'], cap_v)})"
+        ),
+        (
+            f"worst_case_launcher_death_path: {rec['worst_case_launcher_death_path']}"
+            f" (((death_time <= {rec['death_time_max_s']} s + cleanup_bound_s {rec['cleanup_bound_s']} s)"
+            f" + open_phase {rec['open_phase_bound_s']} s) / 3600 * {rec['priced_rate']}/h)"
+        ),
+        (
+            f"worst_case_total_spend: {rec['worst_case_total_spend']}"
+            f" (= max(cap_path {rec['worst_case_cap_path']}, launcher_death_path {rec['worst_case_launcher_death_path']})"
+            f"{_cap_eq_tag(rec['worst_case_total_spend'], cap_v)})"
+        ),
+        (
+            f"assumptions: cap_path assumes {assumptions.get('cap_path', '')}; "
+            f"launcher_death_path assumes {assumptions.get('launcher_death_path', '')}"
+        ),
+        json.dumps(rec),
+    ]
+    return "\n".join(lines)
+
+
 def _check_empty_out_dir(out_dir: Path) -> Path:
     default_quarantine_dir(out_dir)  # validates non-root resolved path -> OUT_DIR_INVALID
     try:
@@ -99,11 +193,110 @@ def _check_empty_out_dir(out_dir: Path) -> Path:
     return out_dir
 
 
-def _state_paths(state_dir: Optional[Path | str], study_ledger: Optional[Path | str]) -> tuple[Optional[Path], Optional[Path]]:
+def _state_paths(
+    state_dir: Optional[Path | str],
+    study_ledger: Optional[Path | str],
+    *,
+    live: bool,
+) -> tuple[Optional[Path], Optional[Path]]:
     raw_state = state_dir or os.environ.get("COLAB_RUNNER_STATE_DIR")
-    s_dir = Path(raw_state) if raw_state else None
+    if not raw_state and live:
+        s_dir: Optional[Path] = Path(tempfile.gettempdir()) / "colab-runner-state"
+    else:
+        s_dir = Path(raw_state) if raw_state else None
     l_file = Path(study_ledger) if study_ledger else (s_dir / "study_ledger.json" if s_dir is not None else None)
     return s_dir, l_file
+
+
+def _default_open_lock_path(open_lock: Optional[Path | str]) -> Path:
+    if open_lock:
+        return Path(open_lock)
+    env_lock = os.environ.get("COLAB_RUNNER_OPEN_LOCK", "").strip()
+    if env_lock:
+        return Path(env_lock)
+    return Path(tempfile.gettempdir()) / "colab-runner-open.lock"
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if process `pid` appears alive on this OS (never treats zombie on POSIX as alive)."""
+    if pid <= 0:
+        return False
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        try:
+            stat_txt = Path("/proc/%d/stat" % pid).read_text(encoding="utf-8", errors="replace")
+            return stat_txt.rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return True
+    else:  # pragma: no cover - Windows Win32 API; CI runs Linux
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return k32.GetLastError() == 5  # ACCESS_DENIED -> exists
+        try:
+            code = ctypes.c_ulong()
+            if k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            k32.CloseHandle(handle)
+
+
+@contextlib.contextmanager
+def _acquire_dir_lock(
+    lock_dir: Path,
+    *,
+    timeout_s: float = 1200.0,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    pid_alive: Callable[[int], bool] = _pid_alive,
+):
+    """Cross-process directory lock with dead-PID stale-lock recovery (used on Windows and tested directly)."""
+    owner_file = lock_dir / "owner.json"
+    deadline = clock() + max(0.0, float(timeout_s))
+    while True:
+        try:
+            lock_dir.mkdir(parents=False)
+            write_json_atomic(owner_file, {"pid": os.getpid(), "at": _utc_now()})
+            break
+        except FileExistsError:
+            stale = False
+            if owner_file.is_file():
+                try:
+                    info = json.loads(owner_file.read_text(encoding="utf-8"))
+                    pid = info.get("pid") if isinstance(info, dict) else None
+                    if isinstance(pid, int) and not pid_alive(pid):
+                        stale = True
+                except (OSError, ValueError):
+                    pass
+            else:
+                try:
+                    if time.time() - lock_dir.stat().st_mtime > OPEN_LOCK_STALE_MTIME_S:
+                        stale = True
+                except OSError:
+                    pass
+            if stale:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+                continue
+            if clock() >= deadline:
+                raise Refused(
+                    "OPEN_LOCK_TIMEOUT",
+                    "could not acquire open lock %s within %.0fs" % (lock_dir, timeout_s),
+                ) from None
+            sleep(min(0.1, max(0.0, deadline - clock())))
+    try:
+        yield
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
 
 
 @contextlib.contextmanager
@@ -114,7 +307,7 @@ def _open_lock(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ):
-    """Cross-process lock serializing pre-open usage attribution, `colab new`, shape check, and initial rate poll."""
+    """Cross-process lock serializing pool check, usage attribution, study lock, `colab new`, shape check, and rate."""
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
         import fcntl
@@ -136,27 +329,39 @@ def _open_lock(
                 yield
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    else:  # pragma: no cover - Windows atomic mkdir fallback; CI runs Linux
-        lock_dir = lock_file.with_suffix(".lockdir")
-        deadline = clock() + max(0.0, float(timeout_s))
-        while True:
-            try:
-                lock_dir.mkdir(parents=False)
-                break
-            except FileExistsError:
-                if clock() >= deadline:
-                    raise Refused(
-                        "OPEN_LOCK_TIMEOUT",
-                        "could not acquire open lock %s within %.0fs" % (lock_dir, timeout_s),
-                    ) from None
-                sleep(min(0.1, max(0.0, deadline - clock())))
-        try:
+    else:  # pragma: no cover - Windows directory lock with PID stale recovery; tested via _acquire_dir_lock
+        with _acquire_dir_lock(lock_file.with_suffix(".lockdir"), timeout_s=timeout_s, clock=clock, sleep=sleep):
             yield
-        finally:
-            try:
-                lock_dir.rmdir()
-            except OSError:
-                pass
+
+
+class _OpenInterrupted(BaseException):
+    """Signal received between `colab new` and `Runner.run` handoff so cleanup stops and books spend first."""
+
+    def __init__(self, signum: int):
+        super().__init__("signal %d" % signum)
+        self.signum = signum
+
+
+@contextlib.contextmanager
+def _open_phase_signals():
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    sigs = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        sigs.append(signal.SIGHUP)
+    old: dict[Any, Any] = {}
+
+    def _handler(signum, frame):
+        raise _OpenInterrupted(signum)
+
+    for s in sigs:
+        old[s] = signal.signal(s, _handler)
+    try:
+        yield
+    finally:
+        for s, prev in old.items():
+            signal.signal(s, prev)
 
 
 class LocalColab(Colab):
@@ -199,13 +404,14 @@ class LocalColab(Colab):
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
         lines = [
-            "[%s] Card: %s | Shape: %s" % (name, info["card"], info["shape"])
+            "[%s] local | Hardware: %s | Shape: %s | Variant: %s"
+            % (name, info["card"], info["shape"], "DEFAULT" if info["card"] == "CPU" else "GPU")
             for name, info in sorted(self.active_sessions.items())
         ]
         return CliResult(0, "\n".join(lines) + ("\n" if lines else ""))
 
     def new_session(self, session: str, *, card: str, shape: Optional[str] = None,
-                    timeout: float = 180.0) -> CliResult:
+                    cli_flag: str = "--gpu", timeout: float = 180.0) -> CliResult:
         label = "High-RAM" if (card.upper() == "CPU" or shape == "high-mem") else "Standard"
         self.active_sessions[session] = {"card": card.upper(), "shape": label}
         return CliResult(0, "Started session %s (%s)\n" % (session, label))
@@ -318,6 +524,11 @@ def _apply_overrides(
     if eff_max_rate is None:
         eff_max_rate = card_spec.default_rate
     require_number("MAX_RATE_INVALID", "max_rate", eff_max_rate)
+    if float(eff_max_rate) < card_spec.min_rate:
+        raise Refused(
+            "MAX_RATE_BELOW_FLOOR",
+            "max_rate %g/h is below %s catalog floor %g/h" % (float(eff_max_rate), card_spec.name, card_spec.min_rate),
+        )
 
     eff_cap = cap if cap is not None else spec.cap
     require_number("CAP_INVALID", "cap", eff_cap)
@@ -353,6 +564,7 @@ def _base_outcome(
     cleanup_bound_s: float,
     max_rate: float,
     staged: Sequence[StagedInputRecord],
+    sealed: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -389,6 +601,7 @@ def _base_outcome(
         "refusal": None,
         "cap_trip": None,
         "input_files": [asdict(item) for item in staged],
+        "sealed": sealed,
         "collected_outputs": [],
         "salvaged_outputs": [],
         "quarantined": [],
@@ -421,7 +634,7 @@ def _card_mismatch_seen(out_dir: Path, job: str) -> bool:
     for p in (out_dir / ("%s.run.out" % job), out_dir / "collected" / "setup.log", out_dir / "salvage" / "setup.log"):
         if p.is_file() and "CR_CARD_MISMATCH:" in p.read_text(encoding="utf-8", errors="replace"):
             return True
-    for p in (out_dir / "salvage" / "vm_card.json", out_dir / "collected" / "vm_card.json"):
+    for p in (out_dir / "vm_card.json", out_dir / "salvage" / "vm_card.json", out_dir / "collected" / "vm_card.json"):
         if p.is_file() and '"ok": false' in p.read_text(encoding="utf-8", errors="replace").lower():
             return True
     return False
@@ -452,7 +665,13 @@ def _book_spend(
     outcome["account_balance"] = {"start": bal_start, "end": bal_end, "drop": drop, "used_for_pricing": False}
 
 
-def _pool_check(rows: Sequence[Mapping[str, Optional[str]]], *, session: str, card_spec: CardSpec) -> None:
+def _pool_check(
+    rows: Sequence[Mapping[str, Optional[str]]],
+    *,
+    session: str,
+    card_spec: CardSpec,
+    shape: Optional[str],
+) -> None:
     if any(r.get("session") == session for r in rows):
         raise Refused("SESSION_ALREADY_OPEN", "Colab session %r is already active" % session)
     if len(rows) >= TOTAL_SESSION_CEILING:
@@ -460,21 +679,28 @@ def _pool_check(rows: Sequence[Mapping[str, Optional[str]]], *, session: str, ca
             "POOL_CEILING_REACHED",
             "account has %d active sessions (ceiling %d)" % (len(rows), TOTAL_SESSION_CEILING),
         )
-    same_card = 0
-    for r in rows:
-        accel = (r.get("accelerator") or "").upper()
-        raw = (r.get("raw") or "").upper()
-        if card_spec.name == "CPU":
-            if "CPU" in accel or "| CARD: CPU" in raw or "| BACKEND: CPU" in raw:
-                same_card += 1
-        elif any(tok.upper() in accel or tok.upper() in raw for tok in card_spec.name_tokens + (card_spec.cli_gpu,)):
-            same_card += 1
+    want_key = pool_key_for_card(card_spec, shape)
+    same_card = sum(1 for r in rows if pool_key_for_session_row(r) == want_key)
     if card_spec.pool_ceiling and same_card >= card_spec.pool_ceiling:
         raise Refused(
             "POOL_CEILING_REACHED",
             "account already has %d active %s sessions (pool ceiling %d)"
-            % (same_card, card_spec.name, card_spec.pool_ceiling),
+            % (same_card, want_key, card_spec.pool_ceiling),
         )
+
+
+def _read_sessions_strict(client: Colab) -> list[dict[str, Optional[str]]]:
+    sess_res = client.sessions()
+    if not sess_res.ok:
+        msg = scrub((sess_res.err or sess_res.out or "rc=%s" % sess_res.rc).strip())
+        raise Refused("SESSIONS_READ_FAILED", "could not read active `colab sessions` before open: %s" % msg)
+    text = (sess_res.out or "").strip()
+    if not text or "no active sessions" in text.lower():
+        return []
+    rows = parse_sessions_output(text)
+    if not rows or any(not r.get("hardware") for r in rows):
+        raise Refused("SESSIONS_READ_FAILED", "could not parse `colab sessions` rows reliably")
+    return rows
 
 
 def _read_pre_open_usage(colab: Colab, *, card_spec: CardSpec) -> tuple[Optional[float], Optional[int], Optional[float]]:
@@ -518,15 +744,21 @@ def _finalize_close(
     outcome["session_stopped_confirmed"] = bool(stopped and not (out_dir / "session_open.json").exists())
     if outcome["session_stopped_confirmed"]:
         outcome["closed_at"] = _utc_now()
-        sess = colab.sessions()
-        if sess.ok:
-            rows = parse_sessions_output(sess.out)
-            outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
+        try:
+            sess = colab.sessions()
+            if sess.ok:
+                rows = parse_sessions_output(sess.out)
+                outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
+        except Exception:
+            pass
     return bool(outcome["session_stopped_confirmed"])
 
 
 def _read_end_balance(colab: Colab) -> Optional[float]:
-    res = colab.usage()
+    try:
+        res = colab.usage()
+    except Exception:
+        return None
     if not res.ok:
         return None
     try:
@@ -534,6 +766,52 @@ def _read_end_balance(colab: Colab) -> Optional[float]:
     except lg.RateUnread as exc:  # pragma: no cover - cpu class does not raise RateUnread
         return exc.partial.get("balance")
     return parsed.get("balance") if parsed.get("ok") else None
+
+
+def reconcile_stopped_outcome(
+    out_dir: Path,
+    colab: Colab,
+    session: str,
+    *,
+    closed_dt: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    """Re-book `outcome.json` from `opened_at` to confirmed `closed_at` when `stop --out-dir` finishes close."""
+    outcome_path = Path(out_dir) / "outcome.json"
+    if not outcome_path.is_file():
+        return None
+    try:
+        outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(outcome, dict):
+        return None
+
+    now_dt = (closed_dt or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    outcome["session_stopped_confirmed"] = True
+    outcome["closed_at"] = _utc_now(now_dt)
+
+    if outcome.get("opened") and outcome.get("opened_at"):
+        try:
+            opened_dt = datetime.strptime(str(outcome["opened_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            reconciled_elapsed = max(float(outcome.get("elapsed_s") or 0.0), (now_dt - opened_dt).total_seconds())
+            priced_rate = float(outcome.get("priced_rate") or outcome.get("max_rate") or 0.0)
+            outcome["elapsed_s"] = round(max(0.0, reconciled_elapsed), 3)
+            outcome["spend_ccu"] = round((priced_rate * max(0.0, reconciled_elapsed)) / 3600.0, 6)
+            basis = str(outcome.get("spend_basis") or "window_rate_x_elapsed")
+            if not basis.endswith("_reconciled"):
+                outcome["spend_basis"] = basis + "_reconciled"
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        sess = colab.sessions()
+        if sess.ok:
+            rows = parse_sessions_output(sess.out)
+            outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
+    except Exception:
+        pass
+    write_json_atomic(outcome_path, outcome)
+    return outcome
 
 
 def launch_window(
@@ -552,11 +830,14 @@ def launch_window(
     extra_env: Sequence[str] = (),
     dry: bool = False,
     local_cpu: bool = False,
+    allow_sealed: bool = False,
+    actual_host: str = DEFAULT_SEALED_HOST,
     state_dir: Optional[Path | str] = None,
     study_ledger: Optional[Path | str] = None,
     open_lock: Optional[Path | str] = None,
     post_open_polls: int = 6,
     rate_poll_interval_s: float = 5.0,
+    shape_check_attempts: int = 3,
     colab: Optional[Colab] = None,
     runner_cls: type[Runner] = Runner,
     clock: Callable[[], float] = time.monotonic,
@@ -577,13 +858,14 @@ def launch_window(
     if "CR_RUN_ID" in merged_env:
         raise Refused("RUN_ID_RESERVED", "CR_RUN_ID is reserved: omit it from job.env and --env")
 
-    s_dir, l_file = _state_paths(state_dir, study_ledger)
+    live_mode = not dry and not local_cpu
+    s_dir, l_file = _state_paths(state_dir, study_ledger, live=live_mode)
     breaker = CircuitBreaker(s_dir / "card_refusals.json") if s_dir is not None else None
     ledger = StudyLedger(l_file) if l_file is not None else None
     utc_day = utc_day_str()
-    if ledger is not None and card_spec.card_class == "gpu" and not dry and not local_cpu:
+    if ledger is not None and card_spec.card_class == "gpu" and live_mode:
         ledger.check_card(spec.study, card_spec.name)
-    if breaker is not None and not dry and not local_cpu:
+    if breaker is not None and live_mode:
         breaker.check(card_spec.name, utc_day)
 
     guard = SpendGuard(max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup)
@@ -598,19 +880,39 @@ def launch_window(
     eff_session = session or default_session_name(spec, card_spec.name)
     window_id = "%s-%s" % (_slug(spec.job), uuid.uuid4().hex[:8])
 
-    out_path.mkdir(parents=True, exist_ok=True)
-    staged_dir = out_path / "staged"
-    bundle_name = "%s_inputs.tar.gz" % spec.job
-    script_name = "%s_job.sh" % spec.job
-    bundle_path = staged_dir / bundle_name
-    script_path = staged_dir / script_name
+    open_bound_s = open_phase_bound_s(
+        card_spec,
+        local_cpu=local_cpu,
+        shape_attempts=shape_check_attempts,
+        post_open_polls=post_open_polls,
+        rate_poll_interval_s=rate_poll_interval_s,
+    )
+    budget = compute_launch_budget(guard, open_bound_s)
 
-    staged_inputs = stage_inputs(spec, bundle_path)
+    # Validate & stage inputs BEFORE creating persistent out_dir files on refusal
+    with tempfile.TemporaryDirectory(prefix="cr-stage-") as stage_tmp:
+        tmp_bundle = Path(stage_tmp) / ("%s_inputs.tar.gz" % spec.job)
+        staged_inputs, sealed_record = stage_inputs(
+            spec,
+            tmp_bundle,
+            actual_card=card_spec.name,
+            actual_host=actual_host,
+            live=live_mode,
+            local_cpu=local_cpu,
+            cli_allow_sealed=allow_sealed,
+        )
+        out_path.mkdir(parents=True, exist_ok=True)
+        staged_dir = out_path / "staged"
+        bundle_name = "%s_inputs.tar.gz" % spec.job
+        script_name = "%s_job.sh" % spec.job
+        bundle_path = staged_dir / bundle_name
+        script_path = staged_dir / script_name
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(tmp_bundle, bundle_path)
+
     script_text = render_vm_script(spec, card_spec, bundle_filename=bundle_name)
-    script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script_text, encoding="utf-8", newline="\n")
 
-    budget = guard.budget()
     if dry:
         plan = {
             "schema_version": 1,
@@ -621,11 +923,13 @@ def launch_window(
             "card": card_spec.name,
             "card_class": card_spec.card_class,
             "shape": clean_shape,
+            "min_vram_mib": spec.vram_floor_for(card_spec),
             "wall_s": eff_wall_s,
             "resident": eff_resident,
             "budget": budget,
-            "budget_summary": lg.format_dry_cap_budget(budget),
+            "budget_summary": format_launch_budget(budget),
             "staged_files": [asdict(s) for s in staged_inputs],
+            "sealed": sealed_record,
             "script": str(script_path),
             "bundle": str(bundle_path),
             "outputs": {"collect": list(spec.collect_outputs), "salvage": list(spec.salvage_outputs)},
@@ -645,10 +949,12 @@ def launch_window(
         window_id=window_id, session=eff_session, spec=spec, card_spec=card_spec,
         shape=clean_shape, mode=mode_name, cap_ccu=eff_cap, margin_ccu=eff_margin,
         cleanup_bound_s=eff_cleanup, max_rate=eff_max_rate, staged=staged_inputs,
+        sealed=sealed_record,
     )
     meta = {
         "schema_version": 1,
         "window_id": window_id,
+        "launcher_pid": os.getpid(),
         "session": eff_session,
         "project": outcome["project"],
         "card": card_spec.name,
@@ -666,129 +972,221 @@ def launch_window(
         client, eff_session, out_path, job=spec.job, content="/content", poll_s=spec.poll_s,
         pre_opened=True, clock=clock, sleep=sleep, log=log, trace=trace,
     )
-    lock_path = Path(open_lock) if open_lock else (
-        (s_dir / "open.lock") if s_dir is not None else Path(tempfile.gettempdir()) / "colab-runner-open.lock"
-    )
+    lock_path = _default_open_lock_path(open_lock)
     t_open_monotonic: Optional[float] = None
     marker_written = False
+
+    def _trip_open_bound() -> Optional[dict[str, Any]]:
+        if t_open_monotonic is None:
+            return None
+        elapsed = max(0.0, clock() - t_open_monotonic)
+        if lg.evaluate_wall_guard(elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["tripped"]:
+            _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+                        bal_end=_read_end_balance(client))
+            outcome["status"] = "wall"
+            outcome["exit_code"] = 2
+            outcome["refusal"] = error_record("CAP_CEILING_REACHED", "wall %.0fs reached during open phase" % eff_wall_s)
+            write_json_atomic(out_path / "outcome.json", outcome)
+            if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+                ledger.record_window(spec.study, outcome)
+            return outcome
+        trip = guard.check(elapsed)
+        if trip:
+            _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+                        bal_end=_read_end_balance(client))
+            outcome["status"] = "cap"
+            outcome["exit_code"] = 2
+            outcome["cap_trip"] = cap_trip_record(scrub(trip))
+            write_json_atomic(out_path / "outcome.json", outcome)
+            if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+                ledger.record_window(spec.study, outcome)
+            return outcome
+        return None
+
     try:
-        with _open_lock(lock_path, clock=clock, sleep=sleep):
-            sess_res = client.sessions()
-            if sess_res.ok:
-                _pool_check(parse_sessions_output(sess_res.out), session=eff_session, card_spec=card_spec)
-            pre_rate, pre_assign, bal_start = _read_pre_open_usage(client, card_spec=card_spec)
-            outcome["account_balance"]["start"] = bal_start
-            guard = SpendGuard(
-                max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup,
-                pre_open_rate=pre_rate, pre_open_assignments=pre_assign,
-            )
-            warn = neighbour_warning(pre_assign or 0)
-            if warn:
-                log(scrub(warn))
+        with _open_phase_signals():
+            with _open_lock(lock_path, clock=clock, sleep=sleep):
+                rows = _read_sessions_strict(client)
+                _pool_check(rows, session=eff_session, card_spec=card_spec, shape=clean_shape)
+                pre_rate, pre_assign, bal_start = _read_pre_open_usage(client, card_spec=card_spec)
+                outcome["account_balance"]["start"] = bal_start
+                guard = SpendGuard(
+                    max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup,
+                    pre_open_rate=pre_rate, pre_open_assignments=pre_assign, balance=bal_start,
+                )
+                warn = neighbour_warning(pre_assign or 0)
+                if warn:
+                    log(scrub(warn))
 
-            write_json_atomic(out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": "/content"})
-            marker_written = True
-            new_res = client.new_session(eff_session, card=card_spec.cli_gpu, shape=clean_shape)
-            if not new_res.ok:
-                msg = scrub((new_res.err or new_res.out or "rc=%s" % new_res.rc).strip())
-                if breaker is not None:
-                    breaker.record_refusal(card_spec.name, reason="SESSION_OPEN_FAILED: %s" % msg,
-                                           session=eff_session, day=utc_day)
-                check_rows = client.sessions()
-                listed = any(r.get("session") == eff_session for r in parse_sessions_output(check_rows.out)) if check_rows.ok else True
-                if not listed:
-                    (out_path / "session_open.json").unlink(missing_ok=True)
-                    outcome["session_stopped_confirmed"] = True
-                    outcome["session_gone_confirmed"] = True
-                else:
-                    _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-                outcome["status"] = "open_failed"
-                outcome["exit_code"] = 2
-                outcome["refusal"] = error_record("SESSION_OPEN_FAILED", "colab new failed: %s" % msg)
-                write_json_atomic(out_path / "outcome.json", outcome)
-                return outcome
+                if breaker is not None and live_mode:
+                    breaker.check(card_spec.name, utc_day)
+                if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+                    ledger.reserve_card(spec.study, card_spec.name, session=eff_session, window_id=window_id)
 
-            t_open_monotonic = clock()
-            outcome["opened"] = True
-            outcome["opened_at"] = _utc_now()
-
-            if card_spec.card_class == "gpu":
-                after_open = client.sessions()
-                rows = parse_sessions_output(after_open.out) if after_open.ok else []
-                row = next((r for r in rows if r.get("session") == eff_session), None)
-                expected_shape = shape_row_label(clean_shape or "standard")
-                observed_shape = row.get("shape") if row else None
-                if observed_shape != expected_shape:
+                write_json_atomic(
+                    out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": "/content"}
+                )
+                marker_written = True
+                new_res = client.new_session(
+                    eff_session, card=card_spec.cli_gpu, shape=clean_shape, cli_flag=card_spec.cli_flag
+                )
+                if not new_res.ok:
+                    msg = scrub((new_res.err or new_res.out or "rc=%s" % new_res.rc).strip())
                     if breaker is not None:
-                        breaker.record_refusal(
-                            card_spec.name, reason="SHAPE_MISMATCH: expected %s got %s" % (expected_shape, observed_shape),
-                            session=eff_session, day=utc_day,
-                        )
+                        breaker.record_refusal(card_spec.name, reason="SESSION_OPEN_FAILED: %s" % msg,
+                                               session=eff_session, day=utc_day)
+                    # Always attempt stop on uncertain open failure; keep session_open.json until stop confirms.
                     _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-                    elapsed_now = clock() - t_open_monotonic
-                    _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_now,
-                                bal_end=_read_end_balance(client))
-                    outcome["status"] = "shape_mismatch"
+                    outcome["status"] = "open_failed"
                     outcome["exit_code"] = 2
-                    outcome["refusal"] = error_record(
-                        "SHAPE_MISMATCH",
-                        "expected Shape: %s for %s, got %r" % (expected_shape, card_spec.name, observed_shape),
-                    )
+                    outcome["refusal"] = error_record("SESSION_OPEN_FAILED", "colab new failed: %s" % msg)
                     write_json_atomic(out_path / "outcome.json", outcome)
                     return outcome
 
-                for idx in range(max(1, int(post_open_polls))):
-                    u = client.usage()
-                    guard.fold_usage(u.out if u.ok else u.err, rc=u.rc, epoch=clock(), at=_utc_now())
-                    decision = guard.decision()
-                    if decision == "above_max":
+                t_open_monotonic = clock()
+                outcome["opened"] = True
+                outcome["opened_at"] = _utc_now()
+
+                if card_spec.card_class == "gpu":
+                    expected_shape = shape_row_label(clean_shape or "standard")
+                    observed_shape: Optional[str] = None
+                    confirmed_shape_mismatch = False
+                    for attempt in range(1, max(1, int(shape_check_attempts)) + 1):
+                        after_open = client.sessions()
+                        rows = parse_sessions_output(after_open.out) if after_open.ok else []
+                        row = next((r for r in rows if r.get("session") == eff_session), None)
+                        observed_shape = row.get("shape") if row else None
+                        if after_open.ok and observed_shape == expected_shape:
+                            break
+                        if after_open.ok and observed_shape is not None and observed_shape != expected_shape:
+                            confirmed_shape_mismatch = True
+                            break
+                        if attempt < int(shape_check_attempts):
+                            sleep(2.0 * attempt)
+
+                    if confirmed_shape_mismatch:
+                        if breaker is not None:
+                            breaker.record_refusal(
+                                card_spec.name,
+                                reason="SHAPE_MISMATCH: expected %s got %s" % (expected_shape, observed_shape),
+                                session=eff_session, day=utc_day,
+                            )
                         _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
                         _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
                                     bal_end=_read_end_balance(client))
-                        outcome["status"] = "cap"
+                        outcome["status"] = "shape_mismatch"
                         outcome["exit_code"] = 2
-                        outcome["cap_trip"] = error_record(
-                            "RATE_ABOVE_MAX",
-                            "window stable rate %s/h exceeds max_rate %s/h" % (guard.state.get("best_stable"), eff_max_rate),
+                        outcome["refusal"] = error_record(
+                            "SHAPE_MISMATCH",
+                            "expected Shape: %s for %s, got %r" % (expected_shape, card_spec.name, observed_shape),
+                        )
+                        write_json_atomic(out_path / "outcome.json", outcome)
+                        if ledger is not None and live_mode:
+                            ledger.record_window(spec.study, outcome)
+                        return outcome
+
+                    if observed_shape != expected_shape:
+                        _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                        _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+                                    bal_end=_read_end_balance(client))
+                        outcome["status"] = "open_failed"
+                        outcome["exit_code"] = 2
+                        outcome["refusal"] = error_record(
+                            "SESSIONS_READ_FAILED",
+                            "could not confirm assigned shape for %s in `colab sessions` after open" % card_spec.name,
                         )
                         write_json_atomic(out_path / "outcome.json", outcome)
                         return outcome
-                    if decision in ("ok", "unattributable"):
-                        break
-                    if idx + 1 < int(post_open_polls):
-                        sleep(max(0.0, float(rate_poll_interval_s)))
-                if guard.decision() == "unread":
+
+                    tripped_out = _trip_open_bound()
+                    if tripped_out is not None:
+                        return tripped_out
+
+                    for idx in range(max(1, int(post_open_polls))):
+                        u = client.usage()
+                        guard.fold_usage(u.out if u.ok else u.err, rc=u.rc, epoch=clock(), at=_utc_now())
+                        decision = guard.decision()
+                        if decision == "above_max":
+                            _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                            _book_spend(outcome, card_spec=card_spec, guard=guard,
+                                        elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                            outcome["status"] = "cap"
+                            outcome["exit_code"] = 2
+                            outcome["cap_trip"] = error_record(
+                                "RATE_ABOVE_MAX",
+                                "window stable rate %s/h exceeds max_rate %s/h"
+                                % (guard.state.get("best_stable"), eff_max_rate),
+                            )
+                            write_json_atomic(out_path / "outcome.json", outcome)
+                            if ledger is not None and live_mode:
+                                ledger.record_window(spec.study, outcome)
+                            return outcome
+                        tripped_out = _trip_open_bound()
+                        if tripped_out is not None:
+                            return tripped_out
+                        if decision in ("ok", "unattributable"):
+                            break
+                        if idx + 1 < int(post_open_polls):
+                            sleep(max(0.0, float(rate_poll_interval_s)))
+                    if guard.decision() == "unread":
+                        _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                        _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+                                    bal_end=_read_end_balance(client))
+                        outcome["status"] = "open_failed"
+                        outcome["exit_code"] = 2
+                        outcome["refusal"] = error_record(
+                            "POST_OPEN_RATE_UNREAD",
+                            "post-open `colab usage` did not settle on a positive stable GPU rate",
+                        )
+                        write_json_atomic(out_path / "outcome.json", outcome)
+                        return outcome
+
+            # Open lock released: upload bundle and driver script flat into /content.
+            for local_f, remote_f in (
+                (bundle_path, "/content/%s" % bundle_name),
+                (script_path, "/content/%s" % script_name),
+            ):
+                tripped_out = _trip_open_bound()
+                if tripped_out is not None:
+                    return tripped_out
+                up = client.upload(eff_session, str(local_f), remote_f)
+                if not up.ok:
+                    msg = scrub((up.err or up.out or "rc=%s" % up.rc).strip())
                     _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
                     _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
                                 bal_end=_read_end_balance(client))
-                    outcome["status"] = "open_failed"
+                    outcome["status"] = "upload_failed"
                     outcome["exit_code"] = 2
-                    outcome["refusal"] = error_record(
-                        "POST_OPEN_RATE_UNREAD",
-                        "post-open `colab usage` did not settle on a positive stable GPU rate",
-                    )
+                    outcome["refusal"] = error_record("UPLOAD_FAILED", "upload of %s failed: %s" % (local_f.name, msg))
                     write_json_atomic(out_path / "outcome.json", outcome)
+                    if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+                        ledger.record_window(spec.study, outcome)
                     return outcome
-
-        # Open lock released: upload bundle and driver script flat into /content.
-        for local_f, remote_f in (
-            (bundle_path, "/content/%s" % bundle_name),
-            (script_path, "/content/%s" % script_name),
-        ):
-            up = client.upload(eff_session, str(local_f), remote_f)
-            if not up.ok:
-                msg = scrub((up.err or up.out or "rc=%s" % up.rc).strip())
-                _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-                _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
-                            bal_end=_read_end_balance(client))
-                outcome["status"] = "upload_failed"
-                outcome["exit_code"] = 2
-                outcome["refusal"] = error_record("UPLOAD_FAILED", "upload of %s failed: %s" % (local_f.name, msg))
-                write_json_atomic(out_path / "outcome.json", outcome)
-                return outcome
-    except BaseException:
+            tripped_out = _trip_open_bound()
+            if tripped_out is not None:
+                return tripped_out
+    except BaseException as exc:
         if marker_written:
-            _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+            try:
+                _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+            except BaseException:
+                pass
+            elapsed_exc = (clock() - t_open_monotonic) if t_open_monotonic is not None else 0.0
+            if t_open_monotonic is not None:
+                _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_exc,
+                            bal_end=_read_end_balance(client))
+            is_int = isinstance(exc, (_OpenInterrupted, KeyboardInterrupt))
+            outcome["status"] = "interrupted" if is_int else "error"
+            outcome["exit_code"] = 2
+            if not is_int and outcome["refusal"] is None:
+                outcome["refusal"] = error_record("UNEXPECTED_ERROR", scrub("%s: %s" % (type(exc).__name__, exc)))
+            write_json_atomic(out_path / "outcome.json", outcome)
+            if ledger is not None and card_spec.card_class == "gpu" and live_mode and outcome["opened"]:
+                ledger.record_window(spec.study, outcome)
+        if isinstance(exc, _OpenInterrupted):
+            raise RunInterrupted(exc.signum) from None
         raise
 
     collected: list[str] = []
@@ -803,11 +1201,16 @@ def launch_window(
         return True
 
     def _do_salvage(reason: str) -> bool:
-        if not spec.salvage_outputs:
-            return True
-        salvaged.extend(
-            _download_declared_outputs(runner, spec.salvage_outputs, out_path / "salvage", content="/content", job=spec.job)
-        )
+        if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
+            vm_card_local = out_path / "vm_card.json"
+            vm_res = runner.download("/content/%s_out/vm_card.json" % spec.job, vm_card_local)
+            if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in salvaged:
+                salvaged.append("vm_card.json")
+        if spec.salvage_outputs:
+            salvaged.extend(
+                _download_declared_outputs(runner, spec.salvage_outputs, out_path / "salvage",
+                                           content="/content", job=spec.job)
+            )
         return True
 
     run_env = dict(merged_env)
@@ -821,67 +1224,82 @@ def launch_window(
 
     run_error: Optional[BaseException] = None
     run_result = None
+    need_salvage = bool(spec.salvage_outputs) or (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu")
     try:
-        run_result = runner.run(
-            script="/content/%s" % script_name,
-            env=run_env,
-            wall_s=eff_wall_s,
-            guard=guard,
-            progress_stall_s=spec.progress_stall_s,
-            setup_stall_s=spec.setup_stall_s,
-            resident=eff_resident,
-            salvage=_do_salvage if spec.salvage_outputs else None,
-            collect=_do_collect if spec.collect_outputs else None,
-            unreachable_polls=spec.unreachable_polls,
-            unreachable_s=spec.unreachable_s,
+        try:
+            run_result = runner.run(
+                script="/content/%s" % script_name,
+                env=run_env,
+                wall_s=eff_wall_s,
+                guard=guard,
+                progress_stall_s=spec.progress_stall_s,
+                setup_stall_s=spec.setup_stall_s,
+                resident=eff_resident,
+                salvage=_do_salvage if need_salvage else None,
+                collect=_do_collect if spec.collect_outputs else None,
+                opened_monotonic=t_open_monotonic,
+                unreachable_polls=spec.unreachable_polls,
+                unreachable_s=spec.unreachable_s,
+            )
+        except BaseException as exc:
+            run_error = exc
+            run_result = runner._res
+    finally:
+        stopped_ok = _finalize_close(
+            client, eff_session, out_path, outcome, runner,
+            already_stopped=(run_result.stopped if run_result is not None else None),
         )
-    except BaseException as exc:
-        run_error = exc
-        run_result = runner._res
+        elapsed_total = clock() - (t_open_monotonic if t_open_monotonic is not None else clock())
+        _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_total, bal_end=_read_end_balance(client))
 
-    stopped_ok = _finalize_close(
-        client, eff_session, out_path, outcome, runner,
-        already_stopped=(run_result.stopped if run_result is not None else None),
-    )
-    elapsed_total = clock() - (t_open_monotonic if t_open_monotonic is not None else clock())
-    _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_total, bal_end=_read_end_balance(client))
+        if run_result is not None:
+            outcome["run_rc"] = run_result.rc
+            outcome["collected_outputs"] = list(collected)
+            outcome["salvaged_outputs"] = list(salvaged)
+            outcome["quarantined"] = list(run_result.quarantined)
+            outcome["cap_trip"] = run_result.cap_trip
+            outcome["refusal"] = run_result.refusal
 
-    outcome["run_rc"] = run_result.rc
-    outcome["collected_outputs"] = list(collected)
-    outcome["salvaged_outputs"] = list(salvaged)
-    outcome["quarantined"] = list(run_result.quarantined)
-    outcome["cap_trip"] = run_result.cap_trip
-    outcome["refusal"] = run_result.refusal
+        if (
+            run_result is not None
+            and run_result.reason == "failed"
+            and run_result.rc == CARD_CHECK_FAIL_RC
+            and _card_mismatch_seen(out_path, spec.job)
+        ):
+            outcome["status"] = "card_mismatch"
+            outcome["refusal"] = error_record(
+                "CARD_MISMATCH",
+                "VM GPU verification failed for %s (%s/vm_card.json)" % (card_spec.name, spec.job),
+            )
+            if breaker is not None:
+                breaker.record_refusal(card_spec.name, reason="CARD_MISMATCH", session=eff_session, day=utc_day)
+        elif run_result is not None:
+            outcome["status"] = run_result.reason
 
-    if run_result.reason == "failed" and run_result.rc == CARD_CHECK_FAIL_RC and _card_mismatch_seen(out_path, spec.job):
-        outcome["status"] = "card_mismatch"
-        outcome["refusal"] = error_record(
-            "CARD_MISMATCH",
-            "VM GPU verification failed for %s (%s/vm_card.json)" % (card_spec.name, spec.job),
-        )
-        if breaker is not None:
-            breaker.record_refusal(card_spec.name, reason="CARD_MISMATCH", session=eff_session, day=utc_day)
-    else:
-        outcome["status"] = run_result.reason
+        if run_error is not None:
+            is_int = isinstance(run_error, (RunInterrupted, KeyboardInterrupt))
+            outcome["status"] = "interrupted" if is_int else "error"
+            if outcome["refusal"] is None and not is_int:
+                if isinstance(run_error, BinaryDownloadRefused):
+                    outcome["refusal"] = error_record("BINARY_DOWNLOAD_TOKEN", scrub(run_error.message))
+                elif isinstance(run_error, QuarantineEscape):
+                    outcome["refusal"] = error_record("QUARANTINE_ESCAPE", scrub(run_error.message))
+                else:
+                    outcome["refusal"] = error_record(
+                        "UNEXPECTED_ERROR", scrub("%s: %s" % (type(run_error).__name__, run_error))
+                    )
+            outcome["exit_code"] = 2
+        elif outcome["status"] == "done":
+            outcome["exit_code"] = 0 if stopped_ok else 3
+        else:
+            outcome["exit_code"] = 2
+
+        write_json_atomic(out_path / "outcome.json", outcome)
+        if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+            ledger.record_window(spec.study, outcome)
 
     if run_error is not None:
-        outcome["status"] = "error"
-        if outcome["refusal"] is None:
-            if isinstance(run_error, BinaryDownloadRefused):
-                outcome["refusal"] = error_record("BINARY_DOWNLOAD_TOKEN", scrub(run_error.message))
-            elif isinstance(run_error, QuarantineEscape):
-                outcome["refusal"] = error_record("QUARANTINE_ESCAPE", scrub(run_error.message))
-            else:
-                outcome["refusal"] = error_record("UNEXPECTED_ERROR", scrub("%s: %s" % (type(run_error).__name__, run_error)))
-        outcome["exit_code"] = 2
-    elif outcome["status"] == "done":
-        outcome["exit_code"] = 0 if stopped_ok else 3
-    else:
-        outcome["exit_code"] = 2
-
-    write_json_atomic(out_path / "outcome.json", outcome)
-    if ledger is not None and card_spec.card_class == "gpu" and not local_cpu:
-        ledger.record_window(spec.study, outcome)
+        raise run_error
     return outcome
 
 
@@ -896,7 +1314,7 @@ def _load_opt_json(path: Path) -> Optional[dict[str, Any]]:
 
 
 def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any]:
-    """Inspect a live, pending-stop, dry-run, or completed window out-dir without touching the VM."""
+    """Inspect a live, orphaned, pending-stop, dry-run, or completed window out-dir without touching the VM."""
     root = Path(out_dir)
     if not root.is_dir():
         raise Refused("STATUS_DIR_MISSING", "window directory does not exist: %s" % root)
@@ -928,7 +1346,8 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
     elif stop_pend is not None or (sess_open is not None and run_res is not None):
         state = "stop_pending"
     elif sess_open is not None:
-        state = "running"
+        pid = (meta or {}).get("launcher_pid")
+        state = "orphaned" if (isinstance(pid, int) and pid > 0 and not _pid_alive(pid)) else "running"
     elif stop_conf is not None or run_res is not None:
         state = "finished"
     else:
@@ -937,6 +1356,7 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
     return {
         "out_dir": str(root),
         "state": state,
+        "launcher_pid": (meta or {}).get("launcher_pid"),
         "session": (outcome or meta or sess_open or dry_plan or {}).get("session"),
         "card": (outcome or meta or dry_plan or {}).get("card"),
         "shape": (outcome or meta or dry_plan or {}).get("shape"),
@@ -954,9 +1374,13 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
 
 __all__ = [
     "LocalColab",
+    "compute_launch_budget",
     "default_cleanup_bound_s",
     "default_session_name",
+    "format_launch_budget",
     "launch_window",
+    "open_phase_bound_s",
+    "reconcile_stopped_outcome",
     "resolve_kit_env",
     "status_window",
 ]

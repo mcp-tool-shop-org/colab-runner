@@ -16,12 +16,12 @@ The studio's shared runner for paid Google Colab windows: one place for the code
 used to carry its own copy of. It starts a job on a Colab VM in a process that outlives the rig, watches it
 inside a spending cap, scrubs tokens from everything it brings back, and always tries to stop the session.
 
-**Status: 0.2.0.** On-demand declarative windows (`launch`, `--dry`, `--local-cpu`, `status`, `outcome.json`), card/shape/circuit-breaker guards, and the detached runner (`run`, `stop`) are built.
+Declarative on-demand Colab windows (`launch`, `--dry`, `--local-cpu`, `status`, `outcome.json`), card/shape/circuit-breaker guards, verified sealed-input gates, and the detached runner (`run`, `stop`) are built.
 
-1. **Declarative window launcher (`launch`, 0.2.0).** Write a `.toml` or `.json` spec (`colab-window.toml`) instead of per-window launch scripts: stage explicit inputs safely, enforce platform card and shape rules, lock pre-open/post-open rate attribution, run via the detached runner, copy back declared outputs through the token scrub, stop and verify the session closed, and write `outcome.json`.
-2. **Offline planning and CPU dry runs (`--dry`, `--local-cpu`, 0.2.0).** Validate specs, budgets, and sealed-data rules with zero `colab` calls, or simulate full VM-cell execution and copy-back locally before any GPU spend.
-3. **Boot and card guards (`cards.py`, 0.2.0).** Enforce per-card pool ceilings, VM-side `nvidia-smi` GPU/VRAM/compute-capability assertions (`CARD_MISMATCH`), a per-card UTC-day circuit breaker (`CARD_CIRCUIT_OPEN`), study card consistency (`CARD_MIX_REFUSED`), and `OMP_NUM_THREADS`.
-4. **The detached runner (`run` / `stop`, 0.1.0).** Low-level runner for already-opened sessions with status files, backoff polling, hold/resident modes, download token scrubbing, and idempotent stop confirmation.
+1. **Declarative window launcher (`launch`).** Write a `.toml` or `.json` spec (`colab-window.toml`) instead of per-window launch scripts: stage explicit inputs safely (with read-only sha256 pre-registration verification and `--allow-sealed` when sealed data is used), enforce platform card/pool/shape rules, lock pre-open and post-open rate attribution under a shared lock, verify GPU identity on the VM, supervise execution via the detached runner, scrub and copy back declared outputs, stop and confirm close, and record spend in `outcome.json`.
+2. **Offline planning and CPU dry runs (`--dry`, `--local-cpu`).** Validate specs, budgets (including open-phase bounds), and sealed-data rules with zero `colab` calls, or simulate full VM-cell execution and copy-back locally before any GPU spend.
+3. **Boot and card guards (`cards.py`).** Enforce per-tier pool ceilings (A100 40 GB vs 80 GB separated), VM-side `nvidia-smi` GPU/VRAM/compute-capability assertions (`CARD_MISMATCH`), a per-card UTC-day circuit breaker (`CARD_CIRCUIT_OPEN`), study card consistency (`CARD_MIX_REFUSED`), per-card rate floors (`MAX_RATE_BELOW_FLOOR`), and `OMP_NUM_THREADS`.
+4. **The detached runner (`run` / `stop`).** Low-level runner for already-opened sessions with status files, backoff polling, hold/resident modes, download token scrubbing, and idempotent stop confirmation (which also reconciles `outcome.json` spend on delayed stops).
 5. **Still open.** VM token-file secrets delivery, storage bucket sync receipts, and `PLATFORM.md`.
 
 Projects can install a pinned release or call the CLI from a repo or automation workflow.
@@ -48,11 +48,11 @@ Declare compute bounds, explicit input files, setup/run commands, and outputs in
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-dry --dry
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-cpu --local-cpu
-python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --state-dir state/
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --cap 8.0 --max-rate 10.5 --state-dir state/
 python -m colab_runner status --out-dir runs/w1
 ```
 
-Each finished or interrupted `launch` writes `outcome.json` with booked spend (`spend_ccu`, `spend_basis`, non-pricing `account_balance`), staged input digests, collected/salvaged output paths, and `session_stopped_confirmed`.
+Live GPU launches require explicit `--cap` and `--max-rate` on the command line (matching or exceeding the card's catalog floor rate). Every exit once `colab new` has been invoked — including interruptions, cap trips, open-phase errors, and download refusals — stops the session and writes `outcome.json` with spend booked from the session open instant (`spend_ccu`, `spend_basis`, non-pricing `account_balance`), staged input digests, collected/salvaged output paths, and `session_stopped_confirmed`. Sealed or outside-repo paths require `[inputs.sealed]` (a read-only pre-registration file verified by sha256, study id, exact path list, and destination card/host) plus `--allow-sealed` on live runs; projects add custom holdout globs with `inputs.deny_globs`.
 
 ### Option B: Attach to an already-open session (`run` / `stop`)
 
@@ -69,7 +69,7 @@ budget in compute units (see Pricing).
 
 `python -m colab_runner --help` lists every command; `launch --help`, `status --help`, and `run --help` list every flag.
 
-## Using it from a lane (0.2.0)
+## Using it from a lane
 
 **The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.

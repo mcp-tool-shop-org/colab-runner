@@ -26,10 +26,12 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from colab_runner import __version__
+from colab_runner.cards import resolve_card
 from colab_runner.colab_cli import cli_from_env, scrub
 from colab_runner.errors import CODES, Refused, error_record, lookup
-from colab_runner.launcher import launch_window, status_window
-from colab_runner.runner import Runner, write_json_atomic
+from colab_runner.launcher import launch_window, reconcile_stopped_outcome, status_window
+from colab_runner.manifest import WindowSpec
+from colab_runner.runner import RunInterrupted, Runner
 from colab_runner.spend import SpendGuard
 
 EXIT_OK, EXIT_USER, EXIT_RUNTIME, EXIT_PARTIAL = 0, 1, 2, 3
@@ -252,7 +254,9 @@ def _launch_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry", action="store_true", help="validate spec, inputs, and budget; make zero colab calls")
     mode.add_argument("--local-cpu", action="store_true",
                       help="run CPU stub end-to-end against an isolated local VM directory; zero colab calls")
-    p.add_argument("--state-dir", help="directory storing per-card UTC circuit-breaker state and open lock")
+    p.add_argument("--allow-sealed", action="store_true",
+                   help="confirm a live launch carrying pre-registered sealed or outside-repo inputs")
+    p.add_argument("--state-dir", help="directory storing per-card UTC circuit-breaker state and study ledger")
     p.add_argument("--study-ledger", help="path to study card-consistency ledger JSON")
     p.add_argument("--open-lock", help="path to cross-process open lock file")
     _add_levels(p)
@@ -263,6 +267,17 @@ def launch_command(argv: list[str]) -> int:
     args = _launch_parser().parse_args(argv)
     out_dir = Path(args.out_dir)
     try:
+        if not args.dry and not args.local_cpu:
+            spec = WindowSpec.from_file(args.spec)
+            card_spec = resolve_card(args.card or spec.card)
+            if card_spec.card_class != "cpu":
+                if args.cap is None:
+                    raise Refused("CAP_REQUIRED", "live %s launch requires explicit --cap C on the command line" % card_spec.name)
+                if args.max_rate is None:
+                    raise Refused(
+                        "MAX_RATE_REQUIRED",
+                        "live %s launch requires explicit --max-rate R on the command line" % card_spec.name,
+                    )
         client = None if (args.dry or args.local_cpu) else cli_from_env()
         res = launch_window(
             args.spec,
@@ -279,6 +294,7 @@ def launch_command(argv: list[str]) -> int:
             extra_env=args.env,
             dry=args.dry,
             local_cpu=args.local_cpu,
+            allow_sealed=args.allow_sealed,
             state_dir=args.state_dir,
             study_ledger=args.study_ledger,
             open_lock=args.open_lock,
@@ -288,7 +304,23 @@ def launch_command(argv: list[str]) -> int:
         )
     except Refused as exc:
         return _refused(exc)
-    except (Exception, KeyboardInterrupt) as exc:
+    except (RunInterrupted, KeyboardInterrupt) as exc:
+        outcome_p = out_dir / "outcome.json"
+        if outcome_p.is_file():
+            try:
+                rec = json.loads(outcome_p.read_text(encoding="utf-8"))
+                _out("LAUNCH_END status=%s session=%s spend_ccu=%s stopped=%s" % (
+                    rec.get("status", "interrupted"), rec.get("session"), rec.get("spend_ccu"),
+                    rec.get("session_stopped_confirmed"),
+                ))
+            except (OSError, ValueError):
+                _error("LAUNCH_ERROR", exc, args.level)
+        else:
+            _error("LAUNCH_ERROR", exc, args.level)
+        if (out_dir / "session_open.json").is_file():
+            _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)
+        return EXIT_RUNTIME
+    except Exception as exc:
         exit_code = _error("LAUNCH_ERROR", exc, args.level)
         if (out_dir / "session_open.json").is_file():
             _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)
@@ -355,23 +387,14 @@ def stop_command(argv: list[str]) -> int:
                 raise ValueError("no session name")
         except (ValueError, KeyError, TypeError) as exc:
             raise Refused("SESSION_MARKER_INVALID", "%s does not name a session (%s)" % (marker, exc)) from None
-        ok = Runner(cli_from_env(), session, out_dir, log=_log_for(args.level)).stop_session()
+        client = cli_from_env()
+        ok = Runner(client, session, out_dir, log=_log_for(args.level)).stop_session()
     except Refused as exc:
         return _refused(exc)
     except (Exception, KeyboardInterrupt) as exc:
         return _error("STOP_ERROR", exc, args.level)
-    outcome_path = out_dir / "outcome.json"
-    if ok and outcome_path.is_file():
-        try:
-            outcome = json.loads(outcome_path.read_text(encoding="utf-8"))
-            if isinstance(outcome, dict) and not outcome.get("session_stopped_confirmed"):
-                from datetime import datetime, timezone
-
-                outcome["session_stopped_confirmed"] = True
-                outcome["closed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                write_json_atomic(outcome_path, outcome)
-        except (OSError, ValueError):
-            pass
+    if ok:
+        reconcile_stopped_outcome(out_dir, client, session)
     _out("STOP_END session=%s confirmed=%s" % (session, ok))
     if not ok:
         _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)

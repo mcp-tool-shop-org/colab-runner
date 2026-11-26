@@ -2,10 +2,15 @@
 
 Measured Colab Ultimate plan pool facts (dated 2026-11):
 - Total active sessions across the account: 20.
-- Per-accelerator pool ceilings: 3 each for A100 (40 GB / 80 GB tiers), G4 (RTX PRO 6000 96 GB), L4, and T4; 5 for CPU.
+- Per-accelerator pool ceilings: 3 each for A100 40 GB (`Standard`), A100 80 GB (`High-RAM`), G4 (RTX PRO 6000 96 GB),
+  L4, and T4; 5 for CPU.
 - H100 is unavailable on the plan (refused up front with CARD_UNAVAILABLE).
-- Shape rules: CPU always opens with `--high-mem` and takes no `--shape`; L4 is Standard-only; V5E1/V6E1 are
-  High-RAM-only; G4, T4, and A100 require an explicit `standard` or `high-mem` shape (there is no silent default).
+- Shape rules (from installed `google-colab-cli` `colab_cli/client.py:92-118`, `colab_cli/commands/session.py:52-171`):
+  - CPU always opens with `--high-mem` and takes no `--shape`;
+  - L4 is Standard-only;
+  - V5E1/V6E1 are in `HIGH_MEM_ONLY_ACCELERATORS` where `--high-mem` is ignored by the CLI (`resolve_assign_shape`
+    returns `None`) and `colab sessions` displays `Shape: Standard`; `colab new` opens them via `--tpu v5e1|v6e1`;
+  - G4, T4, and A100 require an explicit `standard` or `high-mem` shape (there is no silent default).
 """
 
 from __future__ import annotations
@@ -27,15 +32,17 @@ CARD_CHECK_FAIL_RC = 42
 
 @dataclass(frozen=True)
 class CardSpec:
-    """Platform specifications and guard thresholds for one Colab runtime card type."""
+    """Platform specifications, CLI flag, catalog rate floor, and GPU assertion thresholds for one card type."""
 
     name: str
     cli_gpu: str
+    cli_flag: str  # "--cpu" | "--gpu" | "--tpu"
     card_class: str  # "cpu" | "gpu"
     available: bool
     pool_ceiling: int
     shapes: tuple[str, ...]
     default_rate: Optional[float]
+    min_rate: float
     min_vram_mib: int
     min_compute_cap: tuple[int, int]
     name_tokens: tuple[str, ...]
@@ -45,11 +52,13 @@ CARDS: dict[str, CardSpec] = {
     "CPU": CardSpec(
         name="CPU",
         cli_gpu="CPU",
+        cli_flag="--cpu",
         card_class="cpu",
         available=True,
         pool_ceiling=5,
         shapes=(),
         default_rate=0.26,
+        min_rate=0.26,
         min_vram_mib=0,
         min_compute_cap=(0, 0),
         name_tokens=(),
@@ -57,11 +66,13 @@ CARDS: dict[str, CardSpec] = {
     "T4": CardSpec(
         name="T4",
         cli_gpu="T4",
+        cli_flag="--gpu",
         card_class="gpu",
         available=True,
         pool_ceiling=3,
         shapes=("standard", "high-mem"),
         default_rate=None,
+        min_rate=1.07,
         min_vram_mib=14000,
         min_compute_cap=(7, 5),
         name_tokens=("T4",),
@@ -69,11 +80,13 @@ CARDS: dict[str, CardSpec] = {
     "L4": CardSpec(
         name="L4",
         cli_gpu="L4",
+        cli_flag="--gpu",
         card_class="gpu",
         available=True,
         pool_ceiling=3,
         shapes=("standard",),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=21500,
         min_compute_cap=(8, 9),
         name_tokens=("L4",),
@@ -81,11 +94,13 @@ CARDS: dict[str, CardSpec] = {
     "G4": CardSpec(
         name="G4",
         cli_gpu="G4",
+        cli_flag="--gpu",
         card_class="gpu",
         available=True,
         pool_ceiling=3,
         shapes=("standard", "high-mem"),
         default_rate=None,
+        min_rate=10.05,
         min_vram_mib=90000,
         min_compute_cap=(8, 9),
         name_tokens=("RTX PRO 6000", "G4"),
@@ -93,11 +108,13 @@ CARDS: dict[str, CardSpec] = {
     "A100": CardSpec(
         name="A100",
         cli_gpu="A100",
+        cli_flag="--gpu",
         card_class="gpu",
         available=True,
         pool_ceiling=3,
         shapes=("standard", "high-mem"),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=38000,
         min_compute_cap=(8, 0),
         name_tokens=("A100",),
@@ -105,35 +122,41 @@ CARDS: dict[str, CardSpec] = {
     "A100_80GB": CardSpec(
         name="A100_80GB",
         cli_gpu="A100",
+        cli_flag="--gpu",
         card_class="gpu",
         available=True,
         pool_ceiling=3,
         shapes=("high-mem",),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=76000,
         min_compute_cap=(8, 0),
         name_tokens=("A100",),
     ),
     "V5E1": CardSpec(
         name="V5E1",
-        cli_gpu="V5E1",
+        cli_gpu="v5e1",
+        cli_flag="--tpu",
         card_class="gpu",
         available=True,
         pool_ceiling=1,
-        shapes=("high-mem",),
+        shapes=("standard",),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=0,
         min_compute_cap=(0, 0),
         name_tokens=(),
     ),
     "V6E1": CardSpec(
         name="V6E1",
-        cli_gpu="V6E1",
+        cli_gpu="v6e1",
+        cli_flag="--tpu",
         card_class="gpu",
         available=True,
         pool_ceiling=1,
-        shapes=("high-mem",),
+        shapes=("standard",),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=0,
         min_compute_cap=(0, 0),
         name_tokens=(),
@@ -141,11 +164,13 @@ CARDS: dict[str, CardSpec] = {
     "H100": CardSpec(
         name="H100",
         cli_gpu="H100",
+        cli_flag="--gpu",
         card_class="gpu",
         available=False,
         pool_ceiling=0,
         shapes=("standard", "high-mem"),
         default_rate=None,
+        min_rate=1.00,
         min_vram_mib=76000,
         min_compute_cap=(9, 0),
         name_tokens=("H100",),
@@ -186,7 +211,7 @@ def validate_card_and_shape(card: str, shape: Optional[str]) -> tuple[CardSpec, 
     if clean_shape is None:
         raise Refused(
             "SHAPE_REQUIRED",
-            "GPU card %s requires an explicit shape ('standard' or 'high-mem')" % spec.name,
+            "card %s requires an explicit shape ('standard' or 'high-mem')" % spec.name,
         )
     if clean_shape not in ("standard", "high-mem"):
         raise Refused("SHAPE_INVALID", "invalid shape %r: expected 'standard' or 'high-mem'" % clean_shape)
@@ -206,6 +231,34 @@ def validate_card_and_shape(card: str, shape: Optional[str]) -> tuple[CardSpec, 
 def shape_row_label(shape: str) -> str:
     """Return the `colab sessions` Shape column label expected for a requested shape."""
     return "High-RAM" if shape == "high-mem" else "Standard"
+
+
+def pool_key_for_card(spec: CardSpec, shape: Optional[str]) -> str:
+    """Return the exact per-tier pool key (separating A100 40 GB `Standard` from A100 80 GB `High-RAM`)."""
+    if spec.name == "A100_80GB" or (spec.name == "A100" and shape == "high-mem"):
+        return "A100_80GB"
+    if spec.name == "A100":
+        return "A100_40GB"
+    return spec.name
+
+
+def pool_key_for_session_row(row: Mapping[str, Optional[str]]) -> Optional[str]:
+    """Derive the pool key strictly from a parsed `colab sessions` row's `Hardware:` and `Shape:` fields."""
+    hw = (row.get("hardware") or "").strip().upper()
+    sh = (row.get("shape") or "").strip()
+    if not hw:
+        return None
+    if hw == "CPU" or hw == "NONE":
+        return "CPU"
+    if hw in ("T4", "L4", "G4", "V5E1", "V6E1", "H100"):
+        return hw
+    if hw == "A100":
+        return "A100_80GB" if sh.lower() == "high-ram" else "A100_40GB"
+    if hw in ("A100 80GB", "A100-80GB", "A100_80GB"):
+        return "A100_80GB"
+    if hw in ("A100 40GB", "A100-40GB", "A100_40GB"):
+        return "A100_40GB"
+    return None
 
 
 def utc_day_str(now: Optional[datetime] = None) -> str:
@@ -304,6 +357,41 @@ class StudyLedger:
                 % (study, entry["card"], spec.name),
             )
 
+    def reserve_card(
+        self,
+        study: str,
+        card: str,
+        *,
+        session: str,
+        window_id: str,
+        at: Optional[str] = None,
+    ) -> None:
+        """Lock `study` to `card` atomically before `colab new` runs, refusing mixed cards across windows."""
+        spec = resolve_card(card)
+        if spec.card_class == "cpu" or not study:
+            return
+        data = _load_json_dict(self.ledger_file)
+        studies = data.setdefault("studies", {})
+        if not isinstance(studies, dict):
+            studies = {}
+            data["studies"] = studies
+        entry = studies.setdefault(study, {"card": None, "reservations": [], "windows": []})
+        if entry.get("card") and entry["card"] != spec.name:
+            raise Refused(
+                "CARD_MIX_REFUSED",
+                "study %r is already locked to %s; cannot run on %s without starting a separate study"
+                % (study, entry["card"], spec.name),
+            )
+        entry["card"] = spec.name
+        reservations = entry.setdefault("reservations", [])
+        reservations.append({
+            "window_id": window_id,
+            "session": session,
+            "card": spec.name,
+            "at": at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        })
+        write_json_atomic(self.ledger_file, data)
+
     def record_window(self, study: str, outcome: Mapping[str, Any]) -> None:
         """Append a finished/closed window summary to the study ledger and lock its GPU card if applicable."""
         if not study:
@@ -313,7 +401,7 @@ class StudyLedger:
         if not isinstance(studies, dict):
             studies = {}
             data["studies"] = studies
-        entry = studies.setdefault(study, {"card": None, "windows": []})
+        entry = studies.setdefault(study, {"card": None, "reservations": [], "windows": []})
         if outcome.get("card_class") == "gpu" and outcome.get("opened") and not entry.get("card"):
             entry["card"] = outcome.get("card")
         windows = entry.setdefault("windows", [])
@@ -393,6 +481,8 @@ __all__ = [
     "PLATFORM_FACTS_UPDATED",
     "StudyLedger",
     "TOTAL_SESSION_CEILING",
+    "pool_key_for_card",
+    "pool_key_for_session_row",
     "resolve_card",
     "shape_row_label",
     "utc_day_str",

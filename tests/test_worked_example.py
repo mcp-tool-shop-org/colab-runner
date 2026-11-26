@@ -4,30 +4,52 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from colab_runner.__main__ import main
 
-EXAMPLE_SPEC = Path(__file__).resolve().parents[1] / "examples" / "merchant_league_seats" / "colab-window.toml"
+EXAMPLE_DIR = Path(__file__).resolve().parents[1] / "examples" / "merchant_league_seats"
+EXAMPLE_SPEC = EXAMPLE_DIR / "colab-window.toml"
 
 
 class WorkedExampleTest(unittest.TestCase):
-    def test_merchant_league_worked_example_dry_run_and_local_cpu(self):
+    def test_merchant_league_worked_example_dry_smoke_t4_and_local_cpu(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            dry_dir = root / "ml-dry"
+            # Item 25: proposed smoke spec on T4 (180s wall, cap 2.5, max_rate 1.5) -> min_vram=14000 + open phase bound
+            smoke_dry = root / "smoke-t4-dry"
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc = main(["launch", "--spec", str(EXAMPLE_SPEC), "--out-dir", str(dry_dir), "--dry"])
+                rc = main([
+                    "launch", "--spec", str(EXAMPLE_SPEC), "--out-dir", str(smoke_dry), "--dry",
+                    "--card", "T4", "--shape", "standard", "--max-rate", "1.5", "--wall-s", "180", "--cap", "2.5",
+                ])
             self.assertEqual(rc, 0, err.getvalue())
             self.assertIn("DRY_RUN_OK", out.getvalue())
-            plan = json.loads((dry_dir / "dry_run_plan.json").read_text(encoding="utf-8"))
-            self.assertEqual(plan["project"]["repo"], "mcp-tool-shop-org/merchant-league")
-            self.assertEqual(plan["card"], "G4")
-            self.assertEqual(plan["shape"], "standard")
+            self.assertIn("open_phase_bound_s:", out.getvalue())
+            plan = json.loads((smoke_dry / "dry_run_plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["card"], "T4")
+            self.assertEqual(plan["min_vram_mib"], 14000)
             self.assertEqual(len(plan["staged_files"]), 4)
+
+            # Item 25: `run_seats.py --mode gpu-live` with `CR_SMOKE_STUB=1` runs without external model server
+            smoke_work = root / "smoke_work"
+            smoke_out = root / "smoke_out"
+            smoke_work.mkdir()
+            for fname in ("seats.json", "wrapper.md", "response_schema.json", "run_seats.py"):
+                (smoke_work / fname).write_text((EXAMPLE_DIR / fname).read_text(encoding="utf-8"), encoding="utf-8")
+            env = dict(os.environ, CR_WORK_DIR=str(smoke_work), CR_OUT_DIR=str(smoke_out), CR_SMOKE_STUB="1")
+            proc = subprocess.run(
+                [sys.executable, str(smoke_work / "run_seats.py"), "--mode", "gpu-live", "--cap-gpu-secs", "120.2"],
+                cwd=str(smoke_work), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            smoke_sum = json.loads((smoke_work / "turn_summary.json").read_text(encoding="utf-8"))
+            self.assertTrue(smoke_sum.get("smoke_stub"))
 
             if os.name != "posix":
                 self.skipTest("local-cpu VM execution requires POSIX bash/nohup")

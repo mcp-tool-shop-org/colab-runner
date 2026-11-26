@@ -538,6 +538,7 @@ class Runner:
         resident: bool = False,
         salvage: Optional[Callable[[str], bool]] = None,
         collect: Optional[Callable[[], bool]] = None,
+        opened_monotonic: Optional[float] = None,
         unreachable_polls: int = 10,
         unreachable_s: float = 1800.0,
     ) -> RunResult:
@@ -545,9 +546,11 @@ class Runner:
         fold_usage(...)) ends the run at the cap and bounds every step by its ceiling. Refusals (Refused) are raised
         before any `colab` call; after that, every end goes through the stop."""
         kit_env = self._check_run(script, hold_s, heartbeat_s, env, wall_s, guard, progress_stall_s, setup_stall_s,
-                                  dead_confirm, resident, unreachable_polls, unreachable_s)
+                                  dead_confirm, resident, unreachable_polls, unreachable_s, opened_monotonic)
         hold_mode = hold_s is not None
-        self._t0, self._wall_s, self._guard = self.clock(), float(wall_s), guard
+        now_m = self.clock()
+        self._t0 = min(float(opened_monotonic), now_m) if opened_monotonic is not None else now_m
+        self._wall_s, self._guard = float(wall_s), guard
         self._resident, self._oom_seen, self._log_collected, self._skip_salvage = None, False, False, False
         self._res = RunResult("error")
         self._download_refusal = None
@@ -595,9 +598,15 @@ class Runner:
         return self._res
 
     def _check_run(self, script, hold_s, heartbeat_s, env, wall_s, guard, progress_stall_s, setup_stall_s,
-                   dead_confirm, resident, unreachable_polls, unreachable_s) -> dict:
+                   dead_confirm, resident, unreachable_polls, unreachable_s, opened_monotonic=None) -> dict:
         """Every refusal, by name, before any `colab` call."""
         require_number("WALL_INVALID", "wall_s", wall_s)
+        if opened_monotonic is not None and (
+            not isinstance(opened_monotonic, (int, float))
+            or isinstance(opened_monotonic, bool)
+            or not math.isfinite(opened_monotonic)
+        ):
+            raise Refused("SETTING_INVALID", "opened_monotonic must be a finite number (got %r)" % (opened_monotonic,))
         require_number("HEARTBEAT_INVALID", "heartbeat_s", heartbeat_s, inclusive=True)
         require_number("PROGRESS_STALL_INVALID", "progress_stall_s", progress_stall_s)
         require_number("SETUP_STALL_INVALID", "setup_stall_s", setup_stall_s)
@@ -628,12 +637,12 @@ class Runner:
                           "(kill, %sstop attempts)" % (bound, self.own_cleanup_bound_s(resident),
                                                        "kernel restart, run log, " if resident else ""))
         try:
-            if self.out_dir.exists() and not self.out_dir.is_dir():
-                raise Refused("OUT_DIR_INVALID", "%s exists and is not a directory" % self.out_dir)
-            if not self._pre_opened and self.out_dir.exists() and any(self.out_dir.iterdir()):
+            if not self._pre_opened and self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
                 # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
                 # refuses the same: colab_refuse_nonempty_out_dir)
                 raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
+            if self.out_dir.exists() and not self.out_dir.is_dir():
+                raise Refused("OUT_DIR_INVALID", "%s exists and is not a directory" % self.out_dir)
             self.out_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:  # refused by name before the marker, so exit 1 keeps meaning "no session was owned"
             raise Refused("OUT_DIR_INVALID", "%s cannot be created or listed (%s: %s)"
@@ -931,8 +940,11 @@ class Runner:
     def _arm_signals(self) -> Optional[dict]:
         if threading.current_thread() is not threading.main_thread():
             return None  # only the main thread can take signals; a caller's thread keeps the try/finally
+        sigs = [signal.SIGINT, signal.SIGTERM]
+        if hasattr(signal, "SIGHUP"):
+            sigs.append(signal.SIGHUP)
         old = {}
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        for sig in sigs:
             old[sig] = signal.signal(sig, self._on_signal)
         return old
 

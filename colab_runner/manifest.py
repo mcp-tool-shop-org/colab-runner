@@ -1,24 +1,31 @@
-"""Declarative Colab window specification (`WindowSpec`), strict input sandbox, sealed-data gate, and VM bundle builder."""
+"""Declarative Colab window specification (`WindowSpec`), strict input sandbox, verified sealed-data gate, and VM bundle."""
 
 from __future__ import annotations
 
 import fnmatch
 import io
 import json
+import os
+import re
 import shlex
+import stat
 import tarfile
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Optional
 
-from colab_runner.cards import CardSpec, validate_card_and_shape, vm_card_check_py
+from colab_runner.cards import CardSpec, resolve_card, validate_card_and_shape, vm_card_check_py
 from colab_runner.colab_cli import _is_link
 from colab_runner.errors import Refused
 from colab_runner.runner import require_number
 from colab_runner.window_lib import launch_guards as lg
 
 SEALED_PATH_PATTERNS = ("sealed*", "*sealed*", "*bakeoff*", "restricted*")
+JOB_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+PREREG_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?sealed_path\s*:\s*(.+?)\s*$", re.I)
+DEFAULT_SEALED_HOST = "colab.google.com"
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,16 @@ class StagedInputRecord:
     dst: str
     bytes: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class SealedPolicySpec:
+    """Manifest declaration binding sealed or outside-repo inputs to a read-only pre-registration and destination."""
+
+    preregistration_path: Path
+    preregistration_sha256: str
+    allowed_cards: tuple[str, ...]
+    allowed_host: str
 
 
 @dataclass
@@ -63,10 +80,10 @@ class WindowSpec:
     resident: bool = False
     omp_num_threads: int = 4
     min_vram_mib: Optional[int] = None
+    min_vram_mib_by_card: dict[str, int] = field(default_factory=dict)
     inputs_root: Path = Path(".")
-    allow_sealed: bool = False
-    preregistration: str = ""
     deny_globs: tuple[str, ...] = ()
+    sealed: Optional[SealedPolicySpec] = None
     input_files: tuple[InputFileSpec, ...] = ()
     setup_commands: tuple[str, ...] = ()
     run_commands: tuple[str, ...] = ()
@@ -76,7 +93,16 @@ class WindowSpec:
     env: tuple[str, ...] = ()
     collect_outputs: tuple[str, ...] = ()
     salvage_outputs: tuple[str, ...] = ()
+    spec_base_dir: Path = Path(".")
     spec_path: Optional[Path] = None
+
+    def vram_floor_for(self, card_spec: CardSpec) -> int:
+        """Return the VRAM floor in MiB for `card_spec`, preferring per-card overrides then matching catalog floor."""
+        if card_spec.name in self.min_vram_mib_by_card:
+            return self.min_vram_mib_by_card[card_spec.name]
+        if self.min_vram_mib is not None and card_spec.name == self.card:
+            return self.min_vram_mib
+        return card_spec.min_vram_mib
 
     @classmethod
     def from_file(cls, path: Path | str) -> "WindowSpec":
@@ -122,6 +148,8 @@ class WindowSpec:
         repo = _require_nonempty_str(proj, "repo", "project.repo")
         study = _require_nonempty_str(proj, "study", "project.study")
         job = _require_nonempty_str(proj, "job", "project.job")
+        if not JOB_NAME_RE.fullmatch(job):
+            raise Refused("SPEC_INVALID", "project.job must match [A-Za-z0-9_-]+ (got %r)" % (job,))
         description = str(proj.get("description", "")).strip()
 
         card = _require_nonempty_str(comp, "card", "compute.card")
@@ -164,12 +192,17 @@ class WindowSpec:
         if min_vram_mib is not None:
             if not isinstance(min_vram_mib, int) or isinstance(min_vram_mib, bool) or min_vram_mib < 0:
                 raise Refused("SPEC_INVALID", "compute.min_vram_mib must be a non-negative integer")
+        min_vram_by_card = _parse_vram_by_card(comp.get("min_vram_mib_by_card"))
 
+        if "allow_sealed" in inp or "preregistration" in inp:
+            raise Refused(
+                "SPEC_INVALID",
+                "inputs.allow_sealed and inputs.preregistration were replaced by [inputs.sealed] with path + sha256",
+            )
         raw_root = str(inp.get("root", ".")).strip() or "."
         inputs_root = (base_dir / raw_root) if not Path(raw_root).is_absolute() else Path(raw_root)
-        allow_sealed = bool(inp.get("allow_sealed", False))
-        prereg = str(inp.get("preregistration", "")).strip()
         deny_globs = tuple(_string_list(inp.get("deny_globs", []), "inputs.deny_globs"))
+        sealed = _parse_sealed_policy(inp.get("sealed"), base_dir=base_dir)
         input_files = _parse_input_files(inp.get("files", []))
 
         setup_cmds = tuple(_string_list(job_tbl.get("setup", []), "job.setup"))
@@ -205,10 +238,10 @@ class WindowSpec:
             resident=resident,
             omp_num_threads=omp_num_threads,
             min_vram_mib=min_vram_mib,
+            min_vram_mib_by_card=min_vram_by_card,
             inputs_root=inputs_root,
-            allow_sealed=allow_sealed,
-            preregistration=prereg,
             deny_globs=deny_globs,
+            sealed=sealed,
             input_files=input_files,
             setup_commands=setup_cmds,
             run_commands=run_cmds,
@@ -218,6 +251,7 @@ class WindowSpec:
             env=env,
             collect_outputs=collect_outputs,
             salvage_outputs=salvage_outputs,
+            spec_base_dir=base_dir.resolve(),
             spec_path=spec_path,
         )
 
@@ -242,6 +276,48 @@ def _string_list(raw: Any, field_name: str) -> list[str]:
     if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
         raise Refused("SPEC_INVALID", "%s must be a list of strings" % field_name)
     return [x for x in raw if x]
+
+
+def _parse_vram_by_card(raw: Any) -> dict[str, int]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise Refused("SPEC_INVALID", "compute.min_vram_mib_by_card must be a table/object")
+    out: dict[str, int] = {}
+    for card_name, val in raw.items():
+        if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+            raise Refused("SPEC_INVALID", "compute.min_vram_mib_by_card[%r] must be a non-negative integer" % (card_name,))
+        out[resolve_card(str(card_name)).name] = val
+    return out
+
+
+def _has_glob_chars(text: str) -> bool:
+    return any(ch in text for ch in "*?[]{}")
+
+
+def _parse_sealed_policy(raw: Any, *, base_dir: Path) -> Optional[SealedPolicySpec]:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise Refused("SPEC_INVALID", "inputs.sealed must be a table/object")
+    p_raw = _require_nonempty_str(raw, "preregistration_path", "inputs.sealed.preregistration_path")
+    sha_raw = lg.normalize_hex_sha(_require_nonempty_str(raw, "preregistration_sha256", "inputs.sealed.preregistration_sha256"))
+    if not SHA256_RE.fullmatch(sha_raw):
+        raise Refused("SEALED_PREREG_INVALID", "inputs.sealed.preregistration_sha256 must be a 64-char hex sha256")
+    cards_raw = _string_list(raw.get("allowed_cards"), "inputs.sealed.allowed_cards")
+    if not cards_raw:
+        raise Refused("SEALED_DESTINATION_REFUSED", "inputs.sealed.allowed_cards must list at least one destination card")
+    allowed_cards = tuple(resolve_card(c).name for c in cards_raw)
+    host_raw = _require_nonempty_str(raw, "allowed_host", "inputs.sealed.allowed_host").lower()
+    if _has_glob_chars(host_raw):
+        raise Refused("SEALED_DESTINATION_REFUSED", "inputs.sealed.allowed_host cannot contain glob wildcards")
+    prereg_path = (base_dir / p_raw) if not Path(p_raw).is_absolute() else Path(p_raw)
+    return SealedPolicySpec(
+        preregistration_path=prereg_path,
+        preregistration_sha256=sha_raw,
+        allowed_cards=allowed_cards,
+        allowed_host=host_raw,
+    )
 
 
 def _raise_rel_path(is_output: bool, msg: str) -> None:
@@ -288,20 +364,164 @@ def _validate_output_relpaths(raw: Any, field_name: str) -> list[str]:
     return [_check_rel_path(item, True, field_name) for item in items]
 
 
-def _check_sealed_segments(rel_path: str, *, deny_globs: tuple[str, ...],
-                           allow_sealed: bool, preregistration: str) -> None:
-    if allow_sealed and preregistration.strip():
-        return
+def _segments_match_sealed(parts: tuple[str, ...], *, deny_globs: tuple[str, ...]) -> Optional[str]:
     patterns = SEALED_PATH_PATTERNS + deny_globs
-    for seg in PurePosixPath(rel_path).parts:
+    for seg in parts:
         low = seg.lower()
         for pat in patterns:
             if fnmatch.fnmatchcase(low, pat.lower()):
-                raise Refused(
-                    "SEALED_DATA_REFUSED",
-                    "path %r matches sealed/restricted pattern %r without allow_sealed + preregistration"
-                    % (rel_path, pat),
-                )
+                return pat
+    return None
+
+
+def _find_repo_root(start_dir: Path) -> Path:
+    resolved = start_dir.resolve()
+    for cand in (resolved, *resolved.parents):
+        if (cand / ".git").exists():
+            return cand
+    return resolved
+
+
+def _is_readonly_file(path: Path) -> bool:
+    mode = path.stat().st_mode
+    if os.name == "posix":
+        return (mode & 0o222) == 0
+    return (mode & stat.S_IWRITE) == 0
+
+
+def _contains_token(text: str, token: str) -> bool:
+    pat = r"(?<![A-Za-z0-9_.-])" + re.escape(token) + r"(?![A-Za-z0-9_.-])"
+    return re.search(pat, text) is not None
+
+
+def _parse_prereg_sealed_paths(path: Path, raw_text: str) -> list[str]:
+    paths_raw: Optional[list[Any]] = None
+    suf = path.suffix.lower()
+    if suf == ".json":
+        try:
+            obj = json.loads(raw_text)
+        except ValueError as exc:
+            raise Refused("SEALED_PREREG_INVALID", "invalid JSON pre-registration %s (%s)" % (path, exc)) from None
+        if isinstance(obj, Mapping) and isinstance(obj.get("sealed_paths"), list):
+            paths_raw = obj["sealed_paths"]
+    elif suf == ".toml":
+        try:
+            obj = tomllib.loads(raw_text)
+        except tomllib.TOMLDecodeError as exc:
+            raise Refused("SEALED_PREREG_INVALID", "invalid TOML pre-registration %s (%s)" % (path, exc)) from None
+        if isinstance(obj, Mapping) and isinstance(obj.get("sealed_paths"), list):
+            paths_raw = obj["sealed_paths"]
+    else:
+        found: list[str] = []
+        for line in raw_text.splitlines():
+            m = PREREG_LINE_RE.match(line)
+            if m:
+                found.append(m.group(1).strip().strip("`\"'"))
+        if found:
+            paths_raw = found
+
+    if not paths_raw:
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s declares no sealed_paths" % path)
+    clean: list[str] = []
+    for entry in paths_raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise Refused("SEALED_PREREG_INVALID", "empty sealed path in pre-registration %s" % path)
+        if _has_glob_chars(entry):
+            raise Refused("SEALED_PREREG_INVALID", "glob patterns are forbidden in pre-registration paths: %r" % entry)
+        clean.append(_check_rel_path(entry, False, "sealed_path"))
+    return clean
+
+
+def _verify_sealed_gate(
+    spec: WindowSpec,
+    *,
+    root: Path,
+    actual_card: str,
+    actual_host: str,
+    live: bool,
+    local_cpu: bool,
+    cli_allow_sealed: bool,
+) -> Optional[dict[str, Any]]:
+    spec_repo_root = _find_repo_root(spec.spec_path.parent if spec.spec_path else spec.spec_base_dir)
+    root_outside_repo = not root.is_relative_to(spec_repo_root)
+    root_sealed_pat = _segments_match_sealed(root.parts, deny_globs=spec.deny_globs)
+
+    sealed_srcs: list[str] = []
+    for item in spec.input_files:
+        pat_src = _segments_match_sealed(PurePosixPath(item.src).parts, deny_globs=spec.deny_globs)
+        pat_dst = _segments_match_sealed(PurePosixPath(item.dst).parts, deny_globs=spec.deny_globs)
+        if root_outside_repo or root_sealed_pat or pat_src or pat_dst:
+            sealed_srcs.append(item.src)
+
+    needs_gate = bool(sealed_srcs or root_outside_repo or root_sealed_pat or spec.sealed is not None)
+    if not needs_gate:
+        return None
+    if spec.sealed is None:
+        if root_outside_repo:
+            why = "inputs.root %s is outside the spec repository %s without [inputs.sealed]" % (root, spec_repo_root)
+        elif root_sealed_pat:
+            why = "inputs.root %s matches sealed pattern %r without [inputs.sealed]" % (root, root_sealed_pat)
+        else:
+            why = "manifest declares sealed path(s) %r without [inputs.sealed]" % (sealed_srcs,)
+        raise Refused("SEALED_DATA_REFUSED", why)
+
+    prereg = spec.sealed.preregistration_path
+    if _is_link(prereg) or not prereg.exists() or not prereg.is_file():
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration file missing or not a regular file: %s" % prereg)
+    if not _is_readonly_file(prereg):
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration file must be read-only before launch: %s" % prereg)
+    got_sha = lg.sha256_file(prereg)
+    if got_sha != spec.sealed.preregistration_sha256:
+        raise Refused(
+            "SEALED_PREREG_INVALID",
+            "pre-registration sha256 mismatch for %s (got %s, expected %s)"
+            % (prereg, got_sha, spec.sealed.preregistration_sha256),
+        )
+    prereg_text = prereg.read_text(encoding="utf-8")
+    if not _contains_token(prereg_text, spec.study):
+        raise Refused(
+            "SEALED_PREREG_INVALID",
+            "pre-registration %s does not authorize study %r" % (prereg, spec.study),
+        )
+    prereg_paths = _parse_prereg_sealed_paths(prereg, prereg_text)
+    if sorted(set(prereg_paths)) != sorted(set(sealed_srcs)):
+        raise Refused(
+            "SEALED_PREREG_INVALID",
+            "sealed input paths %r do not match pre-registered sealed_paths %r"
+            % (sorted(sealed_srcs), sorted(prereg_paths)),
+        )
+
+    eff_host = actual_host.strip().lower()
+    if eff_host != spec.sealed.allowed_host or not _contains_token(prereg_text.lower(), eff_host):
+        raise Refused(
+            "SEALED_DESTINATION_REFUSED",
+            "host %r is not authorized by [inputs.sealed] and pre-registration %s" % (actual_host, prereg),
+        )
+    check_card = spec.card if (local_cpu and not live) else resolve_card(actual_card).name
+    if check_card not in spec.sealed.allowed_cards or not all(
+        _contains_token(prereg_text, c) for c in spec.sealed.allowed_cards
+    ):
+        raise Refused(
+            "SEALED_DESTINATION_REFUSED",
+            "card %s is not in authorized sealed destination cards %r" % (check_card, spec.sealed.allowed_cards),
+        )
+
+    if live and not cli_allow_sealed:
+        raise Refused("ALLOW_SEALED_REQUIRED", "live launch with sealed inputs requires --allow-sealed on the CLI")
+
+    return {
+        "preregistration_path": str(prereg.resolve()),
+        "preregistration_sha256": got_sha,
+        "sealed_files": list(sealed_srcs),
+        "destination": {
+            "allowed_cards": list(spec.sealed.allowed_cards),
+            "allowed_host": spec.sealed.allowed_host,
+            "actual_card": resolve_card(actual_card).name,
+            "actual_host": eff_host,
+            "verified": True,
+        },
+        "allow_sealed_flag": bool(cli_allow_sealed),
+    }
 
 
 def _check_no_links(root: Path, rel: str) -> Path:
@@ -316,26 +536,35 @@ def _check_no_links(root: Path, rel: str) -> Path:
 def stage_inputs(
     spec: WindowSpec,
     bundle_path: Path,
-) -> list[StagedInputRecord]:
-    """Validate `spec.input_files` strictly within `spec.inputs_root` and pack a deterministic `.tar.gz` bundle."""
+    *,
+    actual_card: Optional[str] = None,
+    actual_host: str = DEFAULT_SEALED_HOST,
+    live: bool = False,
+    local_cpu: bool = False,
+    cli_allow_sealed: bool = False,
+) -> tuple[list[StagedInputRecord], Optional[dict[str, Any]]]:
+    """Validate `spec.input_files`, enforce the sealed pre-registration gate, and pack a deterministic `.tar.gz`."""
     root_raw = Path(spec.inputs_root)
     if _is_link(root_raw) or not root_raw.exists() or not root_raw.is_dir():
         raise Refused("INPUT_ROOT_INVALID", "inputs.root is missing, a link, or not a directory: %s" % root_raw)
     root = root_raw.resolve()
+
+    eff_card = actual_card or spec.card
+    sealed_record = _verify_sealed_gate(
+        spec,
+        root=root,
+        actual_card=eff_card,
+        actual_host=actual_host,
+        live=live,
+        local_cpu=local_cpu,
+        cli_allow_sealed=cli_allow_sealed,
+    )
 
     staged: list[StagedInputRecord] = []
     seen_dst: set[str] = set()
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle_path, mode="w:gz", format=tarfile.PAX_FORMAT) as tf:
         for item in spec.input_files:
-            _check_sealed_segments(
-                item.src, deny_globs=spec.deny_globs,
-                allow_sealed=spec.allow_sealed, preregistration=spec.preregistration,
-            )
-            _check_sealed_segments(
-                item.dst, deny_globs=spec.deny_globs,
-                allow_sealed=spec.allow_sealed, preregistration=spec.preregistration,
-            )
             if item.dst in seen_dst:
                 raise Refused("SPEC_INVALID", "duplicate staged destination path %r in inputs.files" % item.dst)
             seen_dst.add(item.dst)
@@ -362,7 +591,7 @@ def stage_inputs(
             info.gname = ""
             tf.addfile(info, io.BytesIO(data))
             staged.append(StagedInputRecord(src=item.src, dst=item.dst, bytes=len(data), sha256=digest))
-    return staged
+    return staged, sealed_record
 
 
 def render_vm_script(
@@ -387,8 +616,8 @@ def render_vm_script(
             f'tar -xzf "${{CR_CONTENT%/}}/{quoted_bundle}" -C "$CR_WORK_DIR" >> "$CR_OUT_DIR/setup.log" 2>&1',
             f'echo "[setup] unpacked {len(spec.input_files)} input files into $CR_WORK_DIR" >> "$CR_OUT_DIR/setup.log"',
         ])
-    if card_spec.card_class == "gpu":
-        check_src = vm_card_check_py(card_spec, min_vram_mib=spec.min_vram_mib)
+    if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
+        check_src = vm_card_check_py(card_spec, min_vram_mib=spec.vram_floor_for(card_spec))
         lines.extend([
             'if [ "${CR_DRY_RUN:-0}" != "1" ]; then',
             '  rc=0',
@@ -423,8 +652,10 @@ def render_vm_script(
 
 
 __all__ = [
+    "DEFAULT_SEALED_HOST",
     "InputFileSpec",
     "SEALED_PATH_PATTERNS",
+    "SealedPolicySpec",
     "StagedInputRecord",
     "WindowSpec",
     "render_vm_script",

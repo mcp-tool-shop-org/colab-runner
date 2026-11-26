@@ -110,9 +110,22 @@ CODES: dict[str, Code] = {
     "INPUT_FILE_MISSING": Code(
         "ensure every file listed in inputs.files exists as a regular file before launching", _FIX),
     "SEALED_DATA_REFUSED": Code(
-        "remove sealed or restricted paths from inputs.files, or set allow_sealed=true with a preregistration reference",
+        "declare a verified [inputs.sealed] pre-registration (read-only file, sha256, study id, exact paths) or "
+        "remove the sealed/outside-repo path", _FIX),
+    "SEALED_PREREG_INVALID": Code(
+        "provide an existing read-only pre-registration file matching preregistration_sha256, this study id, and "
+        "exact non-glob sealed_path entries", _FIX),
+    "SEALED_DESTINATION_REFUSED": Code(
+        "launch only to a card and host allowed by both [inputs.sealed] and the pre-registration text", _FIX),
+    "ALLOW_SEALED_REQUIRED": Code(
+        "pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs",
         _FIX),
     "OUTPUT_PATH_INVALID": Code("list outputs.collect and outputs.salvage as relative paths without '..'", _FIX),
+    "MAX_RATE_BELOW_FLOOR": Code(
+        "raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate", _FIX),
+    "SESSIONS_READ_FAILED": Code(
+        "check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a "
+        "window", True),
     # platform catalog, shape rules, study policy and circuit breaker
     "CARD_UNKNOWN": Code("choose a known Colab card from the catalog (CPU, T4, L4, G4, A100)", _FIX),
     "CARD_UNAVAILABLE": Code(

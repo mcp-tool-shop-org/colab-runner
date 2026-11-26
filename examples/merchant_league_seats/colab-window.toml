@@ -18,12 +18,14 @@ poll_s = 10
 setup_stall_s = 300
 progress_stall_s = 300
 omp_num_threads = 4
-min_vram_mib = 90000
+
+[compute.min_vram_mib_by_card]
+G4 = 90000
+L4 = 21500
+T4 = 14000
 
 [inputs]
 root = "."
-allow_sealed = false
-preregistration = ""
 files = [
   { src = "seats.json", dst = "seats.json" },
   { src = "wrapper.md", dst = "wrapper.md" },

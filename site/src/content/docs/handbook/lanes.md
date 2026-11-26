@@ -9,13 +9,13 @@ sidebar:
 
 Most projects no longer need per-window `launch.sh` scripts. Write one declarative `colab-window.toml` (`WindowSpec`) with:
 
-- `[project]`: `repo`, `study`, `job`, `description`.
-- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`), explicit GPU `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate`, `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`.
-- `[inputs]`: `root`, explicit `files`, and optional `allow_sealed` + `preregistration`. Only listed regular files are read or packed; symlinks, junctions, `..` traversal, and sealed paths without pre-registration are refused.
+- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`.
+- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`, `V5E1`, `V6E1`), explicit `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate` (>= catalog floor; explicit `--cap` and `--max-rate` required on live GPU/TPU launches), `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`, `min_vram_mib_by_card`.
+- `[inputs]`: `root`, explicit `files`, optional `deny_globs` (for project-specific patterns such as `staging*` or holdout directory names), and `[inputs.sealed]` (`preregistration_path`, `preregistration_sha256`, `allowed_cards`, `allowed_host`). Whole-path `inputs.root` components, outside-repo roots, and `inputs.files` entries are checked against sealed/deny patterns; verified sealed launches also require `--allow-sealed` on the CLI.
 - `[job]`: `setup`, `run`, optional `cpu_dry_run`, `env`.
-- `[outputs]`: relative `collect` (downloaded on `done`) and `salvage` (downloaded on failure/trip) paths scrubbed through `Runner.download`.
+- `[outputs]`: relative `collect` (downloaded on `done`) and `salvage` (downloaded on failure/trip) paths scrubbed through `Runner.download`. GPU runs always fetch `vm_card.json`.
 
-`python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1` handles session open under a cross-process lock, pool ceilings, shape verification, pre/post-open rate attribution, upload, detached polling, VM GPU verification (`nvidia-smi`), stop confirmation, and `outcome.json` recording. `python -m colab_runner status --out-dir runs/w1` inspects live or completed windows without touching the VM.
+`python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --cap C --max-rate R` handles session open under a global lock, strict `Hardware:`/`Shape:` pool ceilings, study card reservation, pre/post-open rate attribution, open-phase spend charging from `colab new`, upload, detached polling, VM GPU verification (`nvidia-smi`), stop confirmation, and `outcome.json` recording on every exit. `python -m colab_runner status --out-dir runs/w1` inspects live, `orphaned`, `stop_pending`, or completed windows without touching the VM, and `stop --out-dir runs/w1` reconciles `outcome.json` when confirming a delayed stop.
 
 ## Low-level `run` contract
 

@@ -18,8 +18,8 @@ exit codes: 0 ok, 1 refusal or usage error, 2 runtime error, 3 done but the sess
 
 ### `launch` and `status`
 
-- `launch --spec SPEC --out-dir D [--dry | --local-cpu]`: validates the spec, card/shape rules, circuit breaker, study card consistency, input sandbox, and cap budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under an open lock, uploads the staged bundle flat into `/content`, supervises execution via `Runner`, downloads declared outputs, confirms the session stopped, and writes `outcome.json`.
-- `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json`, `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
+- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec, card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs, confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI.
+- `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json` (reporting `orphaned` if `launcher_pid` died while `session_open.json` exists), `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
 
 ### `run`
 
@@ -205,8 +205,13 @@ again.
 | `INPUT_PATH_OUTSIDE_ROOT` | no | keep every inputs.files src and dst relative and inside inputs.root without '..' |
 | `INPUT_SYMLINK_REFUSED` | no | replace the symlink or junction in inputs.files with a regular file inside inputs.root |
 | `INPUT_FILE_MISSING` | no | ensure every file listed in inputs.files exists as a regular file before launching |
-| `SEALED_DATA_REFUSED` | no | remove sealed or restricted paths from inputs.files, or set allow_sealed=true with a preregistration reference |
+| `SEALED_DATA_REFUSED` | no | declare a verified [inputs.sealed] pre-registration (read-only file, sha256, study id, exact paths) or remove the sealed/outside-repo path |
+| `SEALED_PREREG_INVALID` | no | provide an existing read-only pre-registration file matching preregistration_sha256, this study id, and exact non-glob sealed_path entries |
+| `SEALED_DESTINATION_REFUSED` | no | launch only to a card and host allowed by both [inputs.sealed] and the pre-registration text |
+| `ALLOW_SEALED_REQUIRED` | no | pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs |
 | `OUTPUT_PATH_INVALID` | no | list outputs.collect and outputs.salvage as relative paths without '..' |
+| `MAX_RATE_BELOW_FLOOR` | no | raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate |
+| `SESSIONS_READ_FAILED` | yes | check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a window |
 | `CARD_UNKNOWN` | no | choose a known Colab card from the catalog (CPU, T4, L4, G4, A100) |
 | `CARD_UNAVAILABLE` | no | choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan |
 | `CARD_CIRCUIT_OPEN` | no | two allocation or card refusals already tripped this card's circuit breaker today (UTC); wait for the next UTC day or start a new study on an available card |

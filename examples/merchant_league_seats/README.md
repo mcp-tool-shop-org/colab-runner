@@ -12,6 +12,12 @@ This directory shows how a project declares a Colab GPU window once in `colab-wi
 python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/ml-dry --dry
 ```
 
+Smoke plan preview on T4 (`min_vram_mib_by_card` selects 14000 MiB for T4):
+
+```bash
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/smoke-t4-dry --dry --card T4 --shape standard --max-rate 1.5 --wall-s 180 --cap 2.5
+```
+
 ## Offline CPU dry run (zero `colab` calls)
 
 Runs the full staging, VM cell loop (`start.py`, `poll.py`, `lib.py`), local OpenAI-compatible stub (`POST /tokenize` and `POST /v1/chat/completions`), output copy-back, token scrub, and `outcome.json` booking record locally:

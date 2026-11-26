@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -197,10 +199,25 @@ def run_turns(work_dir: Path, out_dir: Path, *, stub_server: bool, cap_gpu_secs:
     return summary
 
 
+def _probe_nvidia_smi() -> str | None:
+    smi = os.environ.get("CR_NVIDIA_SMI") or shutil.which("nvidia-smi")
+    if not smi:
+        return None
+    proc = subprocess.run(
+        [smi, "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"],
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15,
+    )
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout.strip().splitlines()[0].strip()
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("validate-setup", "cpu-stub", "gpu-live"), required=True)
     parser.add_argument("--cap-gpu-secs", type=float, default=120.2)
+    parser.add_argument("--smoke-stub", action="store_true",
+                        help="run an in-process loopback OpenAI-compatible stub inside gpu-live when no model server runs")
     args = parser.parse_args()
 
     work_dir = Path(os.environ.get("CR_WORK_DIR") or ".").resolve()
@@ -209,7 +226,13 @@ def main() -> int:
         seats = validate_seats(work_dir)
         print(f"[setup] validated {len(seats)} local seats", flush=True)
         return 0
-    run_turns(work_dir, out_dir, stub_server=(args.mode == "cpu-stub"), cap_gpu_secs=args.cap_gpu_secs)
+    smoke_stub = args.smoke_stub or (os.environ.get("CR_SMOKE_STUB") == "1")
+    use_stub = args.mode == "cpu-stub" or (args.mode == "gpu-live" and smoke_stub)
+    summary = run_turns(work_dir, out_dir, stub_server=use_stub, cap_gpu_secs=args.cap_gpu_secs)
+    if args.mode == "gpu-live" and smoke_stub:
+        summary["smoke_stub"] = True
+        summary["gpu_smoke_device"] = _probe_nvidia_smi()
+        (work_dir / "turn_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return 0
 
 
