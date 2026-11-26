@@ -59,6 +59,17 @@ class SimColab(FakeColab):
     def exec_cell(self, session, source, env=None, timeout=60.0) -> CliResult:
         if "CR_KILL_GRACE_S" in (env or {}) and self.delay_kill_s and self.clock is not None:
             self.clock.advance(self.delay_kill_s)
+        if "CR_TAR_REL" in (env or {}):
+            self._record("tar", session, timeout)
+            self.envs.append(dict(env or {}))
+            if self.hang_downloads:
+                if self.clock is not None:
+                    self.clock.advance(max(0.0, float(timeout)) + 2.0 * KILL_WAIT_S)
+                return CliResult(124, "", "tar timed out after %.1fs" % timeout)
+            key = "/content/%s_out/%s.tar" % (env.get("CR_JOB", "job"), env["CR_TAR_REL"])
+            if key in self.remote_files:
+                return CliResult(0, "CR_TAR_READY\n")
+            return CliResult(0, "CR_TAR_MISSING\n")
         return super().exec_cell(session, source, env=env, timeout=timeout)
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
@@ -1156,8 +1167,8 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 self.EXAMPLE_SPEC, root / "t4_dry", dry=True,
                 card="T4", shape="standard", max_rate=1.5, wall_s=180.0, cap=2.5,
             )
-            self.assertGreaterEqual(dry_plan["budget"]["cleanup_bound_s"], 1376.0)
-            self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"], 910.0)
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_bound_s"], 1976.0)
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"], 1510.0)
             self.assertLessEqual(dry_plan["budget"]["worst_case_total_spend"], 2.5)
 
             t4_seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=1.5, n=1, balance=99.9)]
@@ -1205,7 +1216,9 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 colab=sim_done, clock=c_done.now, sleep=c_done.sleep,
                 state_dir=root / "st_done", open_lock=root / "done.lock",
             )
-            self.assertEqual(out_done["status"], "done")
+            self.assertEqual(out_done["status"], "partial")
+            self.assertEqual(out_done["exit_code"], 2)
+            self.assertEqual(out_done["missing_outputs"], ["turn_summary.json", "from-seat"])
             self.assertTrue(out_done["session_stopped_confirmed"])
             self.assertLessEqual(out_done["spend_ccu"], 2.5)
             dl_calls = [c for c in sim_done.calls if c["kind"] == "download"]
@@ -1309,7 +1322,7 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                     '[inputs]\nroot = "."\nfiles = ["worker.py", "sealed-eval/item.json"]\n'
                     '[inputs.sealed]\npreregistration_path = "prereg.md"\n'
                     f'preregistration_sha256 = "{hashlib.sha256(prereg_raw).hexdigest()}"\n'
-                    'allowed_cards = ["G4"]\nallowed_host = "colab.google.com"\n'
+                    'allowed_cards = ["G4", "A100"]\nallowed_host = "colab.google.com"\n'
                     '[job]\nrun = ["python3 worker.py"]\n',
                     encoding="utf-8",
                 )
@@ -1392,6 +1405,24 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                         self.assertFalse(_try_acquire_reclaim_guard(rg_ownerless, pid_alive=lambda pid: pid == os.getpid()))
             self.assertTrue((rg_ownerless / "owner.json").is_file())
 
+            # LOW 4a: ownerless stale guard replaced during rename by a *fresh* ownerless dir -> restored, not stolen.
+            rg_fresh = Path(tmp) / "fresh_ownerless.reclaim"
+            rg_fresh.mkdir()
+            os.utime(rg_fresh, (old_t, old_t))
+            now_t = old_t + 3000.0
+            with mock.patch("colab_runner.launcher.time.time", return_value=now_t):
+                def _swap_with_fresh_ownerless(src, dst):
+                    real_rename(src, dst)
+                    if Path(src) == rg_fresh:
+                        rg_fresh.mkdir()
+                        os.utime(rg_fresh, (now_t, now_t))
+                        os.utime(dst, (now_t, now_t))
+
+                with mock.patch("colab_runner.launcher.os.rename", side_effect=_swap_with_fresh_ownerless):
+                    self.assertFalse(_try_acquire_reclaim_guard(rg_fresh, pid_alive=lambda pid: pid == os.getpid()))
+            self.assertTrue(rg_fresh.is_dir())
+            self.assertFalse((rg_fresh / "owner.json").exists())
+
     def test_fu_3_overrun_kill_triggers_cleanup_download_clamp_and_skip_under_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1403,7 +1434,7 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
 
             def _polls_1(n, env):
                 n_poll_1["n"] += 1
-                c1.advance(200.0 if n_poll_1["n"] <= 23 else 25.0)
+                c1.advance(200.0 if n_poll_1["n"] <= 20 else 25.0)
                 return rec(progress=n)
 
             sim1 = SimColab(
@@ -1411,7 +1442,7 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 after_open_rows=["[t4-clamp] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
                 usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
                 polls=_polls_1,
-                delay_kill_s=120.0,
+                delay_kill_s=500.0,
                 stops=[1, 1, 0],
                 hang_downloads=True,
             )
@@ -1433,7 +1464,7 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
 
             def _polls_2(n, env):
                 n_poll_2["n"] += 1
-                c2.advance(200.0 if n_poll_2["n"] <= 23 else 25.0)
+                c2.advance(200.0 if n_poll_2["n"] <= 20 else 25.0)
                 return rec(progress=n)
 
             sim2 = SimColab(
@@ -1441,7 +1472,7 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 after_open_rows=["[t4-skip] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
                 usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
                 polls=_polls_2,
-                delay_kill_s=900.0,
+                delay_kill_s=1300.0,
                 stops=[1, 1, 0],
                 hang_downloads=True,
             )
@@ -1457,6 +1488,156 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
             self.assertLessEqual(out2["spend_ccu"], 2.5)
             self.assertTrue(any("cleanup download skipped" in msg for msg in logs), logs)
             self.assertLess(len([c for c in sim2.calls if c["kind"] == "download"]), 7)
+
+    def test_fix1_h1_cr_env_reserved_in_cli_and_job_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            for flag in ("CR_DRY_RUN=1", "CR_OUT_DIR=/tmp/x", "CR_SMOKE_STUB=1"):
+                with self.subTest(flag=flag):
+                    with self.assertRaises(Refused) as ctx:
+                        launch_window(spec, root / ("cli_" + flag.split("=")[0]), extra_env=[flag], dry=True)
+                    self.assertEqual(ctx.exception.code, "ENV_RESERVED")
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        rc = main(["launch", "--spec", str(spec), "--out-dir", str(root / ("m_" + flag.split("=")[0])),
+                                   "--dry", "--env", flag])
+                    self.assertEqual(rc, 1)
+                    self.assertIn("REFUSED: ENV_RESERVED", err.getvalue())
+
+            with self.assertRaises(Refused) as ctx_run:
+                launch_window(spec, root / "cli_run_id", extra_env=["CR_RUN_ID=abc"], dry=True)
+            self.assertEqual(ctx_run.exception.code, "RUN_ID_RESERVED")
+
+            spec_job_env = root / "spec_cr_env.toml"
+            spec_job_env.write_text(
+                spec.read_text(encoding="utf-8").replace(
+                    'cpu_dry_run = ["python3 worker.py"]',
+                    'cpu_dry_run = ["python3 worker.py"]\nenv = ["CR_OUT_DIR=/tmp/override"]',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Refused) as ctx_job:
+                launch_window(spec_job_env, root / "job_env_cr", dry=True)
+            self.assertEqual(ctx_job.exception.code, "ENV_RESERVED")
+
+    def test_fix1_h2_poll_mode_progress_glob_reports_progress_across_polls(self):
+        if os.name != "posix":
+            self.skipTest("LocalColab poll-mode execution requires POSIX bash/nohup")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / "worker.py").write_text(
+                "import json, os, time\nfrom pathlib import Path\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "pdir = w / 'custom_prog'\nudir = w / 'custom_units'\n"
+                "pdir.mkdir(exist_ok=True)\nudir.mkdir(exist_ok=True)\n"
+                "time.sleep(0.25)\n"
+                "(pdir / 'a.cnt').write_text('3\\n', encoding='utf-8')\n"
+                "(udir / 'u1.done').write_text('ok\\n', encoding='utf-8')\n"
+                "time.sleep(0.25)\n"
+                "(pdir / 'b.cnt').write_text('7\\n', encoding='utf-8')\n"
+                "(udir / 'u2.done').write_text('ok\\n', encoding='utf-8')\n"
+                "time.sleep(0.25)\n"
+                "(w / 'result.json').write_text(json.dumps({'ok': True}) + '\\n', encoding='utf-8')\n"
+                "(w / 'out.txt').write_text('done\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec = root / "colab-window.toml"
+            spec.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nprogress_stall_s = 0.5\nwall_s = 30\ncap = 8.0\nresident = false\n'
+                '[inputs]\nroot = "."\nfiles = ["worker.py"]\n'
+                '[job]\n'
+                'run = ["python3 worker.py"]\n'
+                'progress_glob = "custom_prog/*.cnt"\n'
+                'units_glob = "custom_units/*.done"\n'
+                '[outputs]\ncollect = ["result.json", "out.txt"]\n',
+                encoding="utf-8",
+            )
+            seen_envs: list[dict[str, str]] = []
+            orig_exec = LocalColab.exec_cell
+
+            def _spy_exec(lc_self, session, source, env=None, timeout=60.0):
+                seen_envs.append(dict(env or {}))
+                return orig_exec(lc_self, session, source, env=env, timeout=timeout)
+
+            out_dir = root / "poll_h2_out"
+            with mock.patch.object(LocalColab, "exec_cell", autospec=True, side_effect=_spy_exec):
+                outcome = launch_window(spec, out_dir, local_cpu=True)
+
+            self.assertEqual(outcome["status"], "done", outcome)
+            poll_envs = [e for e in seen_envs if "CR_POLL_LOG_OFFSET" in e]
+            self.assertGreaterEqual(len(poll_envs), 2)
+            for pe in poll_envs:
+                self.assertEqual(pe.get("CR_PROGRESS_GLOB"), "custom_prog/*.cnt")
+                self.assertEqual(pe.get("CR_UNITS_GLOB"), "custom_units/*.done")
+            rr = json.loads((out_dir / "runner_result.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(rr["last"]["progress"], 3)
+            self.assertGreaterEqual(rr["last"]["units_done"], 1)
+
+    def test_fix1_m1_directory_tar_collect_and_missing_outputs_partial(self):
+        if os.name != "posix":
+            self.skipTest("LocalColab tar-output execution requires POSIX bash/nohup")
+        t = fake_tokens()
+        leak = leak_lines(t)[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # LocalColab.download rejects raw directories just like live colab download
+            lc = LocalColab(root / "lc_dir_check")
+            (lc.content_dir / "raw_dir").mkdir()
+            (lc.content_dir / "raw_dir" / "a.txt").write_text("hi\n", encoding="utf-8")
+            dir_dl = lc.download("s", "/content/raw_dir", str(root / "dst_dir"))
+            self.assertNotEqual(dir_dl.rc, 0)
+
+            (root / ".git").mkdir()
+            (root / "worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "d = w / 'dir_out' / 'nested'\n"
+                "d.mkdir(parents=True, exist_ok=True)\n"
+                f"(d / 'a.txt').write_text('clean ' + {leak!r} + '\\n', encoding='utf-8')\n"
+                "(w / 'result.json').write_text('{\"ok\": true}\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec = root / "spec_dir.toml"
+            spec.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["worker.py"]\n'
+                '[job]\nrun = ["python3 worker.py"]\n'
+                '[outputs]\ncollect = ["result.json", "dir_out"]\n',
+                encoding="utf-8",
+            )
+            out_dir = root / "m1_ok"
+            res = launch_window(spec, out_dir, local_cpu=True)
+            self.assertEqual(res["status"], "done", res)
+            self.assertEqual(res["exit_code"], 0)
+            self.assertEqual(res["collected_outputs"], ["result.json", "dir_out"])
+            self.assertEqual(res["missing_outputs"], [])
+            self.assertTrue((out_dir / "_local_vm_content" / "demo_job_out" / "dir_out.tar").is_file())
+            txt = (out_dir / "collected" / "dir_out" / "nested" / "a.txt").read_text(encoding="utf-8")
+            self.assertIn("[REDACTED]", txt)
+            for v in values(t):
+                self.assertNotIn(v, txt)
+
+            spec_missing = root / "spec_missing.toml"
+            spec_missing.write_text(
+                spec.read_text(encoding="utf-8").replace(
+                    'collect = ["result.json", "dir_out"]',
+                    'collect = ["result.json", "does_not_exist.json"]',
+                ),
+                encoding="utf-8",
+            )
+            out_partial = root / "m1_partial"
+            res_p = launch_window(spec_missing, out_partial, local_cpu=True)
+            self.assertEqual(res_p["status"], "partial", res_p)
+            self.assertEqual(res_p["exit_code"], 2)
+            self.assertEqual(res_p["collected_outputs"], ["result.json"])
+            self.assertEqual(res_p["missing_outputs"], ["does_not_exist.json"])
+            self.assertFalse((out_partial / "collect_confirmed.json").exists())
 
 
 if __name__ == "__main__":

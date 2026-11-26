@@ -35,7 +35,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "colab_runner",
-      "qualifyingSourceCommits": 9,
+      "qualifyingSourceCommits": 10,
       "rebaseline": null
     },
     {
@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 7,
+      "qualifyingSourceCommits": 8,
       "rebaseline": null
     }
   ],
@@ -105,8 +105,8 @@
         "path": ".polyglot-pins.json"
       },
       {
-        "commits": 11,
-        "lines": 252,
+        "commits": 12,
+        "lines": 253,
         "path": "CHANGELOG.md"
       },
       {
@@ -170,8 +170,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 9,
-        "lines": 212,
+        "commits": 10,
+        "lines": 218,
         "path": "atlas/README.md"
       },
       {
@@ -180,18 +180,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 9,
-        "lines": 556,
+        "commits": 10,
+        "lines": 571,
         "path": "atlas/page.json"
       },
       {
-        "commits": 9,
-        "lines": 1586,
+        "commits": 10,
+        "lines": 1752,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 9,
-        "lines": 4041,
+        "commits": 10,
+        "lines": 5561,
         "path": "atlas/structure.json"
       },
       {
@@ -210,8 +210,8 @@
         "path": "colab_runner/__main__.py"
       },
       {
-        "commits": 1,
-        "lines": 556,
+        "commits": 2,
+        "lines": 559,
         "path": "colab_runner/cards.py"
       },
       {
@@ -225,18 +225,18 @@
         "path": "colab_runner/errors.py"
       },
       {
-        "commits": 2,
-        "lines": 1835,
+        "commits": 3,
+        "lines": 1967,
         "path": "colab_runner/launcher.py"
       },
       {
-        "commits": 2,
-        "lines": 791,
+        "commits": 3,
+        "lines": 795,
         "path": "colab_runner/manifest.py"
       },
       {
-        "commits": 6,
-        "lines": 1231,
+        "commits": 7,
+        "lines": 1241,
         "path": "colab_runner/runner.py"
       },
       {
@@ -250,8 +250,8 @@
         "path": "colab_runner/vm/kill.py"
       },
       {
-        "commits": 2,
-        "lines": 293,
+        "commits": 3,
+        "lines": 297,
         "path": "colab_runner/vm/lib.py"
       },
       {
@@ -310,8 +310,8 @@
         "path": "examples/merchant_league_seats/response_schema.json"
       },
       {
-        "commits": 1,
-        "lines": 240,
+        "commits": 2,
+        "lines": 243,
         "path": "examples/merchant_league_seats/run_seats.py"
       },
       {
@@ -460,8 +460,8 @@
         "path": "tests/test_followups.py"
       },
       {
-        "commits": 2,
-        "lines": 1463,
+        "commits": 3,
+        "lines": 1465,
         "path": "tests/test_launcher.py"
       },
       {
@@ -520,8 +520,8 @@
         "path": "tests/test_window_lib.py"
       },
       {
-        "commits": 1,
-        "lines": 84,
+        "commits": 2,
+        "lines": 128,
         "path": "tests/test_worked_example.py"
       },
       {
@@ -540,59 +540,66 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-26T19:21:32.999Z",
+  "generatedAt": "2026-11-26T19:49:18.636Z",
   "generatedFrom": {
-    "commit": "7fd82a19c1ff3b492d21a7de3d83efbe13580479"
+    "commit": "5cea221d360441206828b30930e0e64067db195e"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "atlas/README.md",
+      "either": 10,
+      "shared": 7,
+      "strength": 0.7
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "atlas/page.json",
+      "either": 10,
+      "shared": 7,
+      "strength": 0.7
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "atlas/statistics.json",
+      "either": 10,
+      "shared": 7,
+      "strength": 0.7
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "atlas/structure.json",
+      "either": 10,
+      "shared": 7,
+      "strength": 0.7
+    },
+    {
+      "a": "CHANGELOG.md",
+      "b": "colab_runner/__init__.py",
       "either": 10,
       "shared": 6,
       "strength": 0.6
     },
     {
       "a": "CHANGELOG.md",
-      "b": "atlas/README.md",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "atlas/page.json",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "atlas/statistics.json",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "atlas/structure.json",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "colab_runner/__init__.py",
-      "either": 9,
-      "shared": 6,
-      "strength": 0.666667
+      "b": "colab_runner/runner.py",
+      "either": 10,
+      "shared": 5,
+      "strength": 0.5
     },
     {
       "a": "CHANGELOG.md",
       "b": "pyproject.toml",
-      "either": 9,
+      "either": 10,
       "shared": 7,
-      "strength": 0.777778
+      "strength": 0.7
     },
     {
       "a": "README.md",
@@ -604,72 +611,44 @@
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/README.md",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/page.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/statistics.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
-    },
-    {
-      "a": "atlas/structure.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "colab_runner/__init__.py",
@@ -689,16 +668,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-26T14:06:38-05:00",
+    "headDate": "2026-11-26T14:24:06-05:00",
     "inScopeFiles": 92,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 11,
+    "qualifyingCommits": 12,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-30T19:06:38.000Z",
+    "since": "2026-05-30T19:24:06.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

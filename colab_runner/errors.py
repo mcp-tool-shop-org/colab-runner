@@ -66,6 +66,9 @@ CODES: dict[str, Code] = {
     "ENV_INVALID": Code("pass --env as NAME=VALUE or NAME, with NAME a variable name", _FIX),
     "ENV_UNSET": Code("set the variable in this environment before the run, or pass --env NAME=VALUE", _FIX),
     "RUN_ID_RESERVED": Code("drop CR_RUN_ID from --env: the runner gives every run its own id", _FIX),
+    "ENV_RESERVED": Code(
+        "omit CR_* variables from job.env and --env: the CR_* namespace is reserved for colab-runner", _FIX
+    ),
     # stop
     "SESSION_MARKER_INVALID": Code("stop the session by name with `colab stop -s S`: this session_open.json does not "
                                    "name one", _FIX),

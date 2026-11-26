@@ -71,6 +71,9 @@ class WorkedExampleTest(unittest.TestCase):
             self.assertEqual(outcome["card"], "CPU")
             self.assertTrue(outcome["session_stopped_confirmed"])
             self.assertEqual(outcome["spend_basis"], "cpu_configured_rate_x_elapsed")
+            self.assertIn("from-seat", outcome["collected_outputs"])
+            self.assertEqual(outcome["missing_outputs"], [])
+            self.assertTrue((cpu_dir / "_local_vm_content" / "league_turn_01_out" / "from-seat.tar").is_file())
 
             summary = json.loads((cpu_dir / "collected" / "turn_summary.json").read_text(encoding="utf-8"))
             guilds = [s["guild"] for s in summary["seats"]]
@@ -99,7 +102,7 @@ class WorkedExampleTest(unittest.TestCase):
             script_path.write_text(render_vm_script(spec, card_spec, bundle_filename=bundle_name), encoding="utf-8")
 
             job_env = build_job_env(
-                spec, card_spec, content=str(content_dir), local_cpu=True, extra_env={"CR_SMOKE_STUB": "1"},
+                spec, card_spec, content=str(content_dir), local_cpu=True, extra_env={"ML_SMOKE_STUB": "1"},
             )
             clean_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
             clean_env.update(job_env)
@@ -122,6 +125,16 @@ class WorkedExampleTest(unittest.TestCase):
             )
             self.assertNotEqual(proc_fail.returncode, 0)
             self.assertIn("CR_OUT_DIR", proc_fail.stderr)
+
+            missing_dry = dict(clean_env)
+            missing_dry.pop("CR_DRY_RUN")
+            proc_dry_fail = subprocess.run(
+                ["bash", "-u", str(script_path)],
+                cwd=str(content_dir), env=missing_dry, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(proc_dry_fail.returncode, 0)
+            self.assertIn("set by colab-runner; run this script through colab-runner", proc_dry_fail.stderr)
 
 
 if __name__ == "__main__":

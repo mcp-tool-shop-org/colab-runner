@@ -227,7 +227,9 @@ def main() -> int:
         seats = validate_seats(work_dir)
         print(f"[setup] validated {len(seats)} local seats", flush=True)
         return 0
-    smoke_stub = args.smoke_stub or (os.environ.get("CR_SMOKE_STUB") == "1")
+    smoke_stub = args.smoke_stub or any(
+        os.environ.get(k) == "1" for k in ("ML_SMOKE_STUB", "SMOKE_STUB", "CR_SMOKE_STUB")
+    )
     use_stub = args.mode == "cpu-stub" or (args.mode == "gpu-live" and smoke_stub)
     summary = run_turns(work_dir, out_dir, stub_server=use_stub, cap_gpu_secs=args.cap_gpu_secs)
     if args.mode == "gpu-live" and smoke_stub:

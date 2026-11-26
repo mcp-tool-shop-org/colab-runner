@@ -728,6 +728,7 @@ def render_vm_script(
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
+        ': "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}"',
         f"export OMP_NUM_THREADS={spec.omp_num_threads}",
         'export CR_WORK_DIR="${CR_CONTENT%/}/${CR_JOB}_work"',
         'mkdir -p "$CR_OUT_DIR" "$CR_OUT_DIR/progress" "$CR_WORK_DIR"',
@@ -743,7 +744,7 @@ def render_vm_script(
     if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
         check_src = vm_card_check_py(card_spec, min_vram_mib=spec.vram_floor_for(card_spec))
         lines.extend([
-            'if [ "$CR_DRY_RUN" != "1" ]; then',
+            'if [ "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}" != "1" ]; then',
             '  rc=0',
             '  python3 - <<\'CR_VM_CARD_EOF\' >> "$CR_OUT_DIR/setup.log" 2>&1 || rc=$?',
             check_src.rstrip("\n"),
@@ -762,7 +763,7 @@ def render_vm_script(
         'cd "$CR_WORK_DIR"',
     ])
     if spec.cpu_dry_run_commands:
-        lines.append('if [ "$CR_DRY_RUN" = "1" ]; then')
+        lines.append('if [ "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}" = "1" ]; then')
         for cmd in spec.cpu_dry_run_commands:
             lines.append(f"  {cmd}")
         lines.append("else")

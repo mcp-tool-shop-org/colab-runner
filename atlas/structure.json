@@ -32,7 +32,7 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 10,
+      "dynamicReads": 11,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 6,
@@ -116,7 +116,7 @@
             "error_record",
             "lookup"
           ],
-          "hash": "35ec2c02df262f7ea76a091281fca4c8dac8c09da4db0756006e289d77c82314",
+          "hash": "f1b48752f5619a652e14a9899a8e39e02b62156382e9260fece9ebe1b5b52351",
           "path": "colab_runner/errors.py"
         },
         {
@@ -133,7 +133,7 @@
             "resolve_kit_env",
             "status_window"
           ],
-          "hash": "3901dd43e2e5ea960446221273ced18b880363724bd9a671490329fbed0e1971",
+          "hash": "ec9450f420ec57fda3fae0a7884e560ab26db6cb6bb2425e928bdd57d32b8bcb",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -150,7 +150,7 @@
             "render_vm_script",
             "stage_inputs"
           ],
-          "hash": "32560a34a2cb23b0a39cb3f336311625618b9e798cb2b2ecc08e0d0946cd6cd7",
+          "hash": "34daece1c869f2bfbcb7198e3010bb8663325ff54b2cb5ca54bd8d9f53b4b806",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -170,7 +170,7 @@
             "vm_lib_source",
             "write_json_atomic"
           ],
-          "hash": "53baf34a9b9b713bb8a0df4fc49cc801adf5180d1b38a3be2b6d19be44220bdc",
+          "hash": "a2ab5d5738ac6ca83cc6558f2319da4c54a1ec98db9ffca0d967f588bd704655",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
@@ -198,6 +198,7 @@
             "cr_alive",
             "cr_collect",
             "cr_first_int",
+            "cr_glob_files",
             "cr_group_alive",
             "cr_kill_job",
             "cr_owner",
@@ -210,7 +211,7 @@
             "cr_units",
             "cr_whole_chars"
           ],
-          "hash": "851024c4921ee5f0371412cffd95b0ea471f3eb7e88fc2f3cc8f437c9defd699",
+          "hash": "e85deab00609dc38d59ad30854a9d0fed77e7dc9b4ee772f608d6bc89fce270d",
           "path": "colab_runner/vm/lib.py"
         },
         {
@@ -289,11 +290,11 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 27,
+          "reads": 26,
           "where": [
             "caller"
           ],
-          "writes": 17
+          "writes": 18
         },
         {
           "reads": 0,
@@ -304,8 +305,8 @@
           "writes": 1
         }
       ],
-      "outsideReads": 27,
-      "outsideWrites": 18,
+      "outsideReads": 26,
+      "outsideWrites": 19,
       "role": "code",
       "testedBy": 18,
       "unresolvedSites": 0
@@ -331,7 +332,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "0ae86a25ef78dd3a4521d5deaa7a21cbc9ee6f25ecddee35c546a5f48b1b7a84",
+          "hash": "1d4f20d57007cabfcf9a00c5115550a227a1edd5cf203da30931a1e125af14f6",
           "path": "CHANGELOG.md"
         },
         {
@@ -437,7 +438,7 @@
             "rec",
             "usage_text"
           ],
-          "hash": "dd17135eea8ff321841ee711ad243ddd13b835c1889941c1b8a4b61926b67227",
+          "hash": "27a71f6c04a76c78ba733d6dfc5d580cd55561c45114d507786b63b0abc211c9",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py",
@@ -544,7 +545,7 @@
           "path": "tests/test_followups.py"
         },
         {
-          "hash": "2367210ee33752493fbdce36c2dca6e83c7b869b1671fc6dd7eeeec9d9b1d329",
+          "hash": "42c761a15dae7bae6e3866927433fba54057538e1869c0543e833b8a4420386c",
           "importsFiles": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -739,7 +740,7 @@
           "path": "tests/test_window_lib.py"
         },
         {
-          "hash": "9b8606d3b88b763c98fb5846195c9c36e395ac4a9c1d100feb11e0e5cc4b6636",
+          "hash": "d8fde1288dea8b4630394745327d27c05fd2a771436d13bae21e13d8494e6000",
           "importsFiles": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -1111,7 +1112,7 @@
   ],
   "engine": "1.23.0",
   "generatedFrom": {
-    "commit": "7fd82a19c1ff3b492d21a7de3d83efbe13580479",
+    "commit": "5cea221d360441206828b30930e0e64067db195e",
     "tracked": 87
   },
   "landings": [
@@ -1475,7 +1476,7 @@
       "path": "examples/merchant_league_seats/README.md"
     },
     {
-      "hash": "de22587b8dffe6a6bfd935b696109d44d8efcdd8128ae6abeac527e93359be9c",
+      "hash": "957f43c92a24830491f84097559ccb687f41c55bb56438aa789fad68fa2d4789",
       "path": "examples/merchant_league_seats/colab-window.toml"
     },
     {
@@ -1488,7 +1489,7 @@
         "run_turns",
         "validate_seats"
       ],
-      "hash": "d4ee76d5c15f33b5d1ecbd08dfb8314d1afdb7b0542b47079a6543da7dffad8a",
+      "hash": "9f1655068139b85e4f9ffda9c24d0318d36e225669dcecc3d9978ec653959fab",
       "path": "examples/merchant_league_seats/run_seats.py"
     },
     {
