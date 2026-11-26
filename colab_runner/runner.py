@@ -56,6 +56,7 @@ SETUP_PHASES = (None, "", "setup")
 MIN_CALL_S = 1.0  # no call is started with less than this left before the wall or the ceiling
 USAGE_RETRY_PAUSE_S = 2.0  # between the tries of a failed `colab usage` read
 REACHED_EPS_S = 1e-6  # less than this left: the wall or the ceiling has been reached
+DEFAULT_DOWNLOAD_TIMEOUT_S = 120.0
 # Ends on which the VM job may still be running: its process group is terminated before salvage and stop.
 TRIPS = frozenset(
     {"wall", "cap", "setup_stall", "progress_stall", "dead", "unreachable", "start_failed", "interrupted", "error"}
@@ -214,6 +215,7 @@ class Runner:
         log_timeout_s: float = 300.0,
         stop_attempts: int = 3,
         stop_timeout_s: float = 120.0,
+        download_timeout_s: float = DEFAULT_DOWNLOAD_TIMEOUT_S,
         pre_opened: bool = False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -225,7 +227,7 @@ class Runner:
             ("poll_timeout_s", poll_timeout_s), ("backoff_max_s", backoff_max_s), ("start_timeout_s", start_timeout_s),
             ("usage_timeout_s", usage_timeout_s), ("kill_timeout_s", kill_timeout_s),
             ("restart_timeout_s", restart_timeout_s), ("log_timeout_s", log_timeout_s),
-            ("stop_timeout_s", stop_timeout_s),
+            ("stop_timeout_s", stop_timeout_s), ("download_timeout_s", download_timeout_s),
         ):
             require_number("SETTING_INVALID", name, value)
         require_number("SETTING_INVALID", "kill_grace_s", kill_grace_s, inclusive=True)
@@ -241,7 +243,9 @@ class Runner:
         self.usage_timeout_s, self.kill_timeout_s, self.kill_grace_s = usage_timeout_s, kill_timeout_s, kill_grace_s
         self.restart_timeout_s, self.log_timeout_s = restart_timeout_s, log_timeout_s
         self.stop_attempts, self.stop_timeout_s = int(stop_attempts), stop_timeout_s
+        self.download_timeout_s = download_timeout_s
         self._pre_opened = bool(pre_opened)
+        self._end_t0: Optional[float] = None
         self.clock, self.sleep = clock, sleep
         self.log = lambda s: log(scrub(s))  # nothing reaches the log unscrubbed
         self.trace = lambda s: trace(scrub(s))  # one line per poll (the CLI's --verbose), scrubbed the same way
@@ -312,6 +316,11 @@ class Runner:
         """A CLI result with its out and err scrubbed (the real wrapper scrubs too; this covers any stand-in)."""
         return CliResult(res.rc, scrub(res.out), scrub(res.err))
 
+    def stop_bound_s(self) -> float:
+        """Worst-case seconds for `stop_session()` (all stop attempts, kill waits, and pauses)."""
+        pauses = sum(_stop_pause(i) for i in range(1, self.stop_attempts))
+        return self.stop_attempts * (self.stop_timeout_s + 2.0 * KILL_WAIT_S) + pauses
+
     def own_cleanup_bound_s(self, resident: bool) -> float:
         """The worst case of the runner's own cleanup after a trip: the kill cell, then (resident mode) the kernel
         restart that frees it and the run-log download, then every stop attempt with the pauses between them; each
@@ -319,10 +328,8 @@ class Runner:
         time (EXEC_REPORT_S, given on top of the window, see _start_resident) and its own kill (KILL_WAIT_S) count
         too. A caller's salvage is the caller's to add."""
         calls = [self.kill_timeout_s] + ([self.restart_timeout_s, self.log_timeout_s] if resident else [])
-        calls += [self.stop_timeout_s] * self.stop_attempts
-        pauses = sum(_stop_pause(i) for i in range(1, self.stop_attempts))
         resident_extra = EXEC_REPORT_S + KILL_WAIT_S if resident else 0.0
-        return sum(calls) + pauses + 2 * KILL_WAIT_S * len(calls) + resident_extra
+        return sum(calls) + 2 * KILL_WAIT_S * len(calls) + self.stop_bound_s() + resident_extra
 
     # -- time left before the wall and the ceiling ---------------------------------------------------------------
     def _time_left(self) -> tuple[float, str]:
@@ -436,14 +443,15 @@ class Runner:
             self.log("colab usage attempt %d failed rc=%s: %s" % (attempt + 1, last.rc, (last.err or "")[-200:]))
         return last, skipped
 
-    def download(self, remote: str, local: Path | str, timeout: float = 120.0) -> CliResult:
+    def download(self, remote: str, local: Path | str, timeout: Optional[float] = None) -> CliResult:
         """`colab download`; whatever is at `local` afterwards passes through `scrub_local` (quarantining binary
         token hits in `<out-dir>.quarantine`) before anything reads it, in a `finally`."""
+        eff_timeout = self.download_timeout_s if timeout is None else timeout
         target = Path(local)
         target.parent.mkdir(parents=True, exist_ok=True)
         with self._bind_quarantine():
             try:
-                return self._clean(self.colab.download(self.session, remote, str(target), timeout))
+                return self._clean(self.colab.download(self.session, remote, str(target), eff_timeout))
             except BinaryDownloadRefused as exc:
                 for entry in exc.quarantined:
                     self._record_quarantine(entry)
@@ -560,6 +568,7 @@ class Runner:
         self._result_written, self._prior_detail = False, ""
         self._cleanup_signals: list[int] = []
         self._phase = "run"
+        self._end_t0 = None
         handlers: Optional[dict] = None
         crash: Optional[BaseException] = None
         with self._bind_quarantine():
@@ -845,8 +854,8 @@ class Runner:
     def _end(self, res: RunResult, salvage: Optional[Callable[[str], bool]], resident: bool,
              collect: Optional[Callable[[], bool]] = None) -> None:
         """On a trip, terminate the VM job's process group first; then collect (on done) or salvage (every other
-        end); then stop this run's own session, always. Nothing here is clamped to the wall: the cap's cleanup
-        reserve pays for it."""
+        end); then stop this run's own session, always. Cleanup outputs stay bounded inside the cleanup reserve."""
+        self._end_t0 = self.clock()
         if self._resident is not None:
             self._step("resident child", self._resident.kill)
         # a job this run never owned (refused, or only another run's records seen) is never killed or collected

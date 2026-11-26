@@ -13,7 +13,6 @@ max_rate = 10.5
 cap = 8.0
 margin = 0.25
 wall_s = 1800
-cleanup_bound_s = 600
 poll_s = 10
 setup_stall_s = 300
 progress_stall_s = 300

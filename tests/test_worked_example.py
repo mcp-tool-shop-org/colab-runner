@@ -35,6 +35,7 @@ class WorkedExampleTest(unittest.TestCase):
             plan = json.loads((smoke_dry / "dry_run_plan.json").read_text(encoding="utf-8"))
             self.assertEqual(plan["card"], "T4")
             self.assertEqual(plan["min_vram_mib"], 14000)
+            self.assertGreaterEqual(plan["budget"]["cleanup_bound_s"], 1376.0)
             self.assertLessEqual(plan["budget"]["worst_case_total_spend"], 2.5)
             self.assertEqual(len(plan["staged_files"]), 4)
 

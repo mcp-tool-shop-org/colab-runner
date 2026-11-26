@@ -48,6 +48,7 @@ from colab_runner.colab_cli import (
 from colab_runner.errors import Refused, cap_trip_record, error_record
 from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
 from colab_runner.runner import (
+    DEFAULT_DOWNLOAD_TIMEOUT_S,
     MIN_CALL_S,
     RunInterrupted,
     Runner,
@@ -58,7 +59,6 @@ from colab_runner.spend import SpendGuard, neighbour_warning
 from colab_runner.window_lib import launch_guards as lg
 
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-DEFAULT_SALVAGE_ALLOWANCE_S = 120.0
 DEFAULT_CLEANUP_FLOOR_S = 600.0
 OPEN_LOCK_STALE_MTIME_S = 10.0
 
@@ -93,10 +93,30 @@ def resolve_kit_env(items: Sequence[str], environ: Mapping[str, str] | None = No
     return out
 
 
-def default_cleanup_bound_s(resident: bool, runner_cls: type[Runner] = Runner) -> float:
-    """Compute a safe default `--cleanup-bound-s` clearing `Runner.own_cleanup_bound_s` plus salvage allowance."""
+def cleanup_outputs_bound_s(
+    spec: WindowSpec,
+    card_spec: CardSpec,
+    *,
+    download_timeout_s: float = DEFAULT_DOWNLOAD_TIMEOUT_S,
+) -> float:
+    """Worst-case seconds for `vm_card.json` plus salvage (or collect) downloads including fallbacks and kills."""
+    one_dl_s = float(download_timeout_s) + 2.0 * KILL_WAIT_S
+    two_dl_s = 2.0 * one_dl_s
+    vm_card_s = one_dl_s if (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu") else 0.0
+    salvage_s = vm_card_s + len(spec.salvage_outputs) * two_dl_s
+    collect_s = len(spec.collect_outputs) * two_dl_s
+    return max(salvage_s, collect_s)
+
+
+def default_cleanup_bound_s(
+    resident: bool,
+    runner_cls: type[Runner] = Runner,
+    *,
+    outputs_bound_s: float = 0.0,
+) -> float:
+    """Compute a safe default `--cleanup-bound-s` clearing `Runner.own_cleanup_bound_s` plus declared outputs."""
     probe = runner_cls(Colab(), "probe", Path.cwd() / "probe_out")
-    return max(DEFAULT_CLEANUP_FLOOR_S, probe.own_cleanup_bound_s(resident) + DEFAULT_SALVAGE_ALLOWANCE_S)
+    return max(DEFAULT_CLEANUP_FLOOR_S, probe.own_cleanup_bound_s(resident) + max(0.0, float(outputs_bound_s)))
 
 
 def open_phase_bound_s(
@@ -121,12 +141,18 @@ def open_phase_bound_s(
     return shape_bound + rate_bound + uploads_bound
 
 
-def compute_launch_budget(guard: SpendGuard, open_bound_s: float) -> dict[str, Any]:
-    """Combine `SpendGuard.budget()` with open-phase diagnostic bounds (`cap` counts from before `colab new`)."""
+def compute_launch_budget(
+    guard: SpendGuard,
+    open_bound_s: float,
+    *,
+    outputs_bound_s: float = 0.0,
+) -> dict[str, Any]:
+    """Combine `SpendGuard.budget()` with open-phase and cleanup-outputs bounds (`cap` counts from before `colab new`)."""
     base = dict(guard.budget())
     priced_rate = float(base["priced_rate"])
     open_units = round((max(0.0, float(open_bound_s)) / 3600.0) * priced_rate, 6)
     wc_cap = round(float(base["worst_case_cap_path"]), 6)
+    base["cleanup_outputs_bound_s"] = round(max(0.0, float(outputs_bound_s)), 2)
     base["open_phase_bound_s"] = round(float(open_bound_s), 2)
     base["open_phase_bound_units"] = open_units
     base["death_time_max_s"] = None
@@ -157,6 +183,7 @@ def format_launch_budget(rec: dict[str, Any]) -> str:
         f"cap: {rec['cap']}",
         f"margin: {rec['margin']}",
         f"cleanup_bound_s: {rec['cleanup_bound_s']}",
+        f"cleanup_outputs_bound_s: {rec.get('cleanup_outputs_bound_s', 0.0)}",
         f"open_phase_bound_s: {rec['open_phase_bound_s']}",
         f"priced_rate: {rec['priced_rate']}/h",
         f"max_rate: {rec['max_rate']}/h",
@@ -267,6 +294,53 @@ def _pid_alive(pid: int) -> bool:
             k32.CloseHandle(handle)
 
 
+def _is_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> bool:
+    """Return True when a lock or reclaim directory belongs to a dead PID (or is an old ownerless dir)."""
+    owner_file = dir_path / "owner.json"
+    if owner_file.is_file():
+        try:
+            info = json.loads(owner_file.read_text(encoding="utf-8"))
+            pid = info.get("pid") if isinstance(info, dict) else None
+            if isinstance(pid, int) and not pid_alive(pid):
+                return True
+        except (OSError, ValueError):
+            pass
+        return False
+    if dir_path.exists():
+        try:
+            return (time.time() - dir_path.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S
+        except OSError:
+            return False
+    return False
+
+
+def _try_acquire_reclaim_guard(reclaim_guard: Path, *, pid_alive: Callable[[int], bool]) -> bool:
+    """Atomically claim `reclaim_guard` with an `owner.json` (PID + time), reclaiming a dead reclaimer's guard."""
+    guard_owner = reclaim_guard / "owner.json"
+    try:
+        reclaim_guard.mkdir(parents=False)
+        write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
+        return True
+    except FileExistsError:
+        if not _is_lock_dir_stale(reclaim_guard, pid_alive=pid_alive):
+            return False
+        stale_guard = reclaim_guard.with_name(
+            "%s.stale-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
+        )
+        try:
+            os.rename(reclaim_guard, stale_guard)
+        except OSError:
+            return False
+        finally:
+            shutil.rmtree(stale_guard, ignore_errors=True)
+        try:
+            reclaim_guard.mkdir(parents=False)
+            write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
+            return True
+        except OSError:
+            return False
+
+
 @contextlib.contextmanager
 def _acquire_dir_lock(
     lock_dir: Path,
@@ -276,7 +350,7 @@ def _acquire_dir_lock(
     sleep: Callable[[float], None] = time.sleep,
     pid_alive: Callable[[int], bool] = _pid_alive,
 ):
-    """Cross-process directory lock with dead-PID stale-lock recovery (used on Windows and tested directly)."""
+    """Cross-process directory lock with dead-PID stale-lock and crashed-reclaimer recovery."""
     owner_file = lock_dir / "owner.json"
     deadline = clock() + max(0.0, float(timeout_s))
     while True:
@@ -285,48 +359,14 @@ def _acquire_dir_lock(
             write_json_atomic(owner_file, {"pid": os.getpid(), "at": _utc_now()})
             break
         except FileExistsError:
-            stale = False
-            if owner_file.is_file():
-                try:
-                    info = json.loads(owner_file.read_text(encoding="utf-8"))
-                    pid = info.get("pid") if isinstance(info, dict) else None
-                    if isinstance(pid, int) and not pid_alive(pid):
-                        stale = True
-                except (OSError, ValueError):
-                    pass
-            else:
-                try:
-                    if time.time() - lock_dir.stat().st_mtime > OPEN_LOCK_STALE_MTIME_S:
-                        stale = True
-                except OSError:
-                    pass
-            if stale:
+            if _is_lock_dir_stale(lock_dir, pid_alive=pid_alive):
                 reclaim_guard = lock_dir.with_suffix(".reclaim")
-                try:
-                    reclaim_guard.mkdir(parents=False)
-                except FileExistsError:
-                    stale = False
-                if stale:
+                if _try_acquire_reclaim_guard(reclaim_guard, pid_alive=pid_alive):
                     reclaim_dir = lock_dir.with_name(
                         "%s.stale-%d-%s" % (lock_dir.name, os.getpid(), uuid.uuid4().hex[:8])
                     )
                     try:
-                        still_stale = False
-                        if owner_file.is_file():
-                            try:
-                                info2 = json.loads(owner_file.read_text(encoding="utf-8"))
-                                pid2 = info2.get("pid") if isinstance(info2, dict) else None
-                                if isinstance(pid2, int) and not pid_alive(pid2):
-                                    still_stale = True
-                            except (OSError, ValueError):
-                                pass
-                        elif lock_dir.exists():
-                            try:
-                                if time.time() - lock_dir.stat().st_mtime > OPEN_LOCK_STALE_MTIME_S:
-                                    still_stale = True
-                            except OSError:
-                                pass
-                        if still_stale:
+                        if _is_lock_dir_stale(lock_dir, pid_alive=pid_alive):
                             try:
                                 os.rename(lock_dir, reclaim_dir)
                                 lock_dir.mkdir(parents=False)
@@ -569,6 +609,7 @@ def _apply_overrides(
     margin: Optional[float] = None,
     resident: Optional[bool] = None,
     local_cpu: bool = False,
+    runner_cls: type[Runner] = Runner,
 ) -> tuple[CardSpec, Optional[str], float, float, float, float, float, bool]:
     eff_card_name = "CPU" if local_cpu else (card or spec.card)
     if local_cpu:
@@ -601,9 +642,14 @@ def _apply_overrides(
     require_number("MARGIN_INVALID", "margin", eff_margin, inclusive=True)
 
     eff_resident = spec.resident if resident is None else bool(resident)
-    eff_cleanup = (cleanup_bound_s if cleanup_bound_s is not None
-                   else (spec.cleanup_bound_s if spec.cleanup_bound_s is not None
-                         else default_cleanup_bound_s(eff_resident)))
+    if cleanup_bound_s is not None:
+        eff_cleanup = cleanup_bound_s
+    elif spec.cleanup_bound_s is not None:
+        eff_cleanup = spec.cleanup_bound_s
+    else:
+        probe = runner_cls(Colab(), "probe", Path.cwd() / "probe_out")
+        outputs_bound_s = cleanup_outputs_bound_s(spec, card_spec, download_timeout_s=probe.download_timeout_s)
+        eff_cleanup = default_cleanup_bound_s(eff_resident, runner_cls, outputs_bound_s=outputs_bound_s)
     require_number("CLEANUP_BOUND_INVALID", "cleanup_bound_s", eff_cleanup, inclusive=True)
 
     return (
@@ -676,19 +722,29 @@ def _download_declared_outputs(
     *,
     content: str,
     job: str,
-) -> list[str]:
+    next_timeout: Optional[Callable[[], Optional[float]]] = None,
+) -> tuple[list[str], bool]:
     transferred: list[str] = []
+    completed = True
     work_prefix = "%s/%s_work" % (content.rstrip("/"), job)
     out_prefix = "%s/%s_out" % (content.rstrip("/"), job)
     for rel in paths:
         local = dest_dir / rel
         local.parent.mkdir(parents=True, exist_ok=True)
-        res = runner.download("%s/%s" % (work_prefix, rel), local)
+        dl_t = runner.download_timeout_s if next_timeout is None else next_timeout()
+        if dl_t is None:
+            completed = False
+            break
+        res = runner.download("%s/%s" % (work_prefix, rel), local, timeout=dl_t)
         if not res.ok:
-            res = runner.download("%s/%s" % (out_prefix, rel), local)
+            dl_t2 = runner.download_timeout_s if next_timeout is None else next_timeout()
+            if dl_t2 is None:
+                completed = False
+                break
+            res = runner.download("%s/%s" % (out_prefix, rel), local, timeout=dl_t2)
         if res.ok and local.exists():
             transferred.append(rel)
-    return transferred
+    return transferred, completed
 
 
 def _card_mismatch_seen(out_dir: Path, job: str) -> bool:
@@ -797,10 +853,13 @@ def _finalize_close(
     runner: Runner,
     *,
     already_stopped: Optional[bool],
-) -> bool:
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple[bool, float]:
     if already_stopped is None:
         stopped = runner.stop_session()
+        stopped_at = clock()
     else:
+        stopped_at = clock()
         stopped = bool(already_stopped)
     outcome["session_stopped_confirmed"] = bool(stopped and not (out_dir / "session_open.json").exists())
     if outcome["session_stopped_confirmed"]:
@@ -812,7 +871,7 @@ def _finalize_close(
                 outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
         except Exception:
             pass
-    return bool(outcome["session_stopped_confirmed"])
+    return bool(outcome["session_stopped_confirmed"]), stopped_at
 
 
 def _read_end_balance(colab: Colab) -> Optional[float]:
@@ -1001,6 +1060,7 @@ def launch_window(
     ) = _apply_overrides(
         spec, card=card, shape=shape, cap=cap, max_rate=max_rate, wall_s=wall_s,
         cleanup_bound_s=cleanup_bound_s, margin=margin, resident=resident, local_cpu=local_cpu,
+        runner_cls=runner_cls,
     )
     merged_env = resolve_kit_env(list(spec.env) + list(extra_env))
     if "CR_RUN_ID" in merged_env:
@@ -1016,15 +1076,17 @@ def launch_window(
     if breaker is not None and live_mode:
         breaker.check(card_spec.name, utc_day)
 
-    guard = SpendGuard(max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup)
     probe = runner_cls(Colab(), "probe", out_path)
-    min_bound = probe.own_cleanup_bound_s(eff_resident)
+    own_bound_s = probe.own_cleanup_bound_s(eff_resident)
+    outputs_bound_s = cleanup_outputs_bound_s(spec, card_spec, download_timeout_s=probe.download_timeout_s)
+    min_bound = own_bound_s + outputs_bound_s
     if eff_cleanup < min_bound:
         raise Refused(
             "CLEANUP_BOUND_TOO_SMALL",
-            "cleanup_bound_s %g is below the runner's own cleanup bound %g s (kill, %sstop attempts)"
-            % (eff_cleanup, min_bound, "kernel restart, run log, " if eff_resident else ""),
+            "cleanup_bound_s %g is below required cleanup bound %g s (runner own %g s + declared outputs %g s)"
+            % (eff_cleanup, min_bound, own_bound_s, outputs_bound_s),
         )
+    guard = SpendGuard(max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup)
     eff_session = session or default_session_name(spec, card_spec.name)
     window_id = "%s-%s" % (_slug(spec.job), uuid.uuid4().hex[:8])
 
@@ -1035,7 +1097,7 @@ def launch_window(
         post_open_polls=post_open_polls,
         rate_poll_interval_s=rate_poll_interval_s,
     )
-    budget = compute_launch_budget(guard, open_bound_s)
+    budget = compute_launch_budget(guard, open_bound_s, outputs_bound_s=outputs_bound_s)
 
     # Validate & stage inputs BEFORE creating persistent out_dir files on refusal
     with tempfile.TemporaryDirectory(prefix="cr-stage-") as stage_tmp:
@@ -1158,8 +1220,10 @@ def launch_window(
         elapsed = max(0.0, clock() - t_open_monotonic)
         if lg.evaluate_wall_guard(elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["tripped"]:
             sig_state["cleaning"] = True
-            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+            stopped_ok, stopped_at = _finalize_close(
+                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+            )
+            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                         bal_end=_read_end_balance(client))
             outcome["status"] = "wall"
             outcome["exit_code"] = 2
@@ -1170,8 +1234,10 @@ def launch_window(
         trip = guard.check(elapsed)
         if trip or guard.seconds_left(elapsed) <= 1e-3:
             sig_state["cleaning"] = True
-            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+            stopped_ok, stopped_at = _finalize_close(
+                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+            )
+            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                         bal_end=_read_end_balance(client))
             outcome["status"] = "cap"
             outcome["exit_code"] = 2
@@ -1197,8 +1263,10 @@ def launch_window(
             if tripped is not None:
                 return None, tripped
             sig_state["cleaning"] = True
-            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+            stopped_ok, stopped_at = _finalize_close(
+                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+            )
+            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                         bal_end=_read_end_balance(client))
             outcome["status"] = "cap"
             outcome["exit_code"] = 2
@@ -1254,9 +1322,11 @@ def launch_window(
                         if breaker is not None:
                             breaker.record_refusal(card_spec.name, reason="SESSION_OPEN_FAILED: %s" % msg,
                                                    session=eff_session, day=utc_day)
-                        stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                        stopped_ok, stopped_at = _finalize_close(
+                            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                        )
                         _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                    elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                                    elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                         outcome["status"] = "open_failed"
                         outcome["exit_code"] = 2
                         outcome["refusal"] = error_record("SESSION_OPEN_FAILED", "colab new failed: %s" % msg)
@@ -1297,9 +1367,11 @@ def launch_window(
                                     reason="SHAPE_MISMATCH: expected %s got %s" % (expected_shape, observed_shape),
                                     session=eff_session, day=utc_day,
                                 )
-                            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                            stopped_ok, stopped_at = _finalize_close(
+                                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                            )
                             _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                        elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                                        elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                             outcome["status"] = "shape_mismatch"
                             outcome["exit_code"] = 2
                             outcome["refusal"] = error_record(
@@ -1315,9 +1387,11 @@ def launch_window(
                             if tripped_out is not None:
                                 return tripped_out
                             sig_state["cleaning"] = True
-                            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                            stopped_ok, stopped_at = _finalize_close(
+                                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                            )
                             _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                        elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                                        elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                             outcome["status"] = "open_failed"
                             outcome["exit_code"] = 2
                             outcome["refusal"] = error_record(
@@ -1341,9 +1415,11 @@ def launch_window(
                             decision = guard.decision()
                             if decision == "above_max":
                                 sig_state["cleaning"] = True
-                                stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                                stopped_ok, stopped_at = _finalize_close(
+                                    client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                                )
                                 _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                            elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                                            elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                                 outcome["status"] = "cap"
                                 outcome["exit_code"] = 2
                                 outcome["cap_trip"] = error_record(
@@ -1366,9 +1442,11 @@ def launch_window(
                                     sleep(pause_s)
                         if guard.decision() == "unread":
                             sig_state["cleaning"] = True
-                            stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                            stopped_ok, stopped_at = _finalize_close(
+                                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                            )
                             _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                        elapsed_s=clock() - t_open_monotonic, bal_end=_read_end_balance(client))
+                                        elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                             outcome["status"] = "open_failed"
                             outcome["exit_code"] = 2
                             outcome["refusal"] = error_record(
@@ -1396,8 +1474,10 @@ def launch_window(
                         return tripped_out
                     sig_state["cleaning"] = True
                     msg = scrub((up.err or up.out or "rc=%s" % up.rc).strip())
-                    stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
-                    _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=clock() - t_open_monotonic,
+                    stopped_ok, stopped_at = _finalize_close(
+                        client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                    )
+                    _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                                 bal_end=_read_end_balance(client))
                     outcome["status"] = "upload_failed"
                     outcome["exit_code"] = 2
@@ -1412,10 +1492,12 @@ def launch_window(
             if marker_written:
                 sig_state["cleaning"] = True
                 try:
-                    stopped_ok = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None)
+                    stopped_ok, stopped_at = _finalize_close(
+                        client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                    )
                 except BaseException:
-                    stopped_ok = False
-                elapsed_exc = (clock() - t_open_monotonic) if t_open_monotonic is not None else 0.0
+                    stopped_ok, stopped_at = False, clock()
+                elapsed_exc = (stopped_at - t_open_monotonic) if t_open_monotonic is not None else 0.0
                 if t_open_monotonic is not None:
                     _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_exc,
                                 bal_end=_read_end_balance(client))
@@ -1433,26 +1515,52 @@ def launch_window(
         collected: list[str] = []
         salvaged: list[str] = []
 
+        def _next_cleanup_download_timeout() -> Optional[float]:
+            now = clock()
+            stop_res_s = runner.stop_bound_s()
+            end_t0 = runner._end_t0 if runner._end_t0 is not None else now
+            cleanup_rem_s = eff_cleanup - max(0.0, now - end_t0) - stop_res_s
+            if t_open_monotonic is not None:
+                cap_total_s = (eff_cap / guard.priced_rate()) * 3600.0
+                cap_rem_s = cap_total_s - max(0.0, now - t_open_monotonic) - stop_res_s
+                rem_s = min(cleanup_rem_s, cap_rem_s) - 1e-3
+            else:
+                rem_s = cleanup_rem_s - 1e-3
+            call_budget_s = rem_s - 2.0 * KILL_WAIT_S
+            if call_budget_s < MIN_CALL_S:
+                log("cleanup download skipped: %.2fs left after reserving %.0fs for stop" % (rem_s, stop_res_s))
+                return None
+            return min(float(runner.download_timeout_s), call_budget_s)
+
         def _do_collect() -> bool:
             if not spec.collect_outputs:
                 return True
-            collected.extend(
-                _download_declared_outputs(runner, spec.collect_outputs, out_path / "collected", content="/content", job=spec.job)
+            got, ok = _download_declared_outputs(
+                runner, spec.collect_outputs, out_path / "collected",
+                content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
             )
-            return True
+            collected.extend(got)
+            return ok
 
         def _do_salvage(reason: str) -> bool:
+            ok = True
             if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
-                vm_card_local = out_path / "vm_card.json"
-                vm_res = runner.download("/content/%s_out/vm_card.json" % spec.job, vm_card_local)
-                if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in salvaged:
-                    salvaged.append("vm_card.json")
-            if spec.salvage_outputs:
-                salvaged.extend(
-                    _download_declared_outputs(runner, spec.salvage_outputs, out_path / "salvage",
-                                               content="/content", job=spec.job)
+                dl_t = _next_cleanup_download_timeout()
+                if dl_t is None:
+                    ok = False
+                else:
+                    vm_card_local = out_path / "vm_card.json"
+                    vm_res = runner.download("/content/%s_out/vm_card.json" % spec.job, vm_card_local, timeout=dl_t)
+                    if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in salvaged:
+                        salvaged.append("vm_card.json")
+            if ok and spec.salvage_outputs:
+                got, dl_ok = _download_declared_outputs(
+                    runner, spec.salvage_outputs, out_path / "salvage",
+                    content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
                 )
-            return True
+                salvaged.extend(got)
+                ok = dl_ok
+            return ok
 
         run_env = dict(merged_env)
         run_env["CR_CARD"] = card_spec.name
@@ -1490,11 +1598,12 @@ def launch_window(
                 run_result = runner._res
         finally:
             sig_state["cleaning"] = True
-            stopped_ok = _finalize_close(
+            stopped_ok, stopped_at = _finalize_close(
                 client, eff_session, out_path, outcome, runner,
                 already_stopped=(run_result.stopped if run_result is not None else None),
+                clock=clock,
             )
-            elapsed_total = clock() - (t_open_monotonic if t_open_monotonic is not None else clock())
+            elapsed_total = stopped_at - (t_open_monotonic if t_open_monotonic is not None else stopped_at)
             _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_total, bal_end=_read_end_balance(client))
 
             if run_result is not None:

@@ -149,6 +149,40 @@ class CardCatalogTest(unittest.TestCase):
                 ledger.reserve_card("study-a", "T4", session="s4", window_id="w4")
             self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
 
+            # Item 2 (FIX-3): failed open with unconfirmed stop preserves reservation & card lock.
+            ledger.reserve_card("study-unstop", "G4", session="su1", window_id="wu1")
+            ledger.record_window("study-unstop", {
+                "window_id": "wu1", "session": "su1", "card": "G4", "card_class": "gpu",
+                "shape": "standard", "status": "open_failed", "opened": False,
+                "session_stopped_confirmed": False,
+            })
+            with self.assertRaises(Refused) as ctx:
+                ledger.reserve_card("study-unstop", "A100", session="su2", window_id="wu2")
+            self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
+
+            # Item 2 (FIX-3): legacy pre-0.2.0 entries without opened/card_class count as opened GPU locks.
+            legacy_path = Path(tmp) / "legacy_ledger.json"
+            legacy_path.write_text(json.dumps({
+                "schema_version": 1,
+                "studies": {
+                    "study-legacy": {
+                        "card": "G4",
+                        "reservations": [],
+                        "windows": [{"window_id": "old-w1", "session": "old-s1", "card": "G4"}],
+                    }
+                },
+            }), encoding="utf-8")
+            legacy_ledger = StudyLedger(legacy_path)
+            legacy_ledger.reserve_card("study-legacy", "G4", session="s-new", window_id="w-new")
+            legacy_ledger.release_reservation("study-legacy", window_id="w-new")
+            legacy_ledger.record_window("study-legacy", {
+                "window_id": "w-new", "session": "s-new", "card": "G4", "card_class": "gpu",
+                "status": "open_failed", "opened": False, "session_stopped_confirmed": True,
+            })
+            with self.assertRaises(Refused) as ctx:
+                legacy_ledger.reserve_card("study-legacy", "A100", session="s-a", window_id="w-a")
+            self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
+
     def test_vm_card_check_script_verifies_name_vram_and_compute_cap(self):
         if os.name != "posix":
             self.skipTest("shell script helper test requires POSIX")
@@ -436,6 +470,77 @@ class ManifestSandboxTest(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
                 finally:
                     _make_writable(loc_prereg)
+
+                # Item 3 (FIX-3): fenced code blocks in Markdown cannot add allowed_cards; duplicate fields refuse.
+                for fence in ("```", "~~~"):
+                    fenced_prereg = repo / ("prereg_fence_%s.md" % ("bt" if fence == "```" else "tl"))
+                    fenced_bytes = (
+                        "# Study G4 pre-registration\n"
+                        "study: study-alpha\n"
+                        "allowed_cards: G4\n"
+                        "allowed_host: colab.google.com\n"
+                        "sealed_path: sealed-eval/item.json\n\n"
+                        "## Example of a different study's config\n"
+                        f"{fence}yaml\n"
+                        "study: study-alpha\n"
+                        "allowed_cards: A100\n"
+                        f"{fence}\n"
+                    ).encode("utf-8")
+                    fenced_prereg.write_bytes(fenced_bytes)
+                    _make_readonly(fenced_prereg)
+                    try:
+                        fenced_cfg_claim_a100 = {
+                            "preregistration_path": fenced_prereg.name,
+                            "preregistration_sha256": _sha256_bytes(fenced_bytes),
+                            "allowed_cards": ["G4", "A100"],
+                            "allowed_host": "colab.google.com",
+                        }
+                        spec_fenced_a100 = WindowSpec.from_mapping(
+                            _minimal_spec_dict(["sealed-eval/item.json"], sealed=fenced_cfg_claim_a100),
+                            base_dir=repo,
+                        )
+                        with self.assertRaises(Refused) as ctx:
+                            stage_inputs(
+                                spec_fenced_a100, root / "b_fenced_a100.tar.gz", actual_card="A100", live=True,
+                                cli_allow_sealed=True,
+                            )
+                        self.assertEqual(ctx.exception.code, "SEALED_DESTINATION_REFUSED")
+
+                        fenced_cfg_g4 = dict(fenced_cfg_claim_a100, allowed_cards=["G4"])
+                        spec_fenced_g4 = WindowSpec.from_mapping(
+                            _minimal_spec_dict(["sealed-eval/item.json"], sealed=fenced_cfg_g4),
+                            base_dir=repo,
+                        )
+                        with self.assertRaises(Refused) as ctx:
+                            stage_inputs(
+                                spec_fenced_g4, root / "b_fenced_g4_to_a100.tar.gz", actual_card="A100", live=True,
+                                cli_allow_sealed=True,
+                            )
+                        self.assertEqual(ctx.exception.code, "SEALED_DESTINATION_REFUSED")
+
+                        _, ok_rec = stage_inputs(
+                            spec_fenced_g4, root / ("b_fenced_g4_%s.tar.gz" % fenced_prereg.stem),
+                            actual_card="G4", live=True, cli_allow_sealed=True,
+                        )
+                        self.assertEqual(ok_rec["destination"]["allowed_cards"], ["G4"])
+                    finally:
+                        _make_writable(fenced_prereg)
+
+                for dup_line in (
+                    b"allowed_cards: A100\n",
+                    b"study: study-alpha\n",
+                    b"allowed_host: colab.google.com\n",
+                    b"sealed_paths: [sealed-eval/extra.json]\n",
+                ):
+                    dup_raw = prereg_body + dup_line
+                    with self.assertRaises(Refused) as ctx:
+                        _parse_preregistration(Path("dup.md"), dup_raw)
+                    self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+
+                dup_json = b'{"study": "s1", "study": "s1", "allowed_cards": ["G4"], "allowed_host": "colab.google.com", "sealed_paths": ["a.txt"]}'
+                with self.assertRaises(Refused) as ctx:
+                    _parse_preregistration(Path("dup.json"), dup_json)
+                self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
 
                 # Item 7: directory without any `.git` above the spec treats inputs.root as outside-repo
                 no_repo = root / "no_git_dir"

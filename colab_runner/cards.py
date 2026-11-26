@@ -336,6 +336,20 @@ class CircuitBreaker:
         return len(events)
 
 
+def _window_locks_gpu(w: Any) -> bool:
+    """Return True when a recorded window entry represents an opened GPU window (legacy entries default opened)."""
+    if not isinstance(w, dict):
+        return False
+    opened_val = w.get("opened")
+    opened = True if opened_val is None else bool(opened_val)
+    if not opened:
+        return False
+    card_class = w.get("card_class")
+    if card_class is None:
+        return str(w.get("card") or "").strip().upper() != "CPU"
+    return card_class == "gpu"
+
+
 class StudyLedger:
     """Records per-study GPU card commitments and run outcomes so one study never mixes cards (e.g. G4 and A100)."""
 
@@ -409,16 +423,13 @@ class StudyLedger:
         else:
             entry["reservations"] = []
         windows = entry.get("windows") if isinstance(entry.get("windows"), list) else []
-        opened_gpu = any(
-            isinstance(w, dict) and w.get("opened") and w.get("card_class") == "gpu"
-            for w in windows
-        )
+        opened_gpu = any(_window_locks_gpu(w) for w in windows)
         if not entry["reservations"] and not opened_gpu:
             entry["card"] = None
         write_json_atomic(self.ledger_file, data)
 
     def record_window(self, study: str, outcome: Mapping[str, Any]) -> None:
-        """Append or update a closed window summary in the study ledger and lock its GPU card only if opened."""
+        """Append or update a closed window summary in the study ledger, keeping lock if unstopped."""
         if not study:
             return
         data = _load_json_dict(self.ledger_file)
@@ -428,10 +439,14 @@ class StudyLedger:
             data["studies"] = studies
         entry = studies.setdefault(study, {"card": None, "reservations": [], "windows": []})
         wid = outcome.get("window_id")
+        opened = bool(outcome.get("opened"))
+        stopped_confirmed = bool(outcome.get("session_stopped_confirmed"))
+        can_release_res = opened or stopped_confirmed
         if isinstance(entry.get("reservations"), list):
-            entry["reservations"] = [
-                r for r in entry["reservations"] if isinstance(r, dict) and r.get("window_id") != wid
-            ]
+            if can_release_res:
+                entry["reservations"] = [
+                    r for r in entry["reservations"] if isinstance(r, dict) and r.get("window_id") != wid
+                ]
         else:
             entry["reservations"] = []
         windows = entry.setdefault("windows", [])
@@ -445,7 +460,8 @@ class StudyLedger:
             "card_class": outcome.get("card_class"),
             "shape": outcome.get("shape"),
             "status": outcome.get("status"),
-            "opened": bool(outcome.get("opened")),
+            "opened": opened,
+            "session_stopped_confirmed": stopped_confirmed,
             "opened_at": outcome.get("opened_at"),
             "closed_at": outcome.get("closed_at"),
             "spend_ccu": outcome.get("spend_ccu"),
@@ -459,11 +475,8 @@ class StudyLedger:
                     break
         if not updated:
             windows.append(rec_item)
-        opened_gpu = any(
-            isinstance(w, dict) and w.get("opened") and w.get("card_class") == "gpu"
-            for w in windows
-        )
-        if outcome.get("card_class") == "gpu" and outcome.get("opened") and not entry.get("card"):
+        opened_gpu = any(_window_locks_gpu(w) for w in windows)
+        if outcome.get("card_class") == "gpu" and (opened or not can_release_res) and not entry.get("card"):
             entry["card"] = outcome.get("card")
         elif not entry["reservations"] and not opened_gpu:
             entry["card"] = None

@@ -25,8 +25,9 @@ from colab_runner.window_lib import launch_guards as lg
 SEALED_PATH_PATTERNS = ("sealed*", "*sealed*", "*bakeoff*", "restricted*")
 JOB_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+PREREG_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 PREREG_FIELD_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?(study|allowed[_ ]cards|allowed[_ ]host|sealed[_ ]paths?)\s*[:=]\s*(.+?)\s*$",
+    r"^ {0,3}(?:[-*] +)?(study|allowed[_ ]cards|allowed[_ ]host|sealed[_ ]paths?)\s*[:=]\s*(.+?)\s*$",
     re.I,
 )
 DEFAULT_SEALED_HOST = "colab.google.com"
@@ -421,8 +422,18 @@ def _parse_preregistration(path: Path, raw_bytes: bytes) -> dict[str, Any]:
     paths_raw: Optional[Any] = None
 
     if suf == ".json":
+        def _reject_dup_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            seen: dict[str, Any] = {}
+            for k, v in pairs:
+                if k in seen:
+                    raise Refused("SEALED_PREREG_INVALID", "duplicate key %r in JSON pre-registration %s" % (k, path))
+                seen[k] = v
+            return seen
+
         try:
-            obj = json.loads(raw_text)
+            obj = json.loads(raw_text, object_pairs_hook=_reject_dup_keys)
+        except Refused:
+            raise
         except ValueError as exc:
             raise Refused("SEALED_PREREG_INVALID", "invalid JSON pre-registration %s (%s)" % (path, exc)) from None
         if not isinstance(obj, Mapping):
@@ -445,28 +456,40 @@ def _parse_preregistration(path: Path, raw_bytes: bytes) -> dict[str, Any]:
     else:
         found_paths: list[str] = []
         found_cards: list[str] = []
+        seen_fields: set[str] = set()
+        in_fence: Optional[tuple[str, int]] = None
         for line in raw_text.splitlines():
+            if in_fence is not None:
+                f_ch, f_len = in_fence
+                stripped_fence = line.strip()
+                if stripped_fence and len(stripped_fence) >= f_len and set(stripped_fence) == {f_ch}:
+                    in_fence = None
+                continue
+            fm = PREREG_FENCE_RE.match(line)
+            if fm is not None:
+                f_run, f_rest = fm.group(1), fm.group(2)
+                if not (f_run[0] == "`" and "`" in f_rest):
+                    in_fence = (f_run[0], len(f_run))
+                continue
             m = PREREG_FIELD_RE.match(line)
             if not m:
                 continue
             key = m.group(1).strip().lower().replace(" ", "_")
+            canon = "sealed_paths" if key in ("sealed_path", "sealed_paths") else key
+            if canon in seen_fields:
+                raise Refused("SEALED_PREREG_INVALID", "duplicate %s declaration in %s" % (canon, path))
+            seen_fields.add(canon)
             val = m.group(2).strip()
             if key == "study":
-                cand = _strip_quotes(val)
-                if study_raw is not None and study_raw != cand:
-                    raise Refused("SEALED_PREREG_INVALID", "conflicting study declarations in %s" % path)
-                study_raw = cand
+                study_raw = _strip_quotes(val)
             elif key == "allowed_cards":
-                found_cards.extend(_split_structured_list(val))
+                found_cards = _split_structured_list(val)
             elif key == "allowed_host":
-                cand_h = _strip_quotes(val).lower()
-                if host_raw is not None and host_raw != cand_h:
-                    raise Refused("SEALED_PREREG_INVALID", "conflicting allowed_host declarations in %s" % path)
-                host_raw = cand_h
+                host_raw = _strip_quotes(val).lower()
             elif key == "sealed_path":
-                found_paths.append(_strip_quotes(val))
+                found_paths = [_strip_quotes(val)]
             elif key == "sealed_paths":
-                found_paths.extend(_split_structured_list(val))
+                found_paths = _split_structured_list(val)
         cards_raw = found_cards
         paths_raw = found_paths
 
