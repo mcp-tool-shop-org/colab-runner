@@ -1,0 +1,22 @@
+# Worked example: `merchant-league` local model seats
+
+This directory shows how a project declares a Colab GPU window once in `colab-window.toml` and runs it through `colab-runner` without writing or editing a per-window shell script.
+
+- Target public repo: `mcp-tool-shop-org/merchant-league` (`seats.json` with `backend: "local"`).
+- Card & shape: `G4` (`standard`), capped at `8.0` compute units and `1800` seconds wall-clock time.
+- Synthetic inputs only (`seats.json`, `wrapper.md`, `response_schema.json`, `run_seats.py`).
+
+## Plan only (zero `colab` calls)
+
+```bash
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/ml-dry --dry
+```
+
+## Offline CPU dry run (zero `colab` calls)
+
+Runs the full staging, VM cell loop (`start.py`, `poll.py`, `lib.py`), local OpenAI-compatible stub (`POST /tokenize` and `POST /v1/chat/completions`), output copy-back, token scrub, and `outcome.json` booking record locally:
+
+```bash
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/ml-cpu --local-cpu
+python -m colab_runner status --out-dir runs/ml-cpu
+```

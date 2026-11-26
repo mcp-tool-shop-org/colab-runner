@@ -17,13 +17,24 @@ sidebar:
 colab-runner is not on PyPI. Vendor a pinned release into the lane, or install it from the tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.2.0"
 python -m colab_runner --version
 ```
 
-## A first window
+## A declarative window (`launch`)
 
-The lane opens the session. `run` takes it over and ends by stopping it:
+Describe `[project]`, `[compute]`, `[inputs]`, `[job]`, and `[outputs]` once in `colab-window.toml`, dry-run it with zero Colab calls, or launch and book `outcome.json`:
+
+```bash
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/w1-dry --dry
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/w1-cpu --local-cpu
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/w1 --state-dir state/
+python -m colab_runner status --out-dir runs/w1
+```
+
+## A manual window (`run`)
+
+When the caller opens the session itself, `run` takes it over and ends by stopping it:
 
 ```bash
 colab new -s my-window            # the lane's own step (plus the card's flags)

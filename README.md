@@ -16,51 +16,60 @@ The studio's shared runner for paid Google Colab windows: one place for the code
 used to carry its own copy of. It starts a job on a Colab VM in a process that outlives the rig, watches it
 inside a spending cap, scrubs tokens from everything it brings back, and always tries to stop the session.
 
-**Status: 0.1.4.** The detached runner (item 1 below) is built. Items 2 to 5 are not built yet.
+**Status: 0.2.0.** On-demand declarative windows (`launch`, `--dry`, `--local-cpu`, `status`, `outcome.json`), card/shape/circuit-breaker guards, and the detached runner (`run`, `stop`) are built.
 
-1. **The detached runner (0.1.0).** Start a job on the VM with a status file, poll it with backoff, a `--hold-s` heartbeat mode,
-   and a flag that switches to a kernel-resident loop. Salvage is a Python-API hook (below).
-2. **Boot and card guards.** A card assert on the VM's first step (compute capability and VRAM per card
-   type, refusing `CARD_MISMATCH`), a rig-side refusal log with a per-card circuit breaker
-   (`CARD_CIRCUIT_OPEN`), and `OMP_NUM_THREADS` set before torch loads.
-3. **Secrets.** The token-file route: a 0600 file, read only by the process that needs it, shredded on the
-   VM, scrubbed from every kept log.
-4. **A Hugging Face Storage Bucket module.** Sync outputs to a per-window staging prefix, verify counts and
-   sha256 against a manifest, then write a `done.json` receipt. It never deletes.
-5. **`PLATFORM.md` and `facts.json`.** What the Colab platform actually does, each fact dated and sourced,
-   so a kit checks its assumptions against them and a wrong one becomes a refusal code, not a paid surprise.
+1. **Declarative window launcher (`launch`, 0.2.0).** Write a `.toml` or `.json` spec (`colab-window.toml`) instead of per-window launch scripts: stage explicit inputs safely, enforce platform card and shape rules, lock pre-open/post-open rate attribution, run via the detached runner, copy back declared outputs through the token scrub, stop and verify the session closed, and write `outcome.json`.
+2. **Offline planning and CPU dry runs (`--dry`, `--local-cpu`, 0.2.0).** Validate specs, budgets, and sealed-data rules with zero `colab` calls, or simulate full VM-cell execution and copy-back locally before any GPU spend.
+3. **Boot and card guards (`cards.py`, 0.2.0).** Enforce per-card pool ceilings, VM-side `nvidia-smi` GPU/VRAM/compute-capability assertions (`CARD_MISMATCH`), a per-card UTC-day circuit breaker (`CARD_CIRCUIT_OPEN`), study card consistency (`CARD_MIX_REFUSED`), and `OMP_NUM_THREADS`.
+4. **The detached runner (`run` / `stop`, 0.1.0).** Low-level runner for already-opened sessions with status files, backoff polling, hold/resident modes, download token scrubbing, and idempotent stop confirmation.
+5. **Still open.** VM token-file secrets delivery, storage bucket sync receipts, and `PLATFORM.md`.
 
-Lanes vendor a pinned release of this repo, one lane per pull request.
+Projects can install a pinned release or call the CLI from a repo or automation workflow.
 
 ## Install
 
-colab-runner is not on PyPI. A lane vendors a pinned release, or installs it from the tag:
+colab-runner is not on PyPI. Vendor a pinned release, or install it from the tag:
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.2.0"
 ```
 
 - **Python** 3.11 or later. The package has no runtime dependencies.
 - **The `colab` command line** (Google's Colab CLI), signed in to the account that pays for the window. colab-runner
   calls it; it does not install it or sign in for you. `COLAB_RUNNER_CLI` points at another command line (below).
-- **Platforms:** CI runs on Linux with Python 3.11 and 3.12. The studio also runs it from Windows.
+- **Platforms:** CI runs on Linux with Python 3.11 and 3.12. Workstations also run it on Windows and WSL.
 
 ## Quick start
 
-The lane opens the session, then hands it to `run`, which ends by stopping it:
+### Option A: Declarative window from a spec (`launch` / `status` / `stop`)
+
+Declare compute bounds, explicit input files, setup/run commands, and outputs in `colab-window.toml` (see [examples/merchant_league_seats](examples/merchant_league_seats/README.md)):
 
 ```bash
-colab new -s my-window            # the lane's own step: open the session (plus the card's flags)
-python -m colab_runner run --session my-window --out-dir runs/w1   --script /content/train.sh --wall-s 3600   --max-rate 13.5 --cap 15 --cleanup-bound-s 600
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-dry --dry
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-cpu --local-cpu
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --state-dir state/
+python -m colab_runner status --out-dir runs/w1
+```
+
+Each finished or interrupted `launch` writes `outcome.json` with booked spend (`spend_ccu`, `spend_basis`, non-pricing `account_balance`), staged input digests, collected/salvaged output paths, and `session_stopped_confirmed`.
+
+### Option B: Attach to an already-open session (`run` / `stop`)
+
+For callers that open a session separately, `run` takes it over and ends by stopping it:
+
+```bash
+colab new -s my-window            # caller's own step: open the session (plus the card's flags)
+python -m colab_runner run --session my-window --out-dir runs/w1 --script /content/train.sh --wall-s 3600 --max-rate 13.5 --cap 15 --cleanup-bound-s 600
 echo "exit $?"                    # 0 done and stopped; see the exit codes below
 ```
 
 The figures are placeholders. Set `--max-rate` to the card's expected units per hour and `--cap` to the window's
 budget in compute units (see Pricing).
 
-`python -m colab_runner --help` lists every command; `run --help` lists every flag.
+`python -m colab_runner --help` lists every command; `launch --help`, `status --help`, and `run --help` list every flag.
 
-## Using it from a lane (0.1.4)
+## Using it from a lane (0.2.0)
 
 **The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.

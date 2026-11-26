@@ -214,6 +214,7 @@ class Runner:
         log_timeout_s: float = 300.0,
         stop_attempts: int = 3,
         stop_timeout_s: float = 120.0,
+        pre_opened: bool = False,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda s: None,
@@ -240,6 +241,7 @@ class Runner:
         self.usage_timeout_s, self.kill_timeout_s, self.kill_grace_s = usage_timeout_s, kill_timeout_s, kill_grace_s
         self.restart_timeout_s, self.log_timeout_s = restart_timeout_s, log_timeout_s
         self.stop_attempts, self.stop_timeout_s = int(stop_attempts), stop_timeout_s
+        self._pre_opened = bool(pre_opened)
         self.clock, self.sleep = clock, sleep
         self.log = lambda s: log(scrub(s))  # nothing reaches the log unscrubbed
         self.trace = lambda s: trace(scrub(s))  # one line per poll (the CLI's --verbose), scrubbed the same way
@@ -535,6 +537,7 @@ class Runner:
         dead_confirm: int = 2,
         resident: bool = False,
         salvage: Optional[Callable[[str], bool]] = None,
+        collect: Optional[Callable[[], bool]] = None,
         unreachable_polls: int = 10,
         unreachable_s: float = 1800.0,
     ) -> RunResult:
@@ -577,7 +580,7 @@ class Runner:
                 if self._phase == "run":
                     self._phase = "stopping"
                 try:
-                    self._end(self._res, salvage, resident)
+                    self._end(self._res, salvage, resident, collect)
                 finally:
                     self._phase = "idle"
                     self._disarm_signals(handlers)
@@ -625,7 +628,9 @@ class Runner:
                           "(kill, %sstop attempts)" % (bound, self.own_cleanup_bound_s(resident),
                                                        "kernel restart, run log, " if resident else ""))
         try:
-            if self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
+            if self.out_dir.exists() and not self.out_dir.is_dir():
+                raise Refused("OUT_DIR_INVALID", "%s exists and is not a directory" % self.out_dir)
+            if not self._pre_opened and self.out_dir.exists() and any(self.out_dir.iterdir()):
                 # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
                 # refuses the same: colab_refuse_nonempty_out_dir)
                 raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
@@ -828,9 +833,11 @@ class Runner:
             self.log("cleanup step %s failed: %s: %s" % (name, type(exc).__name__, exc))
             return None
 
-    def _end(self, res: RunResult, salvage: Optional[Callable[[str], bool]], resident: bool) -> None:
-        """On a trip, terminate the VM job's process group first; then salvage (every end but done); then stop this
-        run's own session, always. Nothing here is clamped to the wall: the cap's cleanup reserve pays for it."""
+    def _end(self, res: RunResult, salvage: Optional[Callable[[str], bool]], resident: bool,
+             collect: Optional[Callable[[], bool]] = None) -> None:
+        """On a trip, terminate the VM job's process group first; then collect (on done) or salvage (every other
+        end); then stop this run's own session, always. Nothing here is clamped to the wall: the cap's cleanup
+        reserve pays for it."""
         if self._resident is not None:
             self._step("resident child", self._resident.kill)
         # a job this run never owned (refused, or only another run's records seen) is never killed or collected
@@ -853,7 +860,12 @@ class Runner:
                 self._end_on_download_refusal()
             elif res.reason in ("done", "failed") and self._oom_seen:  # `oom` whatever the rc, as _finished
                 res.reason, res.detail = "oom", "the job was OOM-killed: an OOM kill line in the job log (OOM_KILL_RE)"
-        if res.reason != "done" and salvage is not None:
+        if res.reason == "done" and collect is not None and not not_ours and owned:
+            if self._skip_salvage:
+                self.log("collect skipped: a signal arrived during cleanup")
+            else:
+                self._step("collect", lambda: self._collect(collect))
+        elif res.reason != "done" and salvage is not None:
             if self._skip_salvage:
                 res.salvaged = False
                 self.log("salvage skipped: a signal arrived during cleanup")
@@ -865,6 +877,18 @@ class Runner:
         res.stopped = bool(self._step("stop", self.stop_session))
         for signum in self._cleanup_signals:
             self.log("signal %s during cleanup: salvage skipped, the stop still ran" % _signal_name(signum))
+
+    def _collect(self, collect: Callable[[], bool]) -> None:
+        self._phase = "salvage"
+        try:
+            ok = bool(collect())
+        except _SalvageAborted:
+            ok = False
+            self.log("collect aborted by a second signal; the stop still runs")
+        finally:
+            self._phase = "stopping"
+        if ok:
+            write_json_atomic(self.out_dir / "collect_confirmed.json", {"reason": "done"})
 
     def _kill_job(self, res: RunResult, resident: bool) -> None:
         """Terminate the job's process group on the VM (vm/kill.py). In resident mode the kernel is first restarted:

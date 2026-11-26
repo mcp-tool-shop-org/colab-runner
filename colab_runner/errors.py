@@ -99,6 +99,60 @@ CODES: dict[str, Code] = {
     "UNEXPECTED_ERROR": Code(
         "read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop "
         "--out-dir D`; rerun with --debug for the traceback", _FIX),
+    # window spec and input/output staging
+    "SPEC_NOT_FOUND": Code("pass --spec PATH pointing to an existing .toml or .json window spec", _FIX),
+    "SPEC_INVALID": Code("fix the window spec file (TOML or JSON) at the field named in the message", _FIX),
+    "INPUT_ROOT_INVALID": Code("set inputs.root to an existing directory on the local filesystem", _FIX),
+    "INPUT_PATH_OUTSIDE_ROOT": Code(
+        "keep every inputs.files src and dst relative and inside inputs.root without '..'", _FIX),
+    "INPUT_SYMLINK_REFUSED": Code(
+        "replace the symlink or junction in inputs.files with a regular file inside inputs.root", _FIX),
+    "INPUT_FILE_MISSING": Code(
+        "ensure every file listed in inputs.files exists as a regular file before launching", _FIX),
+    "SEALED_DATA_REFUSED": Code(
+        "remove sealed or restricted paths from inputs.files, or set allow_sealed=true with a preregistration reference",
+        _FIX),
+    "OUTPUT_PATH_INVALID": Code("list outputs.collect and outputs.salvage as relative paths without '..'", _FIX),
+    # platform catalog, shape rules, study policy and circuit breaker
+    "CARD_UNKNOWN": Code("choose a known Colab card from the catalog (CPU, T4, L4, G4, A100)", _FIX),
+    "CARD_UNAVAILABLE": Code(
+        "choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan", _FIX),
+    "CARD_CIRCUIT_OPEN": Code(
+        "two allocation or card refusals already tripped this card's circuit breaker today (UTC); wait for the next "
+        "UTC day or start a new study on an available card", _FIX),
+    "CARD_MIX_REFUSED": Code(
+        "keep one card type for the whole study: do not pool G4 and A100 or switch card mid-study", _FIX),
+    "SHAPE_REQUIRED": Code("set compute.shape (or --shape) to 'standard' or 'high-mem' for a GPU card", _FIX),
+    "SHAPE_INVALID": Code("set compute.shape (or --shape) to 'standard' or 'high-mem'", _FIX),
+    "SHAPE_NOT_FOR_CPU": Code(
+        "omit compute.shape (and --shape) for a CPU card; CPU always opens with --high-mem", _FIX),
+    "SHAPE_HIGH_MEM_UNAVAILABLE": Code(
+        "use shape='standard' for L4; Colab offers L4 only in Standard shape", _FIX),
+    "SHAPE_STANDARD_UNAVAILABLE": Code(
+        "use shape='high-mem' for this accelerator; Colab offers it only in High-RAM shape", _FIX),
+    # session open, rate attribution, upload, card check and status
+    "OPEN_LOCK_TIMEOUT": Code(
+        "another window held the open lock past the timeout; wait for concurrent opens to finish and retry", True),
+    "SESSION_ALREADY_OPEN": Code("pass a fresh --session name, or stop the existing session first", _FIX),
+    "POOL_CEILING_REACHED": Code(
+        "close an active Colab session to free a slot below the plan's pool ceiling, then retry", True),
+    "PRE_OPEN_READ_FAILED": Code(
+        "check colab usage (sign-in, network) before opening a GPU window, then retry", True),
+    "SESSION_OPEN_FAILED": Code(
+        "Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state "
+        "before retrying", True),
+    "SHAPE_MISMATCH": Code(
+        "Colab assigned a different machine shape than requested; the session was stopped", True),
+    "POST_OPEN_RATE_UNREAD": Code(
+        "Colab did not report a stable positive GPU rate after open; check colab usage and retry", True),
+    "UPLOAD_FAILED": Code(
+        "check session connectivity and file size; colab upload into /content failed and the session was stopped",
+        True),
+    "CARD_MISMATCH": Code(
+        "Colab assigned a GPU that failed the requested card's name, VRAM, or compute-capability floor; the session "
+        "was stopped", True),
+    "STATUS_DIR_MISSING": Code(
+        "pass --out-dir pointing to an existing run or launch output directory", _FIX),
 }
 
 _UNKNOWN = Code("see the README, \"Using it from a lane\"", False)

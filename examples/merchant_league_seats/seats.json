@@ -1,0 +1,46 @@
+{
+  "scratchpad": false,
+  "mixed_scratchpad_arm": false,
+  "seats": [
+    {
+      "guild": "Foresters",
+      "backend": "local",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-32B-Instruct",
+      "temperature": 0.2,
+      "max_output_tokens": 512,
+      "timeout_secs": 30.0,
+      "max_gpu_secs_per_call": 30.05
+    },
+    {
+      "guild": "Saltworks",
+      "backend": "local",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-32B-Instruct",
+      "temperature": 0.2,
+      "max_output_tokens": 512,
+      "timeout_secs": 30.0,
+      "max_gpu_secs_per_call": 30.05
+    },
+    {
+      "guild": "Smiths",
+      "backend": "local",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-32B-Instruct",
+      "temperature": 0.2,
+      "max_output_tokens": 512,
+      "timeout_secs": 30.0,
+      "max_gpu_secs_per_call": 30.05
+    },
+    {
+      "guild": "Weavers",
+      "backend": "local",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "model": "Qwen/Qwen2.5-32B-Instruct",
+      "temperature": 0.2,
+      "max_output_tokens": 512,
+      "timeout_secs": 30.0,
+      "max_gpu_secs_per_call": 30.05
+    }
+  ]
+}

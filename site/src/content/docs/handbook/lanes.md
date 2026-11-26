@@ -5,6 +5,20 @@ sidebar:
   order: 2
 ---
 
+## Declarative specs vs raw `run`
+
+Most projects no longer need per-window `launch.sh` scripts. Write one declarative `colab-window.toml` (`WindowSpec`) with:
+
+- `[project]`: `repo`, `study`, `job`, `description`.
+- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`), explicit GPU `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate`, `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`.
+- `[inputs]`: `root`, explicit `files`, and optional `allow_sealed` + `preregistration`. Only listed regular files are read or packed; symlinks, junctions, `..` traversal, and sealed paths without pre-registration are refused.
+- `[job]`: `setup`, `run`, optional `cpu_dry_run`, `env`.
+- `[outputs]`: relative `collect` (downloaded on `done`) and `salvage` (downloaded on failure/trip) paths scrubbed through `Runner.download`.
+
+`python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1` handles session open under a cross-process lock, pool ceilings, shape verification, pre/post-open rate attribution, upload, detached polling, VM GPU verification (`nvidia-smi`), stop confirmation, and `outcome.json` recording. `python -m colab_runner status --out-dir runs/w1` inspects live or completed windows without touching the VM.
+
+## Low-level `run` contract
+
 **The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.
 - **A marker that stays** means the session may still be open: a stop that failed, or a `run` killed outright (SIGKILL, a lost

@@ -11,20 +11,18 @@ export const config: SiteConfig = {
     'MIT Licensed — built by <a href="https://mcp-tool-shop.github.io/" style="color:var(--color-muted);text-decoration:underline">MCP Tool Shop</a>',
 
   hero: {
-    badge: '0.1.4 · Python 3.11+',
+    badge: '0.2.0 · Python 3.11+',
     headline: 'Colab Runner',
-    headlineAccent: 'paid windows that always stop.',
+    headlineAccent: 'on-demand windows that always stop.',
     description:
-      'Start a job on a Colab VM that outlives the rig, watch it inside a spending cap, scrub every token from what comes back, and stop the session on every exit. One shared runner instead of a copy in every lane.',
+      'Describe a project’s Colab job in one spec, dry-run it locally on CPU, launch and watch it inside a spending cap, scrub every token from what comes back, stop the session on every exit, and book outcome.json.',
     primaryCta: { href: 'handbook/getting-started/', label: 'Get started' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
-      { label: 'Install', code: 'pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"' },
-      {
-        label: 'Run',
-        code: 'python -m colab_runner run --session S --out-dir D --script /content/job.sh --wall-s 3600 --max-rate R --cap C --cleanup-bound-s 600',
-      },
-      { label: 'Recover', code: 'python -m colab_runner stop --out-dir D' },
+      { label: 'Plan', code: 'python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-dry --dry' },
+      { label: 'CPU stub', code: 'python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1-cpu --local-cpu' },
+      { label: 'Launch', code: 'python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --state-dir state/' },
+      { label: 'Inspect', code: 'python -m colab_runner status --out-dir runs/w1' },
     ],
   },
 

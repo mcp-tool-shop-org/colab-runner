@@ -448,11 +448,54 @@ class Colab:
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         return self.run(["stop", "-s", session], timeout)
 
+    def new_session(self, session: str, *, card: str, shape: Optional[str] = None,
+                    timeout: float = 180.0) -> CliResult:
+        """Open a Colab session (`colab new`): CPU uses `--high-mem`; GPUs pass `--gpu CARD` and optional `--high-mem`."""
+        if card.strip().upper() == "CPU":
+            return self.run(["new", "--high-mem", "-s", session], timeout)
+        args = ["new", "--gpu", card]
+        if shape == "high-mem":
+            args.append("--high-mem")
+        args.extend(["-s", session])
+        return self.run(args, timeout)
+
+    def upload(self, session: str, local: str, remote: str, timeout: float = 120.0) -> CliResult:
+        """Upload one local file into the VM session (`colab upload -s S local remote`)."""
+        return self.run(["upload", "-s", session, local, remote], timeout)
+
+    def sessions(self, timeout: float = 30.0) -> CliResult:
+        """List active Colab sessions (`colab sessions`)."""
+        return self.run(["sessions"], timeout)
+
     def restart_kernel(self, session: str, timeout: float = 180.0) -> CliResult:
         return self.run(["restart-kernel", "-s", session], timeout)
 
     def usage(self, timeout: float = 60.0) -> CliResult:
         return self.run(["usage"], timeout)
+
+
+_SESSION_ROW_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
+_SHAPE_FIELD_RE = re.compile(r"(?:^|\|)\s*Shape:\s*([^|]+?)\s*(?:\||$)", re.I)
+_CARD_FIELD_RE = re.compile(r"(?:^|\|)\s*(?:GPU|Accelerator|Card|Backend):\s*([^|]+?)\s*(?:\||$)", re.I)
+
+
+def parse_sessions_output(text: str) -> list[dict[str, Optional[str]]]:
+    """Parse `colab sessions` output rows (`[session] ... | Shape: Standard|High-RAM ...`) into structured dicts."""
+    rows: list[dict[str, Optional[str]]] = []
+    for line in (text or "").splitlines():
+        m = _SESSION_ROW_RE.match(line.strip())
+        if m is None:
+            continue
+        session_name, rest = m.group(1).strip(), m.group(2)
+        m_shape = _SHAPE_FIELD_RE.search(rest)
+        m_card = _CARD_FIELD_RE.search(rest)
+        rows.append({
+            "session": session_name,
+            "shape": m_shape.group(1).strip() if m_shape else None,
+            "accelerator": m_card.group(1).strip() if m_card else None,
+            "raw": line.strip(),
+        })
+    return rows
 
 
 def _unlink_quiet(path: Path) -> None:
@@ -662,6 +705,6 @@ def cli_from_env() -> Colab:
 __all__ = [
     "BEARER_TOKEN_MIN", "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult",
     "KILL_WAIT_S", "QuarantineEscape", "TIMEOUT_RC", "bare_quarantine_dir", "binary_token_hit", "cli_from_env",
-    "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout", "kill_group", "scrub", "scrub_local",
-    "token_shaped", "write_cell",
+    "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout", "kill_group",
+    "parse_sessions_output", "scrub", "scrub_local", "token_shaped", "write_cell",
 ]

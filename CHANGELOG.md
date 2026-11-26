@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0] - 2026-11-26
+
+On-demand Colab GPU windows from a declarative spec: plan, launch, watch, stop, and record without per-window shell wrappers.
+
+- **Declarative window spec and strict input sandbox (`colab_runner/manifest.py`).** Projects declare `[project]`, `[compute]`, `[inputs]`, `[job]`, and `[outputs]` in TOML (`tomllib`) or JSON with zero runtime dependencies. Inputs are staged explicitly from `inputs.files` into a deterministic tarball; symlinks, NTFS junctions, `..` traversal, missing files, and sealed/restricted path patterns (without `allow_sealed = true` plus a `preregistration` reference) are refused before any `colab` call (`INPUT_ROOT_INVALID`, `INPUT_PATH_OUTSIDE_ROOT`, `INPUT_SYMLINK_REFUSED`, `INPUT_FILE_MISSING`, `SEALED_DATA_REFUSED`, `OUTPUT_PATH_INVALID`).
+- **Platform card catalog, shape enforcement, study ledger, and circuit breaker (`colab_runner/cards.py`).** Catalogs Ultimate plan pool ceilings (20 total; 3 each per GPU accelerator, 5 CPU; `H100` marked unavailable and refused up front with `CARD_UNAVAILABLE`), enforces per-card shape rules (`SHAPE_REQUIRED`, `SHAPE_INVALID`, `SHAPE_NOT_FOR_CPU`, `SHAPE_HIGH_MEM_UNAVAILABLE`, `SHAPE_STANDARD_UNAVAILABLE`), prevents card mixing within a study (`CARD_MIX_REFUSED`), opens a per-card UTC-day circuit breaker after 2 allocation/card failures (`CARD_CIRCUIT_OPEN`), and injects a VM-side `nvidia-smi` guard asserting GPU name, VRAM floor, and compute capability (`CARD_MISMATCH`) alongside `OMP_NUM_THREADS`.
+- **End-to-end window launcher and booking record (`colab_runner/launcher.py`, `colab_runner/__main__.py`).**
+  - `python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu]`:
+    - `--dry` validates the spec, input hashes, card/shape rules, circuit breaker, and `SpendGuard` budget, writing `dry_run_plan.json` with zero `colab` calls.
+    - `--local-cpu` runs the staged inputs and generated VM script against `LocalColab`, exercising the real `Runner`, VM cells, output download, binary-safe token scrub/quarantine, and `outcome.json` booking offline.
+    - Live mode acquires a cross-process open lock (`OPEN_LOCK_TIMEOUT`), checks active session ceilings (`SESSION_ALREADY_OPEN`, `POOL_CEILING_REACHED`), attributes pre-open and post-open usage rates (`PRE_OPEN_READ_FAILED`, `POST_OPEN_RATE_UNREAD`, `RATE_ABOVE_MAX`), verifies assigned machine shape (`SHAPE_MISMATCH`), uploads flat into `/content` (`UPLOAD_FAILED`), delegates detached supervision and `collect`/`salvage` transfers to `Runner`, verifies stop completion via `colab sessions`, and writes `outcome.json` with `spend_basis` and non-pricing `account_balance`.
+  - `python -m colab_runner status --out-dir D [--json]` inspects dry-run, live, stop-pending, and completed windows without touching the VM (`STATUS_DIR_MISSING`).
+  - `python -m colab_runner stop --out-dir D` updates `outcome.json` (`session_stopped_confirmed`, `closed_at`) when confirming a delayed stop.
+- **`Colab` CLI and `Runner` hooks (`colab_runner/colab_cli.py`, `colab_runner/runner.py`).** Added `Colab.new_session`, `Colab.upload`, `Colab.sessions`, and `parse_sessions_output`; added `pre_opened` and `collect` (with `collect_confirmed.json` and binary-safe quarantine preservation) to `Runner`. All existing `run` and `stop` behavior remains unchanged.
+- **Worked example (`examples/merchant_league_seats/`).** Demonstrates `mcp-tool-shop-org/merchant-league` synthetic local OpenAI-compatible model seats staged cleanly for `G4` and passing end-to-end `--dry` and `--local-cpu` runs.
+
 ## [0.1.4] - 2026-11-19
 
 Docs release: the README, handbook and landing page caught up with 0.1.1 to 0.1.3. No code changes.

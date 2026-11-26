@@ -14,9 +14,7 @@ sidebar:
   with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
 - The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
 
-**What it does not touch.** No files outside the out dir, its quarantine and the temp quarantine. No other Colab
-session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab`
-command line and never changes them.
+**What it does not touch.** No files outside the declared `inputs.files` allowlist under `inputs.root` (during staging), the out dir, its quarantine, and the temp quarantine. Symlinks, NTFS junctions, `..` traversal, and sealed/restricted paths (unless `allow_sealed = true` with a `preregistration` reference) are refused before reading or uploading. No other Colab session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab` command line and never changes them.
 
 **Network.** Only through the `colab` command line, to Google Colab. colab-runner opens no connection of its own.
 

@@ -21,19 +21,17 @@ It does four things:
 
 ## Status
 
-**0.1.4** is the current release. It ships the detached runner (0.1.0) with these fixes since:
+**0.2.0** is the current release. It adds declarative on-demand windows (`launch`, `status`, `outcome.json`), card/shape/circuit-breaker guards, strict input staging with sealed-data checks, and an offline `--local-cpu` simulation mode on top of the detached runner:
 
-- **0.1.1** marks an out-of-memory kill as `oom`, never walks an NTFS junction in a download, and records a cap trip in
-  `runner_result.json` with its code and hint.
-- **0.1.2** keeps the last known phase when a read of `phase.txt` comes back empty, so a healthy running job is never
-  ended as `setup_stall`. A kit should still write `phase.txt` in one step: see [Using it from a lane](./lanes/).
-- **0.1.3** makes the tests reap every job they start, which ends an intermittent CI failure on Python 3.12.
-- **0.1.4** brings the README, this handbook and the landing page up to date.
+- **0.2.0** adds `colab_runner.cards`, `colab_runner.manifest`, `colab_runner.launcher`, `launch` (`--dry` and `--local-cpu`), `status`, VM GPU card checks, and `outcome.json` spend records.
+- **0.1.4** brought the README, handbook, and landing page up to date.
+- **0.1.3** made tests reap every detached job before temporary directory cleanup.
+- **0.1.2** kept the last known phase on torn `phase.txt` reads so healthy jobs do not end as `setup_stall`.
+- **0.1.1** marked out-of-memory kills as `oom`, unlinked NTFS junctions, and recorded structured cap trips.
 
 The full list is in the [CHANGELOG](https://github.com/mcp-tool-shop-org/colab-runner/blob/main/CHANGELOG.md).
 
-Still to come: boot and card guards, the token-file secrets route, a Hugging Face
-Storage Bucket module, and a dated `PLATFORM.md` of what Colab actually does.
+Still to come: VM token-file secrets delivery, storage bucket sync receipts, and a dated `PLATFORM.md`.
 
 ## Where to go next
 

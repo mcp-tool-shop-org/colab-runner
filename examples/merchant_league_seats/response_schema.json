@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "required": ["guild", "bid_units", "ask_price", "rationale"],
+  "properties": {
+    "guild": { "type": "string" },
+    "bid_units": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "ask_price": { "type": "number", "minimum": 1.0, "maximum": 100.0 },
+    "rationale": { "type": "string" }
+  },
+  "additionalProperties": false
+}
