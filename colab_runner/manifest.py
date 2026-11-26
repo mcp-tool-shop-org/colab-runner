@@ -461,8 +461,7 @@ def _parse_preregistration(path: Path, raw_bytes: bytes) -> dict[str, Any]:
         for line in raw_text.splitlines():
             if in_fence is not None:
                 f_ch, f_len = in_fence
-                stripped_fence = line.strip()
-                if stripped_fence and len(stripped_fence) >= f_len and set(stripped_fence) == {f_ch}:
+                if re.match(r"^ {0,3}" + f_ch + r"{" + str(f_len) + r",}[ \t]*$", line) is not None:
                     in_fence = None
                 continue
             fm = PREREG_FENCE_RE.match(line)

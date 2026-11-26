@@ -294,51 +294,80 @@ def _pid_alive(pid: int) -> bool:
             k32.CloseHandle(handle)
 
 
-def _is_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> bool:
-    """Return True when a lock or reclaim directory belongs to a dead PID (or is an old ownerless dir)."""
-    owner_file = dir_path / "owner.json"
-    if owner_file.is_file():
+def _read_owner_bytes(dir_path: Path) -> Optional[bytes]:
+    """Read `dir_path/owner.json` raw bytes, `b\"\"` if absent, or `None` on I/O error."""
+    try:
+        return (dir_path / "owner.json").read_bytes()
+    except FileNotFoundError:
+        return b""
+    except OSError:
+        return None
+
+
+def _check_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> tuple[bool, Optional[bytes]]:
+    """Check if `dir_path` belongs to a dead PID (or is an old ownerless dir) and return its owner bytes."""
+    raw = _read_owner_bytes(dir_path)
+    if raw:
         try:
-            info = json.loads(owner_file.read_text(encoding="utf-8"))
+            info = json.loads(raw.decode("utf-8"))
             pid = info.get("pid") if isinstance(info, dict) else None
             if isinstance(pid, int) and not pid_alive(pid):
-                return True
-        except (OSError, ValueError):
+                return True, raw
+        except (UnicodeDecodeError, ValueError):
             pass
-        return False
-    if dir_path.exists():
+        return False, None
+    if raw == b"" and dir_path.exists():
         try:
-            return (time.time() - dir_path.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S
+            if (time.time() - dir_path.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S:
+                return True, b""
         except OSError:
-            return False
-    return False
+            return False, None
+    return False, None
+
+
+def _is_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> bool:
+    """Return True when a lock or reclaim directory belongs to a dead PID (or is an old ownerless dir)."""
+    return _check_lock_dir_stale(dir_path, pid_alive=pid_alive)[0]
+
+
+def _claim_reclaim_guard(reclaim_guard: Path) -> bool:
+    """Create `reclaim_guard` and write its owner file atomically; return False if creation fails."""
+    try:
+        reclaim_guard.mkdir(parents=False)
+        write_json_atomic(
+            reclaim_guard / "owner.json",
+            {"pid": os.getpid(), "at": _utc_now(), "nonce": uuid.uuid4().hex[:12]},
+        )
+        return True
+    except OSError:
+        return False
 
 
 def _try_acquire_reclaim_guard(reclaim_guard: Path, *, pid_alive: Callable[[int], bool]) -> bool:
-    """Atomically claim `reclaim_guard` with an `owner.json` (PID + time), reclaiming a dead reclaimer's guard."""
-    guard_owner = reclaim_guard / "owner.json"
-    try:
-        reclaim_guard.mkdir(parents=False)
-        write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
+    """Atomically claim `reclaim_guard` with `owner.json` (PID + time + nonce), reclaiming only matching stale dirs."""
+    if _claim_reclaim_guard(reclaim_guard):
         return True
-    except FileExistsError:
-        if not _is_lock_dir_stale(reclaim_guard, pid_alive=pid_alive):
-            return False
-        stale_guard = reclaim_guard.with_name(
-            "%s.stale-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
-        )
+    stale, expected_bytes = _check_lock_dir_stale(reclaim_guard, pid_alive=pid_alive)
+    if not stale:
+        return False
+    stale_guard = reclaim_guard.with_name(
+        "%s.stale-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
+    )
+    try:
+        os.rename(reclaim_guard, stale_guard)
+    except OSError:
+        return False
+    if _read_owner_bytes(stale_guard) != expected_bytes:
         try:
-            os.rename(reclaim_guard, stale_guard)
+            if not reclaim_guard.exists():
+                os.rename(stale_guard, reclaim_guard)
+                return False
         except OSError:
-            return False
-        finally:
-            shutil.rmtree(stale_guard, ignore_errors=True)
-        try:
-            reclaim_guard.mkdir(parents=False)
-            write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
-            return True
-        except OSError:
-            return False
+            pass
+        shutil.rmtree(stale_guard, ignore_errors=True)
+        return False
+    shutil.rmtree(stale_guard, ignore_errors=True)
+    return _claim_reclaim_guard(reclaim_guard)
 
 
 @contextlib.contextmanager

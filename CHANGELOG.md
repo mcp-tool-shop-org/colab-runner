@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+- **Strict Markdown fence-closer matching in pre-registration parsing (`colab_runner/manifest.py`).** Only lines matching `^ {0,3}` followed by at least as many characters of the opening fence character (and optional whitespace) close a fenced code block; indented `    ``` ` lines inside a fenced block stay treated as content so nested fenced card examples cannot leak into `allowed_cards`.
+- **Re-verify moved `.reclaim` guard owner bytes after rename (`colab_runner/launcher.py`).** `_try_acquire_reclaim_guard` saves the owner bytes read during the staleness check, inspects the moved guard's `owner.json` after `os.rename`, and restores a live guard (returning `False` without deleting it) if another contender replaced the stale guard before the rename landed.
+- **Test coverage for overrun-kill cleanup clamping (`tests/test_launcher.py`).** Exercises `Runner._end` when a simulated kill overruns its bound so subsequent cleanup downloads receive clamped timeouts or skip cleanly to preserve stop attempts inside `--cap`.
+
 ## [0.2.0] - 2026-11-26
 
 On-demand Colab GPU windows from a declarative spec: plan, launch, watch, stop, and record without per-window shell wrappers.

@@ -25,6 +25,7 @@ from colab_runner.launcher import (
     _pid_alive,
     _read_pre_open_usage,
     _state_paths,
+    _try_acquire_reclaim_guard,
     default_cleanup_bound_s,
     launch_window,
     reconcile_stopped_outcome,
@@ -41,7 +42,7 @@ class SimColab(FakeColab):
 
     def __init__(self, *, new_results=None, sessions_rows=None, after_open_rows=None, upload_results=None,
                  remote_files=None, delay_upload_s: float = 0.0, delay_new_s: float = 0.0,
-                 hang_downloads: bool = False, **kw):
+                 delay_kill_s: float = 0.0, hang_downloads: bool = False, **kw):
         super().__init__(**kw)
         self.new_results = list(new_results or [])
         self.sessions_rows = list(sessions_rows or [])
@@ -50,9 +51,15 @@ class SimColab(FakeColab):
         self.remote_files = dict(remote_files or {})
         self.delay_upload_s = float(delay_upload_s)
         self.delay_new_s = float(delay_new_s)
+        self.delay_kill_s = float(delay_kill_s)
         self.hang_downloads = bool(hang_downloads)
         self.uploads: list[tuple[str, str, str]] = []
         self.opened_sessions: set[str] = set()
+
+    def exec_cell(self, session, source, env=None, timeout=60.0) -> CliResult:
+        if "CR_KILL_GRACE_S" in (env or {}) and self.delay_kill_s and self.clock is not None:
+            self.clock.advance(self.delay_kill_s)
+        return super().exec_cell(session, source, env=env, timeout=timeout)
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
         self._record("sessions", None, timeout)
@@ -1264,6 +1271,190 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 ):
                     pass
             self.assertEqual(ctx.exception.code, "OPEN_LOCK_TIMEOUT")
+
+
+class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
+    EXAMPLE_SPEC = Path(__file__).resolve().parents[1] / "examples" / "merchant_league_seats" / "colab-window.toml"
+
+    def test_fu_1_indented_fence_inside_markdown_prereg_refuses_a100_on_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "worker.py").write_text("print('ok')\n", encoding="utf-8")
+            (repo / "sealed-eval").mkdir()
+            (repo / "sealed-eval" / "item.json").write_text("{}\n", encoding="utf-8")
+            prereg = repo / "prereg.md"
+            prereg_raw = (
+                "study: demo-study\n"
+                "allowed_host: colab.google.com\n"
+                "sealed_path: sealed-eval/item.json\n\n"
+                "## Example of another study's config\n"
+                "```markdown\n"
+                "    ```\n"
+                "allowed_cards: A100\n"
+                "```\n\n"
+                "allowed_cards: G4\n"
+            ).encode("utf-8")
+            prereg.write_bytes(prereg_raw)
+            prereg.chmod(0o444)
+            try:
+                spec = repo / "colab-window.toml"
+                spec.write_text(
+                    'schema_version = 1\n'
+                    '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                    '[compute]\ncard = "G4"\nshape = "standard"\nmax_rate = 10.5\ncap = 15.0\nwall_s = 600\n'
+                    '[inputs]\nroot = "."\nfiles = ["worker.py", "sealed-eval/item.json"]\n'
+                    '[inputs.sealed]\npreregistration_path = "prereg.md"\n'
+                    f'preregistration_sha256 = "{hashlib.sha256(prereg_raw).hexdigest()}"\n'
+                    'allowed_cards = ["G4"]\nallowed_host = "colab.google.com"\n'
+                    '[job]\nrun = ["python3 worker.py"]\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaises(Refused) as ctx:
+                    launch_window(
+                        spec, root / "a100_out", card="A100", shape="standard", max_rate=12.0, cap=15.0,
+                        dry=True, allow_sealed=True,
+                    )
+                self.assertEqual(ctx.exception.code, "SEALED_DESTINATION_REFUSED")
+            finally:
+                prereg.chmod(0o644)
+
+    def test_fu_2_reclaim_guard_race_does_not_steal_first_contenders_live_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reclaim_guard = Path(tmp) / "open.reclaim"
+            reclaim_guard.mkdir()
+            (reclaim_guard / "owner.json").write_text(
+                json.dumps({"pid": 888888, "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+            )
+            barrier = threading.Barrier(2)
+            c1_acquired = threading.Event()
+            outcomes: dict[str, bool] = {}
+
+            def _contender_1():
+                def _pid_alive_1(pid: int) -> bool:
+                    if pid == 888888:
+                        barrier.wait(timeout=5.0)
+                    return pid == os.getpid()
+
+                ok = _try_acquire_reclaim_guard(reclaim_guard, pid_alive=_pid_alive_1)
+                outcomes["c1"] = ok
+                c1_acquired.set()
+
+            real_rename = os.rename
+            c2_tid = [None]
+
+            def _gated_rename(src, dst):
+                if threading.get_ident() == c2_tid[0] and Path(src) == reclaim_guard:
+                    c1_acquired.wait(timeout=5.0)
+                return real_rename(src, dst)
+
+            def _contender_2():
+                c2_tid[0] = threading.get_ident()
+
+                def _pid_alive_2(pid: int) -> bool:
+                    if pid == 888888:
+                        barrier.wait(timeout=5.0)
+                    return pid == os.getpid()
+
+                outcomes["c2"] = _try_acquire_reclaim_guard(reclaim_guard, pid_alive=_pid_alive_2)
+
+            with mock.patch("colab_runner.launcher.os.rename", side_effect=_gated_rename):
+                t1 = threading.Thread(target=_contender_1)
+                t2 = threading.Thread(target=_contender_2)
+                t1.start()
+                t2.start()
+                t1.join(timeout=5.0)
+                t2.join(timeout=5.0)
+
+            self.assertEqual(outcomes, {"c1": True, "c2": False})
+            self.assertTrue((reclaim_guard / "owner.json").is_file())
+            self.assertEqual(json.loads((reclaim_guard / "owner.json").read_text(encoding="utf-8"))["pid"], os.getpid())
+            self.assertEqual([p.name for p in Path(tmp).glob("*.stale-*")], [])
+
+            # Ownerless stale guard replaced concurrently -> contender fails cleanly without leaking stale dir.
+            rg_ownerless = Path(tmp) / "ownerless.reclaim"
+            rg_ownerless.mkdir()
+            old_t = 1000.0
+            os.utime(rg_ownerless, (old_t, old_t))
+            with mock.patch("colab_runner.launcher.time.time", return_value=old_t + 3000.0):
+                def _swap_during_rename(src, dst):
+                    real_rename(src, dst)
+                    rg_ownerless.mkdir()
+                    (rg_ownerless / "owner.json").write_text(
+                        json.dumps({"pid": os.getpid(), "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+                    )
+
+                with mock.patch("colab_runner.launcher._read_owner_bytes", side_effect=[b"", b"changed"]):
+                    with mock.patch("colab_runner.launcher.os.rename", side_effect=_swap_during_rename):
+                        self.assertFalse(_try_acquire_reclaim_guard(rg_ownerless, pid_alive=lambda pid: pid == os.getpid()))
+            self.assertTrue((rg_ownerless / "owner.json").is_file())
+
+    def test_fu_3_overrun_kill_triggers_cleanup_download_clamp_and_skip_under_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t4_seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=1.5, n=1, balance=99.9)]
+
+            # Case 1: kill takes 120s (50s overrun vs 70s kill bound) -> last salvage download is clamped < 120s.
+            c1 = FakeClock()
+            n_poll_1 = {"n": 0}
+
+            def _polls_1(n, env):
+                n_poll_1["n"] += 1
+                c1.advance(200.0 if n_poll_1["n"] <= 23 else 25.0)
+                return rec(progress=n)
+
+            sim1 = SimColab(
+                clock=c1,
+                after_open_rows=["[t4-clamp] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=_polls_1,
+                delay_kill_s=120.0,
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            out1 = launch_window(
+                self.EXAMPLE_SPEC, root / "overrun_clamp", session="t4-clamp",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, margin=0.0, wall_s=7200.0,
+                colab=sim1, clock=c1.now, sleep=c1.sleep,
+                state_dir=root / "st1", open_lock=root / "lock1",
+            )
+            self.assertEqual(out1["status"], "cap")
+            self.assertTrue(out1["session_stopped_confirmed"])
+            self.assertLessEqual(out1["spend_ccu"], 2.5)
+            dl_timeouts = [c["timeout"] for c in sim1.calls if c["kind"] == "download"]
+            self.assertTrue(any(t < 120.0 for t in dl_timeouts), dl_timeouts)
+
+            # Case 2: huge kill overrun (900s) -> later download hits `cleanup download skipped` and still stays <= cap.
+            c2 = FakeClock()
+            n_poll_2 = {"n": 0}
+
+            def _polls_2(n, env):
+                n_poll_2["n"] += 1
+                c2.advance(200.0 if n_poll_2["n"] <= 23 else 25.0)
+                return rec(progress=n)
+
+            sim2 = SimColab(
+                clock=c2,
+                after_open_rows=["[t4-skip] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=_polls_2,
+                delay_kill_s=900.0,
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            logs: list[str] = []
+            out2 = launch_window(
+                self.EXAMPLE_SPEC, root / "overrun_skip", session="t4-skip",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, margin=0.0, wall_s=7200.0,
+                colab=sim2, clock=c2.now, sleep=c2.sleep, log=logs.append,
+                state_dir=root / "st2", open_lock=root / "lock2",
+            )
+            self.assertEqual(out2["status"], "cap")
+            self.assertTrue(out2["session_stopped_confirmed"])
+            self.assertLessEqual(out2["spend_ccu"], 2.5)
+            self.assertTrue(any("cleanup download skipped" in msg for msg in logs), logs)
+            self.assertLess(len([c for c in sim2.calls if c["kind"] == "download"]), 7)
 
 
 if __name__ == "__main__":

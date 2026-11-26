@@ -542,6 +542,50 @@ class ManifestSandboxTest(unittest.TestCase):
                     _parse_preregistration(Path("dup.json"), dup_json)
                 self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
 
+                # Follow-up Item 1: 4-space indented fence inside ```markdown does NOT close the fence prematurely.
+                indented_prereg = repo / "prereg_indented_fence.md"
+                indented_bytes = (
+                    "study: study-alpha\n"
+                    "allowed_host: colab.google.com\n"
+                    "sealed_path: sealed-eval/item.json\n\n"
+                    "## Example of another study's config\n"
+                    "```markdown\n"
+                    "    ```\n"
+                    "allowed_cards: A100\n"
+                    "```\n\n"
+                    "allowed_cards: G4\n"
+                ).encode("utf-8")
+                indented_prereg.write_bytes(indented_bytes)
+                _make_readonly(indented_prereg)
+                try:
+                    ind_cfg = {
+                        "preregistration_path": indented_prereg.name,
+                        "preregistration_sha256": _sha256_bytes(indented_bytes),
+                        "allowed_cards": ["G4", "A100"],
+                        "allowed_host": "colab.google.com",
+                    }
+                    spec_ind_a100 = WindowSpec.from_mapping(
+                        _minimal_spec_dict(["sealed-eval/item.json"], sealed=ind_cfg),
+                        base_dir=repo,
+                    )
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(
+                            spec_ind_a100, root / "b_ind_a100.tar.gz", actual_card="A100", live=True,
+                            cli_allow_sealed=True,
+                        )
+                    self.assertEqual(ctx.exception.code, "SEALED_DESTINATION_REFUSED")
+
+                    spec_ind_g4 = WindowSpec.from_mapping(
+                        _minimal_spec_dict(["sealed-eval/item.json"], sealed=dict(ind_cfg, allowed_cards=["G4"])),
+                        base_dir=repo,
+                    )
+                    _, ok_ind = stage_inputs(
+                        spec_ind_g4, root / "b_ind_g4.tar.gz", actual_card="G4", live=True, cli_allow_sealed=True,
+                    )
+                    self.assertEqual(ok_ind["destination"]["allowed_cards"], ["G4"])
+                finally:
+                    _make_writable(indented_prereg)
+
                 # Item 7: directory without any `.git` above the spec treats inputs.root as outside-repo
                 no_repo = root / "no_git_dir"
                 holdout_dir = no_repo / "holdout-items"
