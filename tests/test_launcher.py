@@ -1679,10 +1679,13 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
             stat_fail = root / "stat_fail.reclaim"
             stat_fail.mkdir()
             orig_stat = Path.stat
+            stat_calls = {"n": 0}
 
             def _flaky_stat(self_p, *a, **kw):
-                if Path(self_p).name == "stat_fail.reclaim" and "follow_symlinks" not in kw:
-                    raise OSError("stat boom")
+                if Path(self_p).name == "stat_fail.reclaim":
+                    stat_calls["n"] += 1
+                    if stat_calls["n"] >= 2:
+                        raise OSError("stat boom")
                 return orig_stat(self_p, *a, **kw)
 
             with mock.patch.object(Path, "stat", autospec=True, side_effect=_flaky_stat):
