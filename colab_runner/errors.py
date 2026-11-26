@@ -124,6 +124,12 @@ CODES: dict[str, Code] = {
         "pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs",
         _FIX),
     "OUTPUT_PATH_INVALID": Code("list outputs.collect and outputs.salvage as relative paths without '..'", _FIX),
+    "OUTPUT_TAR_CORRUPT": Code(
+        "inspect the job's directory output on the VM: its tar archive could not be read or extracted", _FIX
+    ),
+    "OUTPUT_TAR_UNSAFE": Code(
+        "remove symlinks, absolute paths, or '..' entries from the job's directory output", _FIX
+    ),
     "MAX_RATE_BELOW_FLOOR": Code(
         "raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate", _FIX),
     "SESSIONS_READ_FAILED": Code(

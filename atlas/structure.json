@@ -103,7 +103,7 @@
             "token_shaped",
             "write_cell"
           ],
-          "hash": "ba437959914ba3b4929c0a9f5ac8cf464bbc3ae0fbd971bb1eec7cc36b7ecfc1",
+          "hash": "dc35565c4650fdf6180f3ddeacedba57b9b058a88eaf7be401f4febc0c6a5672",
           "importsFiles": [
             "colab_runner/errors.py",
             "colab_runner/window_lib/__init__.py"
@@ -116,7 +116,7 @@
             "error_record",
             "lookup"
           ],
-          "hash": "f1b48752f5619a652e14a9899a8e39e02b62156382e9260fece9ebe1b5b52351",
+          "hash": "767b8134a7c3f6c0b3ca5857009931f932a586567c94dba333095106a4a74ecf",
           "path": "colab_runner/errors.py"
         },
         {
@@ -133,7 +133,7 @@
             "resolve_kit_env",
             "status_window"
           ],
-          "hash": "ec9450f420ec57fda3fae0a7884e560ab26db6cb6bb2425e928bdd57d32b8bcb",
+          "hash": "16e4b59f7dfb04d914dd4cfa0114f51bc61b477aeb58a0a26ad809072794c7e0",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -294,7 +294,7 @@
           "where": [
             "caller"
           ],
-          "writes": 18
+          "writes": 20
         },
         {
           "reads": 0,
@@ -306,7 +306,7 @@
         }
       ],
       "outsideReads": 26,
-      "outsideWrites": 19,
+      "outsideWrites": 21,
       "role": "code",
       "testedBy": 18,
       "unresolvedSites": 0
@@ -332,7 +332,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "1d4f20d57007cabfcf9a00c5115550a227a1edd5cf203da30931a1e125af14f6",
+          "hash": "116c47415275b39281ee1f54084eaf7d71f09d1489b214fa7bac43fcdbf47b30",
           "path": "CHANGELOG.md"
         },
         {
@@ -360,7 +360,7 @@
           "path": "README.ja.md"
         },
         {
-          "hash": "723b81e7e291bbf4bf44f66420db77ac5b2133393ee2589eb4c10747efc8a8cd",
+          "hash": "b55a1ae6e0f7194dd156ded1f167a868fe08d7a7e41ae2651fbe1774a5baa9e1",
           "path": "README.md"
         },
         {
@@ -438,7 +438,7 @@
             "rec",
             "usage_text"
           ],
-          "hash": "27a71f6c04a76c78ba733d6dfc5d580cd55561c45114d507786b63b0abc211c9",
+          "hash": "8f866b301de2f1b4dcf47c7790a7d77080b66a8d83ab325e78c9657f9fb00df7",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py",
@@ -545,7 +545,18 @@
           "path": "tests/test_followups.py"
         },
         {
-          "hash": "42c761a15dae7bae6e3866927433fba54057538e1869c0543e833b8a4420386c",
+          "hash": "144f82d1bbdff01cf42e0f34a24d8caeca74e30f8f1a9ee77397bd78a98a6d54",
+          "importOrder": [
+            "colab_runner/__main__.py",
+            "colab_runner/cards.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/launcher.py",
+            "colab_runner/runner.py",
+            "tests/fakes.py",
+            "tests/test_tokens.py",
+            "colab_runner/window_lib/__init__.py"
+          ],
           "importsFiles": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -553,6 +564,7 @@
             "colab_runner/errors.py",
             "colab_runner/launcher.py",
             "colab_runner/runner.py",
+            "colab_runner/window_lib/__init__.py",
             "tests/fakes.py",
             "tests/test_tokens.py"
           ],
@@ -740,12 +752,20 @@
           "path": "tests/test_window_lib.py"
         },
         {
-          "hash": "d8fde1288dea8b4630394745327d27c05fd2a771436d13bae21e13d8494e6000",
+          "hash": "53dd94713a2ae9ff781c9ed3339418e7661ae46d0c267474196ea63ebc42a225",
+          "importOrder": [
+            "colab_runner/__main__.py",
+            "tests/test_tokens.py",
+            "colab_runner/cards.py",
+            "colab_runner/launcher.py",
+            "colab_runner/manifest.py"
+          ],
           "importsFiles": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
             "colab_runner/launcher.py",
-            "colab_runner/manifest.py"
+            "colab_runner/manifest.py",
+            "tests/test_tokens.py"
           ],
           "path": "tests/test_worked_example.py"
         }
@@ -1112,7 +1132,7 @@
   ],
   "engine": "1.23.0",
   "generatedFrom": {
-    "commit": "5cea221d360441206828b30930e0e64067db195e",
+    "commit": "1f0f5677c4132ab3fbdc047dfc285f4c7afdfa09",
     "tracked": 87
   },
   "landings": [
@@ -1472,7 +1492,7 @@
   "testFiles": 22,
   "unassigned": [
     {
-      "hash": "fde285da925f8d9e0b1d89a741a291dedb19ca7a39b983eae4fe625e59499daf",
+      "hash": "a041d0e0730c5547f07e6bffd9365cae110b2f47d4687ea073ac4241c3d96ced",
       "path": "examples/merchant_league_seats/README.md"
     },
     {
@@ -1489,7 +1509,7 @@
         "run_turns",
         "validate_seats"
       ],
-      "hash": "9f1655068139b85e4f9ffda9c24d0318d36e225669dcecc3d9978ec653959fab",
+      "hash": "6b51d67a7eab11732760a55513c05eccdb64b06385951e73287df26249707c73",
       "path": "examples/merchant_league_seats/run_seats.py"
     },
     {

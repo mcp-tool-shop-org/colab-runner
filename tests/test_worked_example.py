@@ -82,6 +82,35 @@ class WorkedExampleTest(unittest.TestCase):
                 reply = json.loads((cpu_dir / "collected" / "from-seat" / f"{guild}.json").read_text(encoding="utf-8"))
                 self.assertEqual(reply["guild"], guild)
 
+            # Fix-2 proof: directory output holding a text file with a fake proxy-token URL stays `done` and scrubs cleanly.
+            from tests.test_tokens import fake_tokens
+
+            proxy_tok = fake_tokens()["proxy"]
+            ex_copy = root / "ex_proxy"
+            (ex_copy / ".git").mkdir(parents=True)
+            for fname in ("colab-window.toml", "wrapper.md", "response_schema.json", "run_seats.py"):
+                (ex_copy / fname).write_text((EXAMPLE_DIR / fname).read_text(encoding="utf-8"), encoding="utf-8")
+            seats_obj = json.loads((EXAMPLE_DIR / "seats.json").read_text(encoding="utf-8"))
+            seats_obj["seats"][0]["note"] = f"https://colab.example/p?colab-runtime-proxy-token={proxy_tok}"
+            (ex_copy / "seats.json").write_text(json.dumps(seats_obj, indent=2) + "\n", encoding="utf-8")
+
+            proxy_dir = root / "ml-cpu-proxy"
+            out_p, err_p = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_p), contextlib.redirect_stderr(err_p):
+                rc_p = main([
+                    "launch", "--spec", str(ex_copy / "colab-window.toml"), "--out-dir", str(proxy_dir),
+                    "--local-cpu", "--env", "ML_SMOKE_STUB=1", "--quiet",
+                ])
+            self.assertEqual(rc_p, 0, err_p.getvalue())
+            out_proxy = json.loads((proxy_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(out_proxy["status"], "done", out_proxy)
+            self.assertIn("from-seat", out_proxy["collected_outputs"])
+            self.assertEqual(out_proxy["missing_outputs"], [])
+            self.assertEqual(out_proxy["output_errors"], {})
+            foresters = (proxy_dir / "collected" / "from-seat" / "Foresters.json").read_text(encoding="utf-8")
+            self.assertIn("colab-runtime-proxy-token=[REDACTED]", foresters)
+            self.assertNotIn(proxy_tok, foresters)
+
     def test_rendered_job_script_under_bash_u_uses_build_job_env(self):
         if os.name != "posix":
             self.skipTest("bash -u VM script test requires POSIX")

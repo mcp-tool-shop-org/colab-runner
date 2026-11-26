@@ -262,6 +262,9 @@ class FakeColab:
             Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
         return CliResult(0)
 
+    def download_unscrubbed(self, session, remote, local, timeout=120.0) -> CliResult:
+        return self.download(session, remote, local, timeout)
+
     def stop(self, session, timeout=120.0) -> CliResult:
         self._record("stop", session, timeout)
         self.stop_calls += 1

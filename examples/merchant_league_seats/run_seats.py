@@ -83,13 +83,16 @@ class _MockLocalOpenAiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"count": tokens, "tokens": list(range(tokens))})
             return
         if self.path.endswith("/chat/completions"):
-            guild = str(req.get("metadata", {}).get("guild") or "Unknown")
+            meta = req.get("metadata") or {}
+            guild = str(meta.get("guild") or "Unknown")
             reply_obj = {
                 "guild": guild,
                 "bid_units": 12,
                 "ask_price": 4.5,
                 "rationale": f"Synthetic CPU stub turn response for {guild}.",
             }
+            if meta.get("note"):
+                reply_obj["note"] = str(meta["note"])
             self._send_json(
                 200,
                 {
@@ -163,7 +166,7 @@ def run_turns(work_dir: Path, out_dir: Path, *, stub_server: bool, cap_gpu_secs:
                     "temperature": seat["temperature"],
                     "max_tokens": seat["max_output_tokens"],
                     "messages": [{"role": "user", "content": prompt}],
-                    "metadata": {"guild": guild},
+                    "metadata": {"guild": guild, "note": str(seat.get("note") or "")},
                 },
                 timeout_s=timeout_s,
             )

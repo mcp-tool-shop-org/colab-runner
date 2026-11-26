@@ -1584,12 +1584,13 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
         leak = leak_lines(t)[2]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # LocalColab.download rejects raw directories just like live colab download
+            # LocalColab.download and download_unscrubbed reject missing files & raw directories like live colab download
             lc = LocalColab(root / "lc_dir_check")
             (lc.content_dir / "raw_dir").mkdir()
             (lc.content_dir / "raw_dir" / "a.txt").write_text("hi\n", encoding="utf-8")
-            dir_dl = lc.download("s", "/content/raw_dir", str(root / "dst_dir"))
-            self.assertNotEqual(dir_dl.rc, 0)
+            self.assertNotEqual(lc.download("s", "/content/raw_dir", str(root / "dst_dir")).rc, 0)
+            self.assertNotEqual(lc.download_unscrubbed("s", "/content/raw_dir", str(root / "dst_dir")).rc, 0)
+            self.assertNotEqual(lc.download_unscrubbed("s", "/content/no_such.tar", str(root / "dst_miss")).rc, 0)
 
             (root / ".git").mkdir()
             (root / "worker.py").write_text(
@@ -1597,7 +1598,8 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 "w = Path(os.environ['CR_WORK_DIR'])\n"
                 "d = w / 'dir_out' / 'nested'\n"
                 "d.mkdir(parents=True, exist_ok=True)\n"
-                f"(d / 'a.txt').write_text('clean ' + {leak!r} + '\\n', encoding='utf-8')\n"
+                f"(d / 'a.txt').write_text('url https://colab.example/x?colab-runtime-proxy-token=' + {t['proxy']!r} + ' ' + {leak!r} + '\\n', encoding='utf-8')\n"
+                "(w / 'dir_out' / 'crlf.txt').write_bytes(b'a\\r\\nb\\r\\n')\n"
                 "(w / 'result.json').write_text('{\"ok\": true}\\n', encoding='utf-8')\n",
                 encoding="utf-8",
             )
@@ -1617,11 +1619,46 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
             self.assertEqual(res["exit_code"], 0)
             self.assertEqual(res["collected_outputs"], ["result.json", "dir_out"])
             self.assertEqual(res["missing_outputs"], [])
+            self.assertEqual(res["output_errors"], {})
             self.assertTrue((out_dir / "_local_vm_content" / "demo_job_out" / "dir_out.tar").is_file())
             txt = (out_dir / "collected" / "dir_out" / "nested" / "a.txt").read_text(encoding="utf-8")
+            self.assertIn("colab-runtime-proxy-token=[REDACTED]", txt)
             self.assertIn("[REDACTED]", txt)
             for v in values(t):
                 self.assertNotIn(v, txt)
+            self.assertEqual((out_dir / "collected" / "dir_out" / "crlf.txt").read_bytes(), b"a\r\nb\r\n")
+
+            # Binary token inside a directory output quarantines that file and marks that dir output failed,
+            # while continuing to collect later declared outputs -> status="partial" + output_errors.
+            (root / "bad_dir_worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "d = w / 'bad_dir'\n"
+                "d.mkdir(parents=True, exist_ok=True)\n"
+                f"(d / 'leak.png').write_bytes(b'\\x89PNG\\r\\n\\x1a\\n\\x00colab-runtime-proxy-token=' + {t['proxy'].encode('ascii')!r})\n"
+                "(w / 'result.json').write_text('{\"ok\": true}\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec_bin_dir = root / "spec_bin_dir.toml"
+            spec_bin_dir.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["bad_dir_worker.py"]\n'
+                '[job]\nrun = ["python3 bad_dir_worker.py"]\n'
+                '[outputs]\ncollect = ["bad_dir", "result.json"]\n',
+                encoding="utf-8",
+            )
+            out_bin_dir = root / "m1_bin_dir"
+            res_b = launch_window(spec_bin_dir, out_bin_dir, local_cpu=True)
+            self.assertEqual(res_b["status"], "partial", res_b)
+            self.assertEqual(res_b["exit_code"], 2)
+            self.assertEqual(res_b["collected_outputs"], ["result.json"])
+            self.assertEqual(res_b["missing_outputs"], ["bad_dir"])
+            self.assertEqual(res_b["output_errors"], {"bad_dir": "BINARY_DOWNLOAD_TOKEN"})
+            self.assertEqual(len(res_b["quarantined"]), 1)
+            self.assertTrue((out_bin_dir / "collected" / "result.json").is_file())
+            self.assertFalse((out_bin_dir / "collected" / "bad_dir").exists())
 
             spec_missing = root / "spec_missing.toml"
             spec_missing.write_text(
@@ -1731,9 +1768,31 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                     with mock.patch("colab_runner.launcher.os.rename", side_effect=_fail_restore_rename):
                         self.assertFalse(_try_acquire_reclaim_guard(stale_only, pid_alive=lambda pid: False))
 
-            # _extract_dir_tar missing tar, binary token quarantine, and _download_declared_outputs None timeouts
+            # _extract_dir_tar missing/corrupt/unsafe/quarantine errors, and _download_declared_outputs None timeouts
             runner = Runner(FakeColab(), "s", root / "r_out", job="j")
-            self.assertFalse(_extract_dir_tar(root / "missing.tar", root / "dst", runner))
+            stage_root = root / "stage"
+            stage_root.mkdir()
+            self.assertEqual(
+                _extract_dir_tar(root / "missing.tar", stage_root, "d", root / "dst", runner),
+                "OUTPUT_TAR_CORRUPT",
+            )
+
+            corrupt_tar = root / "corrupt.tar"
+            corrupt_tar.write_bytes(b"not a tar archive")
+            self.assertEqual(
+                _extract_dir_tar(corrupt_tar, stage_root, "corrupt_d", root / "dst_corrupt", runner),
+                "OUTPUT_TAR_CORRUPT",
+            )
+
+            unsafe_tar = root / "unsafe.tar"
+            with tarfile.open(unsafe_tar, "w:") as tf:
+                ti = tarfile.TarInfo("../escape.txt")
+                ti.size = 2
+                tf.addfile(ti, io.BytesIO(b"hi"))
+            self.assertEqual(
+                _extract_dir_tar(unsafe_tar, stage_root, "unsafe_d", root / "dst_unsafe", runner),
+                "OUTPUT_TAR_UNSAFE",
+            )
 
             t = fake_tokens()
             poison_tar = root / "poison.tar"
@@ -1742,9 +1801,24 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 ti = tarfile.TarInfo("bad.bin")
                 ti.size = len(payload)
                 tf.addfile(ti, io.BytesIO(payload))
-            with self.assertRaises(BinaryDownloadRefused):
-                _extract_dir_tar(poison_tar, root / "poison_dst", runner)
+            self.assertEqual(
+                _extract_dir_tar(poison_tar, stage_root, "poison_d", root / "poison_dst", runner),
+                "BINARY_DOWNLOAD_TOKEN",
+            )
             self.assertTrue(runner._res.quarantined or (root / "r_out.quarantine").exists())
+
+            # Existing destination directory is cleanly replaced and QuarantineEscape returns its code
+            clean_tar = root / "clean.tar"
+            with tarfile.open(clean_tar, "w:") as tf:
+                ti = tarfile.TarInfo("ok.txt")
+                ti.size = 2
+                tf.addfile(ti, io.BytesIO(b"ok"))
+            existing_dst = root / "existing_dst"
+            existing_dst.mkdir()
+            (existing_dst / "old.txt").write_text("stale", encoding="utf-8")
+            self.assertIsNone(_extract_dir_tar(clean_tar, stage_root, "clean_d", existing_dst, runner))
+            self.assertTrue((existing_dst / "ok.txt").is_file())
+            self.assertFalse((existing_dst / "old.txt").exists())
 
             sim_miss = SimColab(clock=FakeClock(), remote_files={"/content/j_out/d.tar": b""})
             runner_sim = Runner(sim_miss, "s", root / "r_sim", job="j")

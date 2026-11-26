@@ -115,8 +115,10 @@ def _cr_tar_output():
                     data = fh.read()
                 if b"\\x00" not in data:
                     try:
-                        txt = _cr_io.StringIO(data.decode("utf-8"), newline=None).read()
-                        data = scrub_colab_tokens(txt).encode("utf-8")
+                        txt = data.decode("utf-8")
+                        scrubbed = scrub_colab_tokens(txt)
+                        if scrubbed != txt:
+                            data = scrubbed.encode("utf-8")
                     except UnicodeDecodeError:
                         pass
                 ti = _cr_tar.TarInfo(arc)
@@ -727,6 +729,17 @@ class LocalColab(Colab):
                 log=self.log, on_quarantine=self.on_quarantine,
             )
 
+    def download_unscrubbed(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
+        src = self._translate_remote(remote)
+        if not src.exists():
+            return CliResult(1, "", "no such file: %s" % remote)
+        if src.is_dir():
+            return CliResult(1, "", "is a directory: %s" % remote)
+        dst = Path(local)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        return CliResult(0, "")
+
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         self.active_sessions.pop(session, None)
         self.confirmed_stops.append(session)
@@ -858,28 +871,47 @@ def _base_outcome(
         "collected_outputs": [],
         "salvaged_outputs": [],
         "missing_outputs": [],
+        "output_errors": {},
         "quarantined": [],
     }
 
 
-def _extract_dir_tar(tmp_tar: Path, local: Path, runner: Runner) -> bool:
-    """Safely extract `tmp_tar` into `local` using `filter='data'` and binary-safe token scrub."""
+def _extract_dir_tar(tmp_tar: Path, stage_root: Path, rel: str, local: Path, runner: Runner) -> Optional[str]:
+    """Safely extract `tmp_tar` into `stage_root/rel` (`filter='data'`), scrub files individually, then move."""
     if not tmp_tar.is_file():
-        return False
-    with tarfile.open(tmp_tar, "r:") as tf:
-        local.mkdir(parents=True, exist_ok=True)
-        tf.extractall(path=local, filter="data")
+        code = "OUTPUT_TAR_CORRUPT"
+        return code
+    stage_rel = stage_root / rel
+    stage_rel.mkdir(parents=True, exist_ok=True)
+    try:
+        try:
+            with tarfile.open(tmp_tar, "r:") as tf:
+                tf.extractall(path=stage_rel, filter="data")
+        except tarfile.FilterError as exc:
+            runner.log("directory output %s refused by tar filter: %s" % (rel, exc))
+            code = "OUTPUT_TAR_UNSAFE"
+            return code
+        except (tarfile.TarError, OSError, EOFError) as exc:
+            runner.log("directory output %s tar unreadable: %s" % (rel, exc))
+            code = "OUTPUT_TAR_CORRUPT"
+            return code
+    finally:
+        tmp_tar.unlink(missing_ok=True)
     with runner._bind_quarantine():
         try:
             scrub_local(
-                local, quarantine_dir=runner.quarantine_dir, base_dir=runner.out_dir,
+                stage_rel, quarantine_dir=runner.quarantine_dir, base_dir=stage_root,
                 log=runner.log, on_quarantine=runner._record_quarantine,
             )
-        except BinaryDownloadRefused as exc:
-            for entry in exc.quarantined:
-                runner._record_quarantine(entry)
-            raise
-    return local.is_dir()
+        except (BinaryDownloadRefused, QuarantineEscape) as exc:
+            return exc.code
+    if local.is_dir():
+        shutil.rmtree(local)
+    elif local.exists():
+        local.unlink()
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(stage_rel), str(local))
+    return None
 
 
 def _download_declared_outputs(
@@ -891,6 +923,7 @@ def _download_declared_outputs(
     job: str,
     next_timeout: Optional[Callable[[], Optional[float]]] = None,
     next_exec_timeout: Optional[Callable[[], Optional[float]]] = None,
+    output_errors: Optional[dict[str, str]] = None,
 ) -> tuple[list[str], bool]:
     transferred: list[str] = []
     completed = True
@@ -928,13 +961,18 @@ def _download_declared_outputs(
             if dl_t3 is None:
                 completed = False
                 break
-            tmp_tar = dest_dir / (".cr_dir_%s.tar" % uuid.uuid4().hex[:8])
-            try:
-                dl_tar = runner.download("%s/%s.tar" % (out_prefix, rel), tmp_tar, timeout=dl_t3)
-                if dl_tar.ok and _extract_dir_tar(tmp_tar, local, runner):
-                    transferred.append(rel)
-            finally:
-                tmp_tar.unlink(missing_ok=True)
+            with tempfile.TemporaryDirectory(prefix="colab-dir-tar-") as tmp_stage:
+                stage_root = Path(tmp_stage)
+                tmp_tar = stage_root / "archive.tar"
+                dl_tar = runner._clean(runner.colab.download_unscrubbed(
+                    runner.session, "%s/%s.tar" % (out_prefix, rel), str(tmp_tar), dl_t3,
+                ))
+                if dl_tar.ok:
+                    err_code = _extract_dir_tar(tmp_tar, stage_root, rel, local, runner)
+                    if err_code is None:
+                        transferred.append(rel)
+                    elif output_errors is not None:
+                        output_errors[rel] = err_code
     return transferred, completed
 
 
@@ -1183,6 +1221,7 @@ def reconcile_stopped_outcome(
             "collected_outputs": [],
             "salvaged_outputs": [],
             "missing_outputs": [],
+            "output_errors": {},
             "quarantined": [],
         }
 
@@ -1709,6 +1748,7 @@ def launch_window(
 
         collected: list[str] = []
         salvaged: list[str] = []
+        output_errors: dict[str, str] = {}
 
         def _next_cleanup_budget(max_call_s: float) -> Optional[float]:
             now = clock()
@@ -1754,6 +1794,7 @@ def launch_window(
                     content=vm_content, job=spec.job,
                     next_timeout=_next_cleanup_download_timeout,
                     next_exec_timeout=_next_cleanup_exec_timeout,
+                    output_errors=output_errors,
                 )
                 collected.extend(got)
                 ok = dl_ok and all(rel in collected for rel in spec.collect_outputs)
@@ -1767,6 +1808,7 @@ def launch_window(
                     content=vm_content, job=spec.job,
                     next_timeout=_next_cleanup_download_timeout,
                     next_exec_timeout=_next_cleanup_exec_timeout,
+                    output_errors=output_errors,
                 )
                 salvaged.extend(got)
                 ok = dl_ok
@@ -1824,6 +1866,7 @@ def launch_window(
                     [rel for rel in spec.collect_outputs if rel not in collected]
                     if run_result.reason == "done" else []
                 )
+                outcome["output_errors"] = dict(output_errors)
                 outcome["quarantined"] = list(run_result.quarantined)
                 outcome["cap_trip"] = run_result.cap_trip
                 outcome["refusal"] = run_result.refusal

@@ -106,16 +106,16 @@ budget in compute units (see Pricing).
 - In `--resident` mode, a non-finite or non-positive `CR_RESIDENT_MAX_S` passed via `--env` is refused up front
   (`RESIDENT_MAX_INVALID`, exit 1).
 
-**Exit codes** (the org convention), for `run` and `stop --out-dir D`:
+**Exit codes** (the org convention), for `launch`, `run`, and `stop --out-dir D`:
 
-| Exit | Meaning | `run` | `stop` |
+| Exit | Meaning | `launch` / `run` | `stop` |
 | --- | --- | --- | --- |
-| 0 | ok | `done`, and the stop confirmed | a confirmed stop, or nothing to stop |
+| 0 | ok | `done` (and all declared outputs collected), and the stop confirmed | a confirmed stop, or nothing to stop |
 | 1 | user error | a refusal (`REFUSED: …`) or a usage error, before the session marker was written | a marker that names no session (`SESSION_MARKER_INVALID`), or a usage error |
-| 2 | runtime error | any end but `done` (whatever its stop did), or `RUN_ERROR` | a stop that was not confirmed, or `STOP_ERROR` |
-| 3 | partial success | `done`, but the stop was not confirmed: `session_open.json` is still there | (not used) |
+| 2 | runtime error | any end other than `done` — including `partial` (missing or refused declared outputs), `failed`, trips, or `RUN_ERROR` | a stop that was not confirmed, or `STOP_ERROR` |
+| 3 | partial success | `done` (with all declared outputs collected), but `colab stop` was not confirmed: `session_open.json` remains in `--out-dir` | (not used) |
 
-On exit 3 the job's work is in the out dir, and the session must still be stopped with `python -m colab_runner stop --out-dir D`.
+On exit 3 the job's outputs are in the out dir, and the session must still be stopped with `python -m colab_runner stop --out-dir D` (which removes `session_open.json` once stop confirms).
 
 A refusal after the marker is not an exit 1. A reused `--job`, for one, ends exit 2: the runner owned the session by
 then, so it stopped it, and the last line is `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS` with a hint naming
