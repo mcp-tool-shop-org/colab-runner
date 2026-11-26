@@ -160,10 +160,12 @@ def cr_start_job():
         ]
     else:
         argv = ["bash", os.environ["CR_SCRIPT"]]
+    proc_env = dict(os.environ)
+    proc_env["CR_OUT_DIR"] = CR_OUT
     proc = subprocess.Popen(
         ["nohup", "bash", "-c", CR_WRAPPER, "crwrap", CR_RUN_LOG, CR_STATUS_FILE, json.dumps(want_id)] + argv,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        env=dict(os.environ), start_new_session=True, close_fds=True,
+        env=proc_env, start_new_session=True, close_fds=True,
     )
     with open(CR_PID_FILE + ".tmp", "w") as fh:
         fh.write("%d\n" % proc.pid)

@@ -200,7 +200,8 @@ def run_turns(work_dir: Path, out_dir: Path, *, stub_server: bool, cap_gpu_secs:
 
 
 def _probe_nvidia_smi() -> str | None:
-    smi = os.environ.get("CR_NVIDIA_SMI") or shutil.which("nvidia-smi")
+    env_smi = (os.environ.get("CR_NVIDIA_SMI") or "").strip()
+    smi = env_smi if (env_smi and os.path.isabs(env_smi) and os.path.exists(env_smi)) else shutil.which(env_smi or "nvidia-smi")
     if not smi:
         return None
     proc = subprocess.run(

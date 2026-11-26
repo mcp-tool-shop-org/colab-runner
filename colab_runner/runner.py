@@ -265,7 +265,14 @@ class Runner:
 
     # -- environment the cells read -------------------------------------------------------------------------------
     def _env(self, extra: Mapping[str, str] | None = None) -> dict:
-        env = {"CR_CONTENT": self.content, "CR_JOB": self.job}
+        base = self.content.rstrip("/\\") or "/"
+        env = {
+            "CR_CONTENT": self.content,
+            "CR_JOB": self.job,
+            "CR_OUT_DIR": f"{base}/{self.job}_out" if base != "/" else f"/{self.job}_out",
+            "CR_PROGRESS_GLOB": "",
+            "CR_UNITS_GLOB": "",
+        }
         if self._run_id:
             env["CR_RUN_ID"] = self._run_id  # every cell: the VM answers for this run only
         env.update(extra or {})
@@ -403,6 +410,7 @@ class Runner:
         (kernel_timeout) is never shorter than CR_RESIDENT_MAX_S and cannot end the cell before the window does.
         Nothing bills for the extra: every exit kills the child (_end) before the stop."""
         full = self._env(env)
+        full.setdefault("CR_POLL_EVERY_S", str(self.poll_s))
         ceil_left = max(1, math.ceil(left))
         if "CR_RESIDENT_MAX_S" in full:
             max_s = max(1.0, _parse_resident_max_s(full["CR_RESIDENT_MAX_S"]))

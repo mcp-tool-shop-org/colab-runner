@@ -93,6 +93,34 @@ def resolve_kit_env(items: Sequence[str], environ: Mapping[str, str] | None = No
     return out
 
 
+def build_job_env(
+    spec: WindowSpec,
+    card_spec: CardSpec,
+    *,
+    content: str,
+    local_cpu: bool = False,
+    extra_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the complete job environment shared by live Colab windows and `--local-cpu` runs."""
+    content_base = content.rstrip("/\\") or "/"
+    out_dir = f"{content_base}/{spec.job}_out" if content_base != "/" else f"/{spec.job}_out"
+    env: dict[str, str] = {
+        "CR_CONTENT": content,
+        "CR_JOB": spec.job,
+        "CR_OUT_DIR": out_dir,
+        "CR_CARD": card_spec.name,
+        "CR_CARD_CLASS": card_spec.card_class,
+        "CR_DRY_RUN": "1" if (local_cpu or card_spec.card_class == "cpu") else "0",
+        "CR_PROGRESS_GLOB": spec.progress_glob or "",
+        "CR_UNITS_GLOB": spec.units_glob or "",
+        "CR_POLL_EVERY_S": str(spec.poll_s),
+        "CR_NVIDIA_SMI": "",
+    }
+    if extra_env:
+        env.update(extra_env)
+    return env
+
+
 def cleanup_outputs_bound_s(
     spec: WindowSpec,
     card_spec: CardSpec,
@@ -104,7 +132,7 @@ def cleanup_outputs_bound_s(
     two_dl_s = 2.0 * one_dl_s
     vm_card_s = one_dl_s if (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu") else 0.0
     salvage_s = vm_card_s + len(spec.salvage_outputs) * two_dl_s
-    collect_s = len(spec.collect_outputs) * two_dl_s
+    collect_s = vm_card_s + len(spec.collect_outputs) * two_dl_s
     return max(salvage_s, collect_s)
 
 
@@ -505,32 +533,25 @@ class LocalColab(Colab):
         self.confirmed_stops: list[str] = []
 
     def _translate_remote(self, remote: str) -> Path:
+        root = self.content_dir.resolve()
         norm = remote.replace("\\", "/").strip()
         if norm == "/content":
             return self.content_dir
         if norm.startswith("/content/"):
             rel = norm[len("/content/"):]
             dest = (self.content_dir / rel).resolve()
-            if not dest.is_relative_to(self.content_dir.resolve()):
+            if not dest.is_relative_to(root):
                 raise ValueError("remote path escapes /content: %s" % remote)
             return dest
+        if Path(remote).is_absolute():
+            dest = Path(remote).resolve()
+            if not dest.is_relative_to(root):
+                raise ValueError("remote path escapes content root: %s" % remote)
+            return dest
         dest = (self.content_dir / norm.lstrip("/")).resolve()
-        if not dest.is_relative_to(self.content_dir.resolve()):
+        if not dest.is_relative_to(root):
             raise ValueError("remote path escapes content root: %s" % remote)
         return dest
-
-    def _cell_env(self, env: Mapping[str, str] | None) -> dict[str, str]:
-        full = dict(env or {})
-        full["CR_CONTENT"] = str(self.content_dir)
-        job = full.get("CR_JOB", "job")
-        if not full.get("CR_OUT_DIR"):
-            full["CR_OUT_DIR"] = str(self.content_dir / (job + "_out"))
-        script = full.get("CR_SCRIPT", "")
-        if script.startswith("/content/"):
-            full["CR_SCRIPT"] = str(self._translate_remote(script))
-        full.setdefault("CR_DRY_RUN", "1")
-        full.setdefault("CR_CARD_CLASS", "cpu")
-        return full
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
         lines = [
@@ -559,7 +580,7 @@ class LocalColab(Colab):
                   timeout: float = 60.0) -> CliResult:
         if session not in self.active_sessions:
             return CliResult(1, "", "session %s not open" % session)
-        merged = self._cell_env(env)
+        merged = dict(env or {})
         with tempfile.TemporaryDirectory(prefix="colab-local-cell-") as tmp:
             cell = write_cell(Path(tmp), source, merged)
             saved_argv = self.argv
@@ -571,7 +592,7 @@ class LocalColab(Colab):
 
     def start_cell(self, session: str, source: str, env: Mapping[str, str] | None = None,
                    timeout: float = 60.0) -> BackgroundCall:
-        merged = self._cell_env(env)
+        merged = dict(env or {})
         saved_argv = self.argv
         self.argv = [sys.executable]
         try:
@@ -1183,6 +1204,10 @@ def launch_window(
         client = LocalColab(out_path / "_local_vm_content")
     else:
         client = cli_from_env()
+    vm_content = str(client.content_dir.resolve()) if isinstance(client, LocalColab) else "/content"
+    vm_content_base = vm_content.rstrip("/\\") or "/"
+    remote_bundle = "%s/%s" % (vm_content_base, bundle_name)
+    remote_script = "%s/%s" % (vm_content_base, script_name)
 
     outcome = _base_outcome(
         window_id=window_id, session=eff_session, spec=spec, card_spec=card_spec,
@@ -1213,7 +1238,7 @@ def launch_window(
     write_json_atomic(out_path / "window_meta.json", meta)
 
     runner = runner_cls(
-        client, eff_session, out_path, job=spec.job, content="/content", poll_s=spec.poll_s,
+        client, eff_session, out_path, job=spec.job, content=vm_content, poll_s=spec.poll_s,
         pre_opened=True, clock=clock, sleep=sleep, log=log, trace=trace,
     )
     lock_path = _default_open_lock_path(open_lock)
@@ -1328,7 +1353,7 @@ def launch_window(
                         ledger.reserve_card(spec.study, card_spec.name, session=eff_session, window_id=window_id)
 
                     write_json_atomic(
-                        out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": "/content"}
+                        out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": vm_content}
                     )
                     marker_written = True
                     # Count wall and cap spend from immediately BEFORE `colab new` (Colab bills from assignment).
@@ -1488,10 +1513,10 @@ def launch_window(
                 finally:
                     lock_held = False
 
-            # Open lock released: upload bundle and driver script flat into /content, bounded by remaining cap/wall.
+            # Open lock released: upload bundle and driver script flat into vm_content, bounded by remaining cap/wall.
             for local_f, remote_f in (
-                (bundle_path, "/content/%s" % bundle_name),
-                (script_path, "/content/%s" % script_name),
+                (bundle_path, remote_bundle),
+                (script_path, remote_script),
             ):
                 up_t_lim, tripped_out = _next_call_timeout(120.0, sig_state)
                 if tripped_out is not None:
@@ -1561,52 +1586,54 @@ def launch_window(
                 return None
             return min(float(runner.download_timeout_s), call_budget_s)
 
-        def _do_collect() -> bool:
-            if not spec.collect_outputs:
+        def _download_vm_card(dest_list: list[str]) -> bool:
+            if not (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu"):
                 return True
-            got, ok = _download_declared_outputs(
-                runner, spec.collect_outputs, out_path / "collected",
-                content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
-            )
-            collected.extend(got)
+            dl_t = _next_cleanup_download_timeout()
+            if dl_t is None:
+                return False
+            vm_card_local = out_path / "vm_card.json"
+            remote_vm_card = "%s/%s_out/vm_card.json" % (vm_content_base, spec.job)
+            vm_res = runner.download(remote_vm_card, vm_card_local, timeout=dl_t)
+            if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in dest_list:
+                dest_list.append("vm_card.json")
+            return True
+
+        def _do_collect() -> bool:
+            ok = _download_vm_card(collected)
+            if ok and spec.collect_outputs:
+                got, dl_ok = _download_declared_outputs(
+                    runner, spec.collect_outputs, out_path / "collected",
+                    content=vm_content, job=spec.job, next_timeout=_next_cleanup_download_timeout,
+                )
+                collected.extend(got)
+                ok = dl_ok
             return ok
 
         def _do_salvage(reason: str) -> bool:
-            ok = True
-            if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
-                dl_t = _next_cleanup_download_timeout()
-                if dl_t is None:
-                    ok = False
-                else:
-                    vm_card_local = out_path / "vm_card.json"
-                    vm_res = runner.download("/content/%s_out/vm_card.json" % spec.job, vm_card_local, timeout=dl_t)
-                    if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in salvaged:
-                        salvaged.append("vm_card.json")
+            ok = _download_vm_card(salvaged)
             if ok and spec.salvage_outputs:
                 got, dl_ok = _download_declared_outputs(
                     runner, spec.salvage_outputs, out_path / "salvage",
-                    content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
+                    content=vm_content, job=spec.job, next_timeout=_next_cleanup_download_timeout,
                 )
                 salvaged.extend(got)
                 ok = dl_ok
             return ok
 
-        run_env = dict(merged_env)
-        run_env["CR_CARD"] = card_spec.name
-        run_env["CR_CARD_CLASS"] = card_spec.card_class
-        run_env["CR_DRY_RUN"] = "1" if (local_cpu or card_spec.card_class == "cpu") else "0"
-        if spec.progress_glob:
-            run_env["CR_PROGRESS_GLOB"] = spec.progress_glob
-        if spec.units_glob:
-            run_env["CR_UNITS_GLOB"] = spec.units_glob
+        run_env = build_job_env(
+            spec, card_spec, content=vm_content, local_cpu=local_cpu, extra_env=merged_env,
+        )
 
         run_error: Optional[BaseException] = None
         run_result = None
-        need_salvage = bool(spec.salvage_outputs) or (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu")
+        need_gpu_card = card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu"
+        need_collect = bool(spec.collect_outputs) or need_gpu_card
+        need_salvage = bool(spec.salvage_outputs) or need_gpu_card
         try:
             try:
                 run_result = runner.run(
-                    script="/content/%s" % script_name,
+                    script=remote_script,
                     env=run_env,
                     wall_s=eff_wall_s,
                     guard=guard,
@@ -1614,7 +1641,7 @@ def launch_window(
                     setup_stall_s=spec.setup_stall_s,
                     resident=eff_resident,
                     salvage=_do_salvage if need_salvage else None,
-                    collect=_do_collect if spec.collect_outputs else None,
+                    collect=_do_collect if need_collect else None,
                     opened_monotonic=t_open_monotonic,
                     unreachable_polls=spec.unreachable_polls,
                     unreachable_s=spec.unreachable_s,
@@ -1759,6 +1786,7 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
 
 __all__ = [
     "LocalColab",
+    "build_job_env",
     "compute_launch_budget",
     "default_cleanup_bound_s",
     "default_session_name",

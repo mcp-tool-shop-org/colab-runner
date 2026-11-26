@@ -79,6 +79,50 @@ class WorkedExampleTest(unittest.TestCase):
                 reply = json.loads((cpu_dir / "collected" / "from-seat" / f"{guild}.json").read_text(encoding="utf-8"))
                 self.assertEqual(reply["guild"], guild)
 
+    def test_rendered_job_script_under_bash_u_uses_build_job_env(self):
+        if os.name != "posix":
+            self.skipTest("bash -u VM script test requires POSIX")
+        from colab_runner.cards import resolve_card
+        from colab_runner.launcher import LocalColab, build_job_env
+        from colab_runner.manifest import WindowSpec, render_vm_script, stage_inputs
+
+        self.assertFalse(hasattr(LocalColab, "_cell_env"))
+        spec = WindowSpec.from_file(EXAMPLE_SPEC)
+        card_spec = resolve_card("T4")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            content_dir = root / "content"
+            content_dir.mkdir()
+            bundle_name = f"{spec.job}_inputs.tar.gz"
+            stage_inputs(spec, content_dir / bundle_name, actual_card=card_spec.name, live=False, local_cpu=True)
+            script_path = content_dir / f"{spec.job}_job.sh"
+            script_path.write_text(render_vm_script(spec, card_spec, bundle_filename=bundle_name), encoding="utf-8")
+
+            job_env = build_job_env(
+                spec, card_spec, content=str(content_dir), local_cpu=True, extra_env={"CR_SMOKE_STUB": "1"},
+            )
+            clean_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+            clean_env.update(job_env)
+
+            proc_ok = subprocess.run(
+                ["bash", "-u", str(script_path)],
+                cwd=str(content_dir), env=clean_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=30,
+            )
+            self.assertEqual(proc_ok.returncode, 0, proc_ok.stderr)
+            out_dir = Path(clean_env["CR_OUT_DIR"])
+            self.assertEqual((out_dir / "phase.txt").read_text(encoding="utf-8").strip(), "run")
+
+            missing_out = dict(clean_env)
+            missing_out.pop("CR_OUT_DIR")
+            proc_fail = subprocess.run(
+                ["bash", "-u", str(script_path)],
+                cwd=str(content_dir), env=missing_out, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(proc_fail.returncode, 0)
+            self.assertIn("CR_OUT_DIR", proc_fail.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

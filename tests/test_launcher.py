@@ -855,6 +855,8 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
                 lc._translate_remote("/content/../outside")
             with self.assertRaises(ValueError):
                 lc._translate_remote("../outside")
+            with self.assertRaises(ValueError):
+                lc._translate_remote(str((root / "outside").resolve()))
             self.assertEqual(lc.upload("closed", __file__, "/content/a").rc, 1)
             self.assertEqual(lc.exec_cell("closed", "print(1)").rc, 1)
             lc.new_session("s", card="CPU")
