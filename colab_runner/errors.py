@@ -124,6 +124,9 @@ CODES: dict[str, Code] = {
         "pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs",
         _FIX),
     "OUTPUT_PATH_INVALID": Code("list outputs.collect and outputs.salvage as relative paths without '..'", _FIX),
+    "OUTPUT_SCRUB_FAILED": Code(
+        "check local destination permissions or unreadable files; directory output scrub failed", _FIX
+    ),
     "OUTPUT_TAR_CORRUPT": Code(
         "inspect the job's directory output on the VM: its tar archive could not be read or extracted", _FIX
     ),

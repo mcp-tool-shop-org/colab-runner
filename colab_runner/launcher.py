@@ -876,12 +876,20 @@ def _base_outcome(
     }
 
 
-def _extract_dir_tar(tmp_tar: Path, stage_root: Path, rel: str, local: Path, runner: Runner) -> Optional[str]:
-    """Safely extract `tmp_tar` into `stage_root/rel` (`filter='data'`), scrub files individually, then move."""
+def _extract_dir_tar(
+    tmp_tar: Path,
+    stage_root: Path,
+    rel: str,
+    local: Path,
+    runner: Runner,
+    *,
+    bucket: str = "collected",
+) -> Optional[str]:
+    """Safely extract `tmp_tar` into `stage_root/bucket/rel` (`filter='data'`), scrub files individually, then move."""
     if not tmp_tar.is_file():
         code = "OUTPUT_TAR_CORRUPT"
         return code
-    stage_rel = stage_root / rel
+    stage_rel = stage_root / bucket / rel
     stage_rel.mkdir(parents=True, exist_ok=True)
     try:
         try:
@@ -904,7 +912,13 @@ def _extract_dir_tar(tmp_tar: Path, stage_root: Path, rel: str, local: Path, run
                 log=runner.log, on_quarantine=runner._record_quarantine,
             )
         except (BinaryDownloadRefused, QuarantineEscape) as exc:
+            if runner._download_refusal is None:
+                runner._download_refusal = exc
             return exc.code
+        except OSError as exc:
+            runner.log("directory output %r scrub failed: %s: %s" % (rel, type(exc).__name__, exc))
+            code = "OUTPUT_SCRUB_FAILED"
+            return code
     if local.is_dir():
         shutil.rmtree(local)
     elif local.exists():
@@ -968,7 +982,9 @@ def _download_declared_outputs(
                     runner.session, "%s/%s.tar" % (out_prefix, rel), str(tmp_tar), dl_t3,
                 ))
                 if dl_tar.ok:
-                    err_code = _extract_dir_tar(tmp_tar, stage_root, rel, local, runner)
+                    err_code = _extract_dir_tar(
+                        tmp_tar, stage_root, rel, local, runner, bucket=dest_dir.name,
+                    )
                     if err_code is None:
                         transferred.append(rel)
                     elif output_errors is not None:
@@ -1864,7 +1880,7 @@ def launch_window(
                 outcome["salvaged_outputs"] = list(salvaged)
                 outcome["missing_outputs"] = (
                     [rel for rel in spec.collect_outputs if rel not in collected]
-                    if run_result.reason == "done" else []
+                    if (run_result.reason == "done" or run_result.prior_reason == "done") else []
                 )
                 outcome["output_errors"] = dict(output_errors)
                 outcome["quarantined"] = list(run_result.quarantined)

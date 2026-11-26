@@ -116,7 +116,7 @@
             "error_record",
             "lookup"
           ],
-          "hash": "767b8134a7c3f6c0b3ca5857009931f932a586567c94dba333095106a4a74ecf",
+          "hash": "e11b56606b6628b9becdf0fa721668c1175f4108b30c8a6d6ae4b4741f15f438",
           "path": "colab_runner/errors.py"
         },
         {
@@ -133,7 +133,7 @@
             "resolve_kit_env",
             "status_window"
           ],
-          "hash": "16e4b59f7dfb04d914dd4cfa0114f51bc61b477aeb58a0a26ad809072794c7e0",
+          "hash": "f7bb57b8040718b3059e22a8a5ecccc26eb6b9b600ac11c6b6546c987edd8ac2",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -332,7 +332,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "116c47415275b39281ee1f54084eaf7d71f09d1489b214fa7bac43fcdbf47b30",
+          "hash": "851b6950bd50403dacb37c81518b37404a35d83f2f2553a6b8e67223887c9781",
           "path": "CHANGELOG.md"
         },
         {
@@ -545,7 +545,7 @@
           "path": "tests/test_followups.py"
         },
         {
-          "hash": "144f82d1bbdff01cf42e0f34a24d8caeca74e30f8f1a9ee77397bd78a98a6d54",
+          "hash": "f7653d9507cb77cd94361b1bed02a141e218864c330b72dc1e277bf869f2effb",
           "importOrder": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -1132,7 +1132,7 @@
   ],
   "engine": "1.23.0",
   "generatedFrom": {
-    "commit": "1f0f5677c4132ab3fbdc047dfc285f4c7afdfa09",
+    "commit": "a887fd29fb2dcfba21a8feddf583400985cda5e9",
     "tracked": 87
   },
   "landings": [

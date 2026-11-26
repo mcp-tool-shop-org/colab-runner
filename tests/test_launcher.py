@@ -1628,8 +1628,9 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 self.assertNotIn(v, txt)
             self.assertEqual((out_dir / "collected" / "dir_out" / "crlf.txt").read_bytes(), b"a\r\nb\r\n")
 
-            # Binary token inside a directory output quarantines that file and marks that dir output failed,
-            # while continuing to collect later declared outputs -> status="partial" + output_errors.
+            # Binary token inside a directory output quarantines that file and sets runner._download_refusal,
+            # while continuing to collect later declared outputs -> raises BinaryDownloadRefused and records
+            # outcome status="error", exit_code=2, refusal.code="BINARY_DOWNLOAD_TOKEN", and output_errors.
             (root / "bad_dir_worker.py").write_text(
                 "from pathlib import Path\nimport os\n"
                 "w = Path(os.environ['CR_WORK_DIR'])\n"
@@ -1650,15 +1651,64 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 encoding="utf-8",
             )
             out_bin_dir = root / "m1_bin_dir"
-            res_b = launch_window(spec_bin_dir, out_bin_dir, local_cpu=True)
-            self.assertEqual(res_b["status"], "partial", res_b)
+            with self.assertRaises(BinaryDownloadRefused) as ctx_bin_dir:
+                launch_window(spec_bin_dir, out_bin_dir, local_cpu=True)
+            self.assertEqual(ctx_bin_dir.exception.code, "BINARY_DOWNLOAD_TOKEN")
+            res_b = json.loads((out_bin_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(res_b["status"], "error", res_b)
             self.assertEqual(res_b["exit_code"], 2)
+            self.assertIsNotNone(res_b["refusal"])
+            self.assertEqual(res_b["refusal"]["code"], "BINARY_DOWNLOAD_TOKEN")
             self.assertEqual(res_b["collected_outputs"], ["result.json"])
             self.assertEqual(res_b["missing_outputs"], ["bad_dir"])
             self.assertEqual(res_b["output_errors"], {"bad_dir": "BINARY_DOWNLOAD_TOKEN"})
             self.assertEqual(len(res_b["quarantined"]), 1)
+            self.assertTrue(
+                res_b["quarantined"][0]["path"].replace("\\", "/").endswith("/collected/bad_dir/leak.png"),
+                res_b["quarantined"],
+            )
             self.assertTrue((out_bin_dir / "collected" / "result.json").is_file())
             self.assertFalse((out_bin_dir / "collected" / "bad_dir").exists())
+
+            # Non-refusal OSError during directory scrub records OUTPUT_SCRUB_FAILED and still collects next output.
+            (root / "two_dirs_worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "for name in ('dir_a', 'dir_b'):\n"
+                "    d = w / name\n"
+                "    d.mkdir(parents=True, exist_ok=True)\n"
+                "    (d / 'item.txt').write_text(name + '\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec_scrub_err = root / "spec_scrub_err.toml"
+            spec_scrub_err.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["two_dirs_worker.py"]\n'
+                '[job]\nrun = ["python3 two_dirs_worker.py"]\n'
+                '[outputs]\ncollect = ["dir_a", "dir_b"]\n',
+                encoding="utf-8",
+            )
+            out_scrub_err = root / "m1_scrub_err"
+            import colab_runner.launcher as launcher_mod
+            real_scrub_local = launcher_mod.scrub_local
+
+            def _fail_first_dir_scrub(target, *args, **kwargs):
+                if Path(target).name == "dir_a" and "colab-dir-tar-" in str(target):
+                    raise PermissionError("simulated permission denied")
+                return real_scrub_local(target, *args, **kwargs)
+
+            with mock.patch.object(launcher_mod, "scrub_local", side_effect=_fail_first_dir_scrub):
+                res_scrub = launch_window(spec_scrub_err, out_scrub_err, local_cpu=True)
+            self.assertEqual(res_scrub["status"], "partial", res_scrub)
+            self.assertEqual(res_scrub["exit_code"], 2)
+            self.assertIsNone(res_scrub["refusal"])
+            self.assertEqual(res_scrub["collected_outputs"], ["dir_b"])
+            self.assertEqual(res_scrub["missing_outputs"], ["dir_a"])
+            self.assertEqual(res_scrub["output_errors"], {"dir_a": "OUTPUT_SCRUB_FAILED"})
+            self.assertTrue((out_scrub_err / "collected" / "dir_b" / "item.txt").is_file())
+            self.assertFalse((out_scrub_err / "collected" / "dir_a").exists())
 
             spec_missing = root / "spec_missing.toml"
             spec_missing.write_text(
@@ -1802,10 +1852,40 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 ti.size = len(payload)
                 tf.addfile(ti, io.BytesIO(payload))
             self.assertEqual(
-                _extract_dir_tar(poison_tar, stage_root, "poison_d", root / "poison_dst", runner),
+                _extract_dir_tar(
+                    poison_tar, stage_root, "poison_d", root / "poison_dst", runner, bucket="salvage",
+                ),
                 "BINARY_DOWNLOAD_TOKEN",
             )
-            self.assertTrue(runner._res.quarantined or (root / "r_out.quarantine").exists())
+            self.assertIsInstance(runner._download_refusal, BinaryDownloadRefused)
+            self.assertTrue(
+                any(
+                    q.get("path", "").replace("\\", "/").endswith("/salvage/poison_d/bad.bin")
+                    for q in runner._res.quarantined
+                ),
+                runner._res.quarantined,
+            )
+            self.assertTrue((root / "r_out.quarantine").exists())
+
+            from colab_runner.colab_cli import QuarantineEscape
+            import colab_runner.launcher as launcher_mod
+            esc_tar = root / "esc.tar"
+            with tarfile.open(esc_tar, "w:") as tf:
+                ti = tarfile.TarInfo("x.txt")
+                ti.size = 1
+                tf.addfile(ti, io.BytesIO(b"x"))
+            runner._download_refusal = None
+            with mock.patch.object(
+                launcher_mod,
+                "scrub_local",
+                side_effect=QuarantineEscape(root / "src", root / "dest", root / "q"),
+            ):
+                self.assertEqual(
+                    _extract_dir_tar(esc_tar, stage_root, "esc_d", root / "esc_dst", runner),
+                    "QUARANTINE_ESCAPE",
+                )
+            self.assertIsInstance(runner._download_refusal, QuarantineEscape)
+            runner._download_refusal = None
 
             # Existing destination directory is cleanly replaced and QuarantineEscape returns its code
             clean_tar = root / "clean.tar"
