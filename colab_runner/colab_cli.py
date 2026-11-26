@@ -445,6 +445,10 @@ class Colab:
                 log=self.log, on_quarantine=self.on_quarantine,
             )
 
+    def download_unscrubbed(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
+        """Download `remote` without running `scrub_local` on the transfer itself (staging tar archives only)."""
+        return self.run(["download", "-s", session, remote, local], timeout)
+
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         return self.run(["stop", "-s", session], timeout)
 

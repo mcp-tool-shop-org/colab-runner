@@ -176,6 +176,9 @@ class FakeColab:
             r = self._stamp(r, key, env.get("CR_RUN_ID", ""))
             out = "".join("CR_LOG %s\n" % ln for ln in lines) + "CR_POLL " + json.dumps(r) + "\n"
             return CliResult(0, out)
+        if "CR_TAR_REL" in env:
+            self._record("tar", session, timeout)
+            return CliResult(0, "CR_TAR_MISSING\n")
         self._record("start", session, timeout)
         self.start_calls += 1
         action = self.starts.pop(0) if self.starts else "ok"
@@ -258,6 +261,9 @@ class FakeColab:
         else:
             Path(local).write_text(data if isinstance(data, str) else json.dumps(data), encoding="utf-8")
         return CliResult(0)
+
+    def download_unscrubbed(self, session, remote, local, timeout=120.0) -> CliResult:
+        return self.download(session, remote, local, timeout)
 
     def stop(self, session, timeout=120.0) -> CliResult:
         self._record("stop", session, timeout)

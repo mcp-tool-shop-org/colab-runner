@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -50,9 +51,11 @@ from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, Window
 from colab_runner.runner import (
     DEFAULT_DOWNLOAD_TIMEOUT_S,
     MIN_CALL_S,
+    _CELL_TRANSIENT_ENV,
     RunInterrupted,
     Runner,
     require_number,
+    vm_lib_source,
     write_json_atomic,
 )
 from colab_runner.spend import SpendGuard, neighbour_warning
@@ -61,6 +64,72 @@ from colab_runner.window_lib import launch_guards as lg
 ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DEFAULT_CLEANUP_FLOOR_S = 600.0
 OPEN_LOCK_STALE_MTIME_S = 10.0
+DEFAULT_TAR_TIMEOUT_S = 60.0
+
+_TAR_OUTPUT_CELL_SRC = """
+import io as _cr_io
+import posixpath as _cr_posix
+import tarfile as _cr_tar
+
+def _cr_tar_output():
+    rel = os.environ.get("CR_TAR_REL", "").strip().replace("\\\\", "/")
+    if not rel:
+        print("CR_TAR_MISSING", flush=True)
+        return
+    work_dir = os.path.join(CR_CONTENT, CR_JOB + "_work")
+    src = None
+    for base in (work_dir, CR_OUT):
+        cand = os.path.join(base, rel)
+        if os.path.isdir(cand) and not os.path.islink(cand):
+            src = cand
+            break
+    if src is None:
+        print("CR_TAR_MISSING", flush=True)
+        return
+    tar_path = os.path.join(CR_OUT, rel + ".tar")
+    tar_parent = os.path.dirname(tar_path)
+    if tar_parent:
+        os.makedirs(tar_parent, exist_ok=True)
+    tmp_path = tar_path + ".tmp"
+    with _cr_tar.open(tmp_path, "w:") as tf:
+        for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+            rel_dir = os.path.relpath(dirpath, src)
+            dir_arc = "." if rel_dir == "." else rel_dir.replace(os.sep, "/")
+            keep = []
+            for d in sorted(dirnames):
+                dp = os.path.join(dirpath, d)
+                if not os.path.islink(dp) and os.path.isdir(dp):
+                    keep.append(d)
+                    sub_arc = d if dir_arc == "." else _cr_posix.join(dir_arc, d)
+                    ti = _cr_tar.TarInfo(sub_arc)
+                    ti.type = _cr_tar.DIRTYPE
+                    ti.mode = 0o755
+                    tf.addfile(ti)
+            dirnames[:] = keep
+            for fn in sorted(filenames):
+                fp = os.path.join(dirpath, fn)
+                if os.path.islink(fp) or not os.path.isfile(fp):
+                    continue
+                arc = fn if dir_arc == "." else _cr_posix.join(dir_arc, fn)
+                with open(fp, "rb") as fh:
+                    data = fh.read()
+                if b"\\x00" not in data:
+                    try:
+                        txt = data.decode("utf-8")
+                        scrubbed = scrub_colab_tokens(txt)
+                        if scrubbed != txt:
+                            data = scrubbed.encode("utf-8")
+                    except UnicodeDecodeError:
+                        pass
+                ti = _cr_tar.TarInfo(arc)
+                ti.size = len(data)
+                ti.mode = 0o644
+                tf.addfile(ti, _cr_io.BytesIO(data))
+    os.replace(tmp_path, tar_path)
+    print("CR_TAR_READY", flush=True)
+
+_cr_tar_output()
+"""
 
 
 def _utc_now(dt: Optional[datetime] = None) -> str:
@@ -93,18 +162,59 @@ def resolve_kit_env(items: Sequence[str], environ: Mapping[str, str] | None = No
     return out
 
 
+def _refuse_reserved_env(env: Mapping[str, str]) -> None:
+    """Refuse CR_RUN_ID and any CR_* variable supplied by user job.env or --env."""
+    if "CR_RUN_ID" in env:
+        raise Refused("RUN_ID_RESERVED", "CR_RUN_ID is reserved: omit it from job.env and --env")
+    for name in env:
+        if str(name).startswith("CR_"):
+            raise Refused("ENV_RESERVED", "%s is reserved: omit CR_* variables from job.env and --env" % name)
+
+
+def build_job_env(
+    spec: WindowSpec,
+    card_spec: CardSpec,
+    *,
+    content: str,
+    local_cpu: bool = False,
+    extra_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the complete job environment shared by live Colab windows and `--local-cpu` runs."""
+    if extra_env:
+        _refuse_reserved_env(extra_env)
+    content_base = content.rstrip("/\\") or "/"
+    out_dir = f"{content_base}/{spec.job}_out" if content_base != "/" else f"/{spec.job}_out"
+    env: dict[str, str] = {}
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+    env.update({
+        "CR_CONTENT": content,
+        "CR_JOB": spec.job,
+        "CR_OUT_DIR": out_dir,
+        "CR_CARD": card_spec.name,
+        "CR_CARD_CLASS": card_spec.card_class,
+        "CR_DRY_RUN": "1" if (local_cpu or card_spec.card_class == "cpu") else "0",
+        "CR_PROGRESS_GLOB": spec.progress_glob or "",
+        "CR_UNITS_GLOB": spec.units_glob or "",
+        "CR_POLL_EVERY_S": str(spec.poll_s),
+        "CR_NVIDIA_SMI": "",
+    })
+    return env
+
+
 def cleanup_outputs_bound_s(
     spec: WindowSpec,
     card_spec: CardSpec,
     *,
     download_timeout_s: float = DEFAULT_DOWNLOAD_TIMEOUT_S,
 ) -> float:
-    """Worst-case seconds for `vm_card.json` plus salvage (or collect) downloads including fallbacks and kills."""
+    """Worst-case seconds for `vm_card.json` plus salvage (or collect) downloads including directory tars and kills."""
     one_dl_s = float(download_timeout_s) + 2.0 * KILL_WAIT_S
-    two_dl_s = 2.0 * one_dl_s
+    tar_exec_s = DEFAULT_TAR_TIMEOUT_S + 2.0 * KILL_WAIT_S
+    per_output_s = 3.0 * one_dl_s + tar_exec_s
     vm_card_s = one_dl_s if (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu") else 0.0
-    salvage_s = vm_card_s + len(spec.salvage_outputs) * two_dl_s
-    collect_s = len(spec.collect_outputs) * two_dl_s
+    salvage_s = vm_card_s + len(spec.salvage_outputs) * per_output_s
+    collect_s = vm_card_s + len(spec.collect_outputs) * per_output_s
     return max(salvage_s, collect_s)
 
 
@@ -294,51 +404,97 @@ def _pid_alive(pid: int) -> bool:
             k32.CloseHandle(handle)
 
 
-def _is_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> bool:
-    """Return True when a lock or reclaim directory belongs to a dead PID (or is an old ownerless dir)."""
-    owner_file = dir_path / "owner.json"
-    if owner_file.is_file():
+def _read_owner_bytes(dir_path: Path) -> Optional[bytes]:
+    """Read `dir_path/owner.json` raw bytes, `b\"\"` if absent, or `None` on I/O error."""
+    try:
+        return (dir_path / "owner.json").read_bytes()
+    except FileNotFoundError:
+        return b""
+    except OSError:
+        return None
+
+
+def _check_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> tuple[bool, Optional[bytes]]:
+    """Check if `dir_path` belongs to a dead PID (or is an old ownerless dir) and return its owner bytes."""
+    raw = _read_owner_bytes(dir_path)
+    if raw:
         try:
-            info = json.loads(owner_file.read_text(encoding="utf-8"))
+            info = json.loads(raw.decode("utf-8"))
             pid = info.get("pid") if isinstance(info, dict) else None
             if isinstance(pid, int) and not pid_alive(pid):
-                return True
-        except (OSError, ValueError):
+                return True, raw
+        except (UnicodeDecodeError, ValueError):
             pass
-        return False
-    if dir_path.exists():
+        return False, None
+    if raw == b"" and dir_path.exists():
         try:
-            return (time.time() - dir_path.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S
+            if (time.time() - dir_path.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S:
+                return True, b""
         except OSError:
+            return False, None
+    return False, None
+
+
+def _is_lock_dir_stale(dir_path: Path, *, pid_alive: Callable[[int], bool]) -> bool:
+    """Return True when a lock or reclaim directory belongs to a dead PID (or is an old ownerless dir)."""
+    return _check_lock_dir_stale(dir_path, pid_alive=pid_alive)[0]
+
+
+def _claim_reclaim_guard(reclaim_guard: Path) -> bool:
+    """Build `reclaim_guard` via a prep directory holding `owner.json`, then rename into place."""
+    if reclaim_guard.exists():
+        return False
+    prep_dir = reclaim_guard.with_name(
+        "%s.prep-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
+    )
+    try:
+        prep_dir.mkdir(parents=False)
+        write_json_atomic(
+            prep_dir / "owner.json",
+            {"pid": os.getpid(), "at": _utc_now(), "nonce": uuid.uuid4().hex[:12]},
+        )
+        if reclaim_guard.exists():
+            shutil.rmtree(prep_dir, ignore_errors=True)
             return False
-    return False
+        os.rename(prep_dir, reclaim_guard)
+        return True
+    except OSError:
+        shutil.rmtree(prep_dir, ignore_errors=True)
+        return False
 
 
 def _try_acquire_reclaim_guard(reclaim_guard: Path, *, pid_alive: Callable[[int], bool]) -> bool:
-    """Atomically claim `reclaim_guard` with an `owner.json` (PID + time), reclaiming a dead reclaimer's guard."""
-    guard_owner = reclaim_guard / "owner.json"
-    try:
-        reclaim_guard.mkdir(parents=False)
-        write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
+    """Atomically claim `reclaim_guard` with `owner.json` (PID + time + nonce), reclaiming only matching stale dirs."""
+    if _claim_reclaim_guard(reclaim_guard):
         return True
-    except FileExistsError:
-        if not _is_lock_dir_stale(reclaim_guard, pid_alive=pid_alive):
-            return False
-        stale_guard = reclaim_guard.with_name(
-            "%s.stale-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
-        )
+    stale, expected_bytes = _check_lock_dir_stale(reclaim_guard, pid_alive=pid_alive)
+    if not stale:
+        return False
+    stale_guard = reclaim_guard.with_name(
+        "%s.stale-%d-%s" % (reclaim_guard.name, os.getpid(), uuid.uuid4().hex[:8])
+    )
+    try:
+        os.rename(reclaim_guard, stale_guard)
+    except OSError:
+        return False
+    moved_bytes = _read_owner_bytes(stale_guard)
+    still_stale = moved_bytes == expected_bytes
+    if still_stale and expected_bytes == b"":
         try:
-            os.rename(reclaim_guard, stale_guard)
+            still_stale = (time.time() - stale_guard.stat().st_mtime) > OPEN_LOCK_STALE_MTIME_S
         except OSError:
-            return False
-        finally:
-            shutil.rmtree(stale_guard, ignore_errors=True)
+            still_stale = False
+    if not still_stale:
         try:
-            reclaim_guard.mkdir(parents=False)
-            write_json_atomic(guard_owner, {"pid": os.getpid(), "at": _utc_now()})
-            return True
+            if not reclaim_guard.exists():
+                os.rename(stale_guard, reclaim_guard)
+                return False
         except OSError:
-            return False
+            pass
+        shutil.rmtree(stale_guard, ignore_errors=True)
+        return False
+    shutil.rmtree(stale_guard, ignore_errors=True)
+    return _claim_reclaim_guard(reclaim_guard)
 
 
 @contextlib.contextmanager
@@ -476,32 +632,25 @@ class LocalColab(Colab):
         self.confirmed_stops: list[str] = []
 
     def _translate_remote(self, remote: str) -> Path:
+        root = self.content_dir.resolve()
         norm = remote.replace("\\", "/").strip()
         if norm == "/content":
             return self.content_dir
         if norm.startswith("/content/"):
             rel = norm[len("/content/"):]
             dest = (self.content_dir / rel).resolve()
-            if not dest.is_relative_to(self.content_dir.resolve()):
+            if not dest.is_relative_to(root):
                 raise ValueError("remote path escapes /content: %s" % remote)
             return dest
+        if Path(remote).is_absolute():
+            dest = Path(remote).resolve()
+            if not dest.is_relative_to(root):
+                raise ValueError("remote path escapes content root: %s" % remote)
+            return dest
         dest = (self.content_dir / norm.lstrip("/")).resolve()
-        if not dest.is_relative_to(self.content_dir.resolve()):
+        if not dest.is_relative_to(root):
             raise ValueError("remote path escapes content root: %s" % remote)
         return dest
-
-    def _cell_env(self, env: Mapping[str, str] | None) -> dict[str, str]:
-        full = dict(env or {})
-        full["CR_CONTENT"] = str(self.content_dir)
-        job = full.get("CR_JOB", "job")
-        if not full.get("CR_OUT_DIR"):
-            full["CR_OUT_DIR"] = str(self.content_dir / (job + "_out"))
-        script = full.get("CR_SCRIPT", "")
-        if script.startswith("/content/"):
-            full["CR_SCRIPT"] = str(self._translate_remote(script))
-        full.setdefault("CR_DRY_RUN", "1")
-        full.setdefault("CR_CARD_CLASS", "cpu")
-        return full
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
         lines = [
@@ -530,7 +679,7 @@ class LocalColab(Colab):
                   timeout: float = 60.0) -> CliResult:
         if session not in self.active_sessions:
             return CliResult(1, "", "session %s not open" % session)
-        merged = self._cell_env(env)
+        merged = dict(env or {})
         with tempfile.TemporaryDirectory(prefix="colab-local-cell-") as tmp:
             cell = write_cell(Path(tmp), source, merged)
             saved_argv = self.argv
@@ -542,7 +691,7 @@ class LocalColab(Colab):
 
     def start_cell(self, session: str, source: str, env: Mapping[str, str] | None = None,
                    timeout: float = 60.0) -> BackgroundCall:
-        merged = self._cell_env(env)
+        merged = dict(env or {})
         saved_argv = self.argv
         self.argv = [sys.executable]
         try:
@@ -568,18 +717,28 @@ class LocalColab(Colab):
             src = self._translate_remote(remote)
             if not src.exists():
                 return CliResult(1, "", "no such file: %s" % remote)
-            dst = Path(local)
             if src.is_dir():
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            else:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, dst)
+                return CliResult(1, "", "is a directory: %s" % remote)
+            dst = Path(local)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
             return CliResult(0, "")
         finally:
             scrub_local(
                 local, quarantine_dir=self.quarantine_dir, base_dir=self._base_dir,
                 log=self.log, on_quarantine=self.on_quarantine,
             )
+
+    def download_unscrubbed(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
+        src = self._translate_remote(remote)
+        if not src.exists():
+            return CliResult(1, "", "no such file: %s" % remote)
+        if src.is_dir():
+            return CliResult(1, "", "is a directory: %s" % remote)
+        dst = Path(local)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst)
+        return CliResult(0, "")
 
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         self.active_sessions.pop(session, None)
@@ -711,8 +870,62 @@ def _base_outcome(
         "sealed": sealed,
         "collected_outputs": [],
         "salvaged_outputs": [],
+        "missing_outputs": [],
+        "output_errors": {},
         "quarantined": [],
     }
+
+
+def _extract_dir_tar(
+    tmp_tar: Path,
+    stage_root: Path,
+    rel: str,
+    local: Path,
+    runner: Runner,
+    *,
+    bucket: str = "collected",
+) -> Optional[str]:
+    """Safely extract `tmp_tar` into `stage_root/bucket/rel` (`filter='data'`), scrub files individually, then move."""
+    if not tmp_tar.is_file():
+        code = "OUTPUT_TAR_CORRUPT"
+        return code
+    stage_rel = stage_root / bucket / rel
+    stage_rel.mkdir(parents=True, exist_ok=True)
+    try:
+        try:
+            with tarfile.open(tmp_tar, "r:") as tf:
+                tf.extractall(path=stage_rel, filter="data")
+        except tarfile.FilterError as exc:
+            runner.log("directory output %s refused by tar filter: %s" % (rel, exc))
+            code = "OUTPUT_TAR_UNSAFE"
+            return code
+        except (tarfile.TarError, OSError, EOFError) as exc:
+            runner.log("directory output %s tar unreadable: %s" % (rel, exc))
+            code = "OUTPUT_TAR_CORRUPT"
+            return code
+    finally:
+        tmp_tar.unlink(missing_ok=True)
+    with runner._bind_quarantine():
+        try:
+            scrub_local(
+                stage_rel, quarantine_dir=runner.quarantine_dir, base_dir=stage_root,
+                log=runner.log, on_quarantine=runner._record_quarantine,
+            )
+        except (BinaryDownloadRefused, QuarantineEscape) as exc:
+            if runner._download_refusal is None:
+                runner._download_refusal = exc
+            return exc.code
+        except OSError as exc:
+            runner.log("directory output %r scrub failed: %s: %s" % (rel, type(exc).__name__, exc))
+            code = "OUTPUT_SCRUB_FAILED"
+            return code
+    if local.is_dir():
+        shutil.rmtree(local)
+    elif local.exists():
+        local.unlink()
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(stage_rel), str(local))
+    return None
 
 
 def _download_declared_outputs(
@@ -723,11 +936,14 @@ def _download_declared_outputs(
     content: str,
     job: str,
     next_timeout: Optional[Callable[[], Optional[float]]] = None,
+    next_exec_timeout: Optional[Callable[[], Optional[float]]] = None,
+    output_errors: Optional[dict[str, str]] = None,
 ) -> tuple[list[str], bool]:
     transferred: list[str] = []
     completed = True
-    work_prefix = "%s/%s_work" % (content.rstrip("/"), job)
-    out_prefix = "%s/%s_out" % (content.rstrip("/"), job)
+    base = content.rstrip("/\\") or "/"
+    work_prefix = "%s/%s_work" % (base, job)
+    out_prefix = "%s/%s_out" % (base, job)
     for rel in paths:
         local = dest_dir / rel
         local.parent.mkdir(parents=True, exist_ok=True)
@@ -742,8 +958,37 @@ def _download_declared_outputs(
                 completed = False
                 break
             res = runner.download("%s/%s" % (out_prefix, rel), local, timeout=dl_t2)
-        if res.ok and local.exists():
+        if res.ok and local.is_file():
             transferred.append(rel)
+            continue
+
+        exec_t = DEFAULT_TAR_TIMEOUT_S if next_exec_timeout is None else next_exec_timeout()
+        if exec_t is None:
+            completed = False
+            break
+        tar_res = runner._clean(runner.colab.exec_cell(
+            runner.session, vm_lib_source() + "\n" + _TAR_OUTPUT_CELL_SRC,
+            runner._env({"CR_TAR_REL": rel}), exec_t,
+        ))
+        if tar_res.ok and "CR_TAR_READY" in tar_res.out:
+            dl_t3 = runner.download_timeout_s if next_timeout is None else next_timeout()
+            if dl_t3 is None:
+                completed = False
+                break
+            with tempfile.TemporaryDirectory(prefix="colab-dir-tar-") as tmp_stage:
+                stage_root = Path(tmp_stage)
+                tmp_tar = stage_root / "archive.tar"
+                dl_tar = runner._clean(runner.colab.download_unscrubbed(
+                    runner.session, "%s/%s.tar" % (out_prefix, rel), str(tmp_tar), dl_t3,
+                ))
+                if dl_tar.ok:
+                    err_code = _extract_dir_tar(
+                        tmp_tar, stage_root, rel, local, runner, bucket=dest_dir.name,
+                    )
+                    if err_code is None:
+                        transferred.append(rel)
+                    elif output_errors is not None:
+                        output_errors[rel] = err_code
     return transferred, completed
 
 
@@ -991,6 +1236,8 @@ def reconcile_stopped_outcome(
             "sealed": None,
             "collected_outputs": [],
             "salvaged_outputs": [],
+            "missing_outputs": [],
+            "output_errors": {},
             "quarantined": [],
         }
 
@@ -1063,8 +1310,7 @@ def launch_window(
         runner_cls=runner_cls,
     )
     merged_env = resolve_kit_env(list(spec.env) + list(extra_env))
-    if "CR_RUN_ID" in merged_env:
-        raise Refused("RUN_ID_RESERVED", "CR_RUN_ID is reserved: omit it from job.env and --env")
+    _refuse_reserved_env(merged_env)
 
     live_mode = not dry and not local_cpu
     s_dir, l_file = _state_paths(state_dir, study_ledger, live=live_mode)
@@ -1154,6 +1400,10 @@ def launch_window(
         client = LocalColab(out_path / "_local_vm_content")
     else:
         client = cli_from_env()
+    vm_content = str(client.content_dir.resolve()) if isinstance(client, LocalColab) else "/content"
+    vm_content_base = vm_content.rstrip("/\\") or "/"
+    remote_bundle = "%s/%s" % (vm_content_base, bundle_name)
+    remote_script = "%s/%s" % (vm_content_base, script_name)
 
     outcome = _base_outcome(
         window_id=window_id, session=eff_session, spec=spec, card_spec=card_spec,
@@ -1184,7 +1434,7 @@ def launch_window(
     write_json_atomic(out_path / "window_meta.json", meta)
 
     runner = runner_cls(
-        client, eff_session, out_path, job=spec.job, content="/content", poll_s=spec.poll_s,
+        client, eff_session, out_path, job=spec.job, content=vm_content, poll_s=spec.poll_s,
         pre_opened=True, clock=clock, sleep=sleep, log=log, trace=trace,
     )
     lock_path = _default_open_lock_path(open_lock)
@@ -1299,7 +1549,7 @@ def launch_window(
                         ledger.reserve_card(spec.study, card_spec.name, session=eff_session, window_id=window_id)
 
                     write_json_atomic(
-                        out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": "/content"}
+                        out_path / "session_open.json", {"session": eff_session, "job": spec.job, "content": vm_content}
                     )
                     marker_written = True
                     # Count wall and cap spend from immediately BEFORE `colab new` (Colab bills from assignment).
@@ -1459,10 +1709,10 @@ def launch_window(
                 finally:
                     lock_held = False
 
-            # Open lock released: upload bundle and driver script flat into /content, bounded by remaining cap/wall.
+            # Open lock released: upload bundle and driver script flat into vm_content, bounded by remaining cap/wall.
             for local_f, remote_f in (
-                (bundle_path, "/content/%s" % bundle_name),
-                (script_path, "/content/%s" % script_name),
+                (bundle_path, remote_bundle),
+                (script_path, remote_script),
             ):
                 up_t_lim, tripped_out = _next_call_timeout(120.0, sig_state)
                 if tripped_out is not None:
@@ -1514,8 +1764,9 @@ def launch_window(
 
         collected: list[str] = []
         salvaged: list[str] = []
+        output_errors: dict[str, str] = {}
 
-        def _next_cleanup_download_timeout() -> Optional[float]:
+        def _next_cleanup_budget(max_call_s: float) -> Optional[float]:
             now = clock()
             stop_res_s = runner.stop_bound_s()
             end_t0 = runner._end_t0 if runner._end_t0 is not None else now
@@ -1530,54 +1781,71 @@ def launch_window(
             if call_budget_s < MIN_CALL_S:
                 log("cleanup download skipped: %.2fs left after reserving %.0fs for stop" % (rem_s, stop_res_s))
                 return None
-            return min(float(runner.download_timeout_s), call_budget_s)
+            return min(float(max_call_s), call_budget_s)
+
+        def _next_cleanup_download_timeout() -> Optional[float]:
+            return _next_cleanup_budget(runner.download_timeout_s)
+
+        def _next_cleanup_exec_timeout() -> Optional[float]:
+            return _next_cleanup_budget(DEFAULT_TAR_TIMEOUT_S)
+
+        def _download_vm_card(dest_list: list[str]) -> bool:
+            if not (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu"):
+                return True
+            dl_t = _next_cleanup_download_timeout()
+            if dl_t is None:
+                return False
+            vm_card_local = out_path / "vm_card.json"
+            remote_vm_card = "%s/%s_out/vm_card.json" % (vm_content_base, spec.job)
+            vm_res = runner.download(remote_vm_card, vm_card_local, timeout=dl_t)
+            if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in dest_list:
+                dest_list.append("vm_card.json")
+            return True
 
         def _do_collect() -> bool:
-            if not spec.collect_outputs:
-                return True
-            got, ok = _download_declared_outputs(
-                runner, spec.collect_outputs, out_path / "collected",
-                content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
-            )
-            collected.extend(got)
+            ok = _download_vm_card(collected)
+            if ok and spec.collect_outputs:
+                got, dl_ok = _download_declared_outputs(
+                    runner, spec.collect_outputs, out_path / "collected",
+                    content=vm_content, job=spec.job,
+                    next_timeout=_next_cleanup_download_timeout,
+                    next_exec_timeout=_next_cleanup_exec_timeout,
+                    output_errors=output_errors,
+                )
+                collected.extend(got)
+                ok = dl_ok and all(rel in collected for rel in spec.collect_outputs)
             return ok
 
         def _do_salvage(reason: str) -> bool:
-            ok = True
-            if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
-                dl_t = _next_cleanup_download_timeout()
-                if dl_t is None:
-                    ok = False
-                else:
-                    vm_card_local = out_path / "vm_card.json"
-                    vm_res = runner.download("/content/%s_out/vm_card.json" % spec.job, vm_card_local, timeout=dl_t)
-                    if vm_res.ok and vm_card_local.is_file() and "vm_card.json" not in salvaged:
-                        salvaged.append("vm_card.json")
+            ok = _download_vm_card(salvaged)
             if ok and spec.salvage_outputs:
                 got, dl_ok = _download_declared_outputs(
                     runner, spec.salvage_outputs, out_path / "salvage",
-                    content="/content", job=spec.job, next_timeout=_next_cleanup_download_timeout,
+                    content=vm_content, job=spec.job,
+                    next_timeout=_next_cleanup_download_timeout,
+                    next_exec_timeout=_next_cleanup_exec_timeout,
+                    output_errors=output_errors,
                 )
                 salvaged.extend(got)
                 ok = dl_ok
             return ok
 
-        run_env = dict(merged_env)
-        run_env["CR_CARD"] = card_spec.name
-        run_env["CR_CARD_CLASS"] = card_spec.card_class
-        run_env["CR_DRY_RUN"] = "1" if (local_cpu or card_spec.card_class == "cpu") else "0"
-        if spec.progress_glob:
-            run_env["CR_PROGRESS_GLOB"] = spec.progress_glob
-        if spec.units_glob:
-            run_env["CR_UNITS_GLOB"] = spec.units_glob
+        run_env = build_job_env(
+            spec, card_spec, content=vm_content, local_cpu=local_cpu, extra_env=merged_env,
+        )
+        runner._job_env = {
+            str(k): str(v) for k, v in run_env.items() if k not in _CELL_TRANSIENT_ENV
+        }
 
         run_error: Optional[BaseException] = None
         run_result = None
-        need_salvage = bool(spec.salvage_outputs) or (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu")
+        need_gpu_card = card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu"
+        need_collect = bool(spec.collect_outputs) or need_gpu_card
+        need_salvage = bool(spec.salvage_outputs) or need_gpu_card
         try:
             try:
                 run_result = runner.run(
-                    script="/content/%s" % script_name,
+                    script=remote_script,
                     env=run_env,
                     wall_s=eff_wall_s,
                     guard=guard,
@@ -1585,7 +1853,7 @@ def launch_window(
                     setup_stall_s=spec.setup_stall_s,
                     resident=eff_resident,
                     salvage=_do_salvage if need_salvage else None,
-                    collect=_do_collect if spec.collect_outputs else None,
+                    collect=_do_collect if need_collect else None,
                     opened_monotonic=t_open_monotonic,
                     unreachable_polls=spec.unreachable_polls,
                     unreachable_s=spec.unreachable_s,
@@ -1610,6 +1878,11 @@ def launch_window(
                 outcome["run_rc"] = run_result.rc
                 outcome["collected_outputs"] = list(collected)
                 outcome["salvaged_outputs"] = list(salvaged)
+                outcome["missing_outputs"] = (
+                    [rel for rel in spec.collect_outputs if rel not in collected]
+                    if (run_result.reason == "done" or run_result.prior_reason == "done") else []
+                )
+                outcome["output_errors"] = dict(output_errors)
                 outcome["quarantined"] = list(run_result.quarantined)
                 outcome["cap_trip"] = run_result.cap_trip
                 outcome["refusal"] = run_result.refusal
@@ -1630,6 +1903,9 @@ def launch_window(
                         breaker.record_refusal(card_spec.name, reason="CARD_MISMATCH", session=eff_session, day=utc_day)
             elif run_result is not None:
                 outcome["status"] = run_result.reason
+
+            if outcome["status"] == "done" and outcome["missing_outputs"]:
+                outcome["status"] = "partial"
 
             if run_error is not None:
                 is_int = isinstance(run_error, (RunInterrupted, KeyboardInterrupt))
@@ -1730,6 +2006,7 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
 
 __all__ = [
     "LocalColab",
+    "build_job_env",
     "compute_launch_budget",
     "default_cleanup_bound_s",
     "default_session_name",

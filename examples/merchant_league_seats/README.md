@@ -26,3 +26,11 @@ Runs the full staging, VM cell loop (`start.py`, `poll.py`, `lib.py`), local Ope
 python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/ml-cpu --local-cpu
 python -m colab_runner status --out-dir runs/ml-cpu
 ```
+
+## Live GPU smoke (with in-process loopback stub)
+
+Pass `--env ML_SMOKE_STUB=1` to run the in-process loopback stub during `gpu-live` (`CR_*` env names are reserved by `colab-runner` and refused on `--env`):
+
+```bash
+python -m colab_runner launch --spec examples/merchant_league_seats/colab-window.toml --out-dir runs/smoke-t4-live --card T4 --shape standard --max-rate 1.5 --wall-s 180 --cap 2.5 --env ML_SMOKE_STUB=1
+```

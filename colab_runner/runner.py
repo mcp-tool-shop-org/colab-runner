@@ -57,6 +57,17 @@ MIN_CALL_S = 1.0  # no call is started with less than this left before the wall 
 USAGE_RETRY_PAUSE_S = 2.0  # between the tries of a failed `colab usage` read
 REACHED_EPS_S = 1e-6  # less than this left: the wall or the ceiling has been reached
 DEFAULT_DOWNLOAD_TIMEOUT_S = 120.0
+_CELL_TRANSIENT_ENV = frozenset({
+    "CR_RUN_ID",
+    "CR_MODE",
+    "CR_SCRIPT",
+    "CR_HOLD_S",
+    "CR_HEARTBEAT_S",
+    "CR_POLL_LOG_OFFSET",
+    "CR_KILL_GRACE_S",
+    "CR_RESIDENT_MAX_S",
+    "CR_TAR_REL",
+})
 # Ends on which the VM job may still be running: its process group is terminated before salvage and stop.
 TRIPS = frozenset(
     {"wall", "cap", "setup_stall", "progress_stall", "dead", "unreachable", "start_failed", "interrupted", "error"}
@@ -221,6 +232,7 @@ class Runner:
         sleep: Callable[[float], None] = time.sleep,
         log: Callable[[str], None] = lambda s: None,
         trace: Callable[[str], None] = lambda s: None,
+        job_env: Mapping[str, str] | None = None,
     ):
         require_number("POLL_INVALID", "poll_s", poll_s)
         for name, value in (
@@ -262,10 +274,21 @@ class Runner:
         self._t0, self._wall_s, self._guard = 0.0, 0.0, None
         self._result_written = False  # runner_result.json holds this run's end: a later quarantine rewrites it
         self._prior_detail = ""
+        self._job_env: dict[str, str] = {
+            str(k): str(v) for k, v in (job_env or {}).items() if k not in _CELL_TRANSIENT_ENV
+        }
 
     # -- environment the cells read -------------------------------------------------------------------------------
     def _env(self, extra: Mapping[str, str] | None = None) -> dict:
-        env = {"CR_CONTENT": self.content, "CR_JOB": self.job}
+        base = self.content.rstrip("/\\") or "/"
+        env = {
+            "CR_CONTENT": self.content,
+            "CR_JOB": self.job,
+            "CR_OUT_DIR": f"{base}/{self.job}_out" if base != "/" else f"/{self.job}_out",
+            "CR_PROGRESS_GLOB": "",
+            "CR_UNITS_GLOB": "",
+        }
+        env.update(self._job_env)
         if self._run_id:
             env["CR_RUN_ID"] = self._run_id  # every cell: the VM answers for this run only
         env.update(extra or {})
@@ -403,6 +426,7 @@ class Runner:
         (kernel_timeout) is never shorter than CR_RESIDENT_MAX_S and cannot end the cell before the window does.
         Nothing bills for the extra: every exit kills the child (_end) before the stop."""
         full = self._env(env)
+        full.setdefault("CR_POLL_EVERY_S", str(self.poll_s))
         ceil_left = max(1, math.ceil(left))
         if "CR_RESIDENT_MAX_S" in full:
             max_s = max(1.0, _parse_resident_max_s(full["CR_RESIDENT_MAX_S"]))
@@ -555,6 +579,10 @@ class Runner:
         before any `colab` call; after that, every end goes through the stop."""
         kit_env = self._check_run(script, hold_s, heartbeat_s, env, wall_s, guard, progress_stall_s, setup_stall_s,
                                   dead_confirm, resident, unreachable_polls, unreachable_s, opened_monotonic)
+        if env:
+            self._job_env = {
+                str(k): str(v) for k, v in env.items() if k not in _CELL_TRANSIENT_ENV
+            }
         hold_mode = hold_s is not None
         now_m = self.clock()
         self._t0 = min(float(opened_monotonic), now_m) if opened_monotonic is not None else now_m

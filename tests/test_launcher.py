@@ -25,6 +25,7 @@ from colab_runner.launcher import (
     _pid_alive,
     _read_pre_open_usage,
     _state_paths,
+    _try_acquire_reclaim_guard,
     default_cleanup_bound_s,
     launch_window,
     reconcile_stopped_outcome,
@@ -41,7 +42,7 @@ class SimColab(FakeColab):
 
     def __init__(self, *, new_results=None, sessions_rows=None, after_open_rows=None, upload_results=None,
                  remote_files=None, delay_upload_s: float = 0.0, delay_new_s: float = 0.0,
-                 hang_downloads: bool = False, **kw):
+                 delay_kill_s: float = 0.0, hang_downloads: bool = False, **kw):
         super().__init__(**kw)
         self.new_results = list(new_results or [])
         self.sessions_rows = list(sessions_rows or [])
@@ -50,9 +51,26 @@ class SimColab(FakeColab):
         self.remote_files = dict(remote_files or {})
         self.delay_upload_s = float(delay_upload_s)
         self.delay_new_s = float(delay_new_s)
+        self.delay_kill_s = float(delay_kill_s)
         self.hang_downloads = bool(hang_downloads)
         self.uploads: list[tuple[str, str, str]] = []
         self.opened_sessions: set[str] = set()
+
+    def exec_cell(self, session, source, env=None, timeout=60.0) -> CliResult:
+        if "CR_KILL_GRACE_S" in (env or {}) and self.delay_kill_s and self.clock is not None:
+            self.clock.advance(self.delay_kill_s)
+        if "CR_TAR_REL" in (env or {}):
+            self._record("tar", session, timeout)
+            self.envs.append(dict(env or {}))
+            if self.hang_downloads:
+                if self.clock is not None:
+                    self.clock.advance(max(0.0, float(timeout)) + 2.0 * KILL_WAIT_S)
+                return CliResult(124, "", "tar timed out after %.1fs" % timeout)
+            key = "/content/%s_out/%s.tar" % (env.get("CR_JOB", "job"), env["CR_TAR_REL"])
+            if key in self.remote_files:
+                return CliResult(0, "CR_TAR_READY\n")
+            return CliResult(0, "CR_TAR_MISSING\n")
+        return super().exec_cell(session, source, env=env, timeout=timeout)
 
     def sessions(self, timeout: float = 30.0) -> CliResult:
         self._record("sessions", None, timeout)
@@ -848,6 +866,8 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
                 lc._translate_remote("/content/../outside")
             with self.assertRaises(ValueError):
                 lc._translate_remote("../outside")
+            with self.assertRaises(ValueError):
+                lc._translate_remote(str((root / "outside").resolve()))
             self.assertEqual(lc.upload("closed", __file__, "/content/a").rc, 1)
             self.assertEqual(lc.exec_cell("closed", "print(1)").rc, 1)
             lc.new_session("s", card="CPU")
@@ -1147,8 +1167,8 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 self.EXAMPLE_SPEC, root / "t4_dry", dry=True,
                 card="T4", shape="standard", max_rate=1.5, wall_s=180.0, cap=2.5,
             )
-            self.assertGreaterEqual(dry_plan["budget"]["cleanup_bound_s"], 1376.0)
-            self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"], 910.0)
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_bound_s"], 1976.0)
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"], 1510.0)
             self.assertLessEqual(dry_plan["budget"]["worst_case_total_spend"], 2.5)
 
             t4_seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=1.5, n=1, balance=99.9)]
@@ -1196,7 +1216,9 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 colab=sim_done, clock=c_done.now, sleep=c_done.sleep,
                 state_dir=root / "st_done", open_lock=root / "done.lock",
             )
-            self.assertEqual(out_done["status"], "done")
+            self.assertEqual(out_done["status"], "partial")
+            self.assertEqual(out_done["exit_code"], 2)
+            self.assertEqual(out_done["missing_outputs"], ["turn_summary.json", "from-seat"])
             self.assertTrue(out_done["session_stopped_confirmed"])
             self.assertLessEqual(out_done["spend_ccu"], 2.5)
             dl_calls = [c for c in sim_done.calls if c["kind"] == "download"]
@@ -1264,6 +1286,634 @@ class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
                 ):
                     pass
             self.assertEqual(ctx.exception.code, "OPEN_LOCK_TIMEOUT")
+
+
+class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
+    EXAMPLE_SPEC = Path(__file__).resolve().parents[1] / "examples" / "merchant_league_seats" / "colab-window.toml"
+
+    def test_fu_1_indented_fence_inside_markdown_prereg_refuses_a100_on_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "worker.py").write_text("print('ok')\n", encoding="utf-8")
+            (repo / "sealed-eval").mkdir()
+            (repo / "sealed-eval" / "item.json").write_text("{}\n", encoding="utf-8")
+            prereg = repo / "prereg.md"
+            prereg_raw = (
+                "study: demo-study\n"
+                "allowed_host: colab.google.com\n"
+                "sealed_path: sealed-eval/item.json\n\n"
+                "## Example of another study's config\n"
+                "```markdown\n"
+                "    ```\n"
+                "allowed_cards: A100\n"
+                "```\n\n"
+                "allowed_cards: G4\n"
+            ).encode("utf-8")
+            prereg.write_bytes(prereg_raw)
+            prereg.chmod(0o444)
+            try:
+                spec = repo / "colab-window.toml"
+                spec.write_text(
+                    'schema_version = 1\n'
+                    '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                    '[compute]\ncard = "G4"\nshape = "standard"\nmax_rate = 10.5\ncap = 15.0\nwall_s = 600\n'
+                    '[inputs]\nroot = "."\nfiles = ["worker.py", "sealed-eval/item.json"]\n'
+                    '[inputs.sealed]\npreregistration_path = "prereg.md"\n'
+                    f'preregistration_sha256 = "{hashlib.sha256(prereg_raw).hexdigest()}"\n'
+                    'allowed_cards = ["G4", "A100"]\nallowed_host = "colab.google.com"\n'
+                    '[job]\nrun = ["python3 worker.py"]\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaises(Refused) as ctx:
+                    launch_window(
+                        spec, root / "a100_out", card="A100", shape="standard", max_rate=12.0, cap=15.0,
+                        dry=True, allow_sealed=True,
+                    )
+                self.assertEqual(ctx.exception.code, "SEALED_DESTINATION_REFUSED")
+            finally:
+                prereg.chmod(0o644)
+
+    def test_fu_2_reclaim_guard_race_does_not_steal_first_contenders_live_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            reclaim_guard = Path(tmp) / "open.reclaim"
+            reclaim_guard.mkdir()
+            (reclaim_guard / "owner.json").write_text(
+                json.dumps({"pid": 888888, "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+            )
+            barrier = threading.Barrier(2)
+            c1_acquired = threading.Event()
+            outcomes: dict[str, bool] = {}
+
+            def _contender_1():
+                def _pid_alive_1(pid: int) -> bool:
+                    if pid == 888888:
+                        barrier.wait(timeout=5.0)
+                    return pid == os.getpid()
+
+                ok = _try_acquire_reclaim_guard(reclaim_guard, pid_alive=_pid_alive_1)
+                outcomes["c1"] = ok
+                c1_acquired.set()
+
+            real_rename = os.rename
+            c2_tid = [None]
+
+            def _gated_rename(src, dst):
+                if threading.get_ident() == c2_tid[0] and Path(src) == reclaim_guard:
+                    c1_acquired.wait(timeout=5.0)
+                return real_rename(src, dst)
+
+            def _contender_2():
+                c2_tid[0] = threading.get_ident()
+
+                def _pid_alive_2(pid: int) -> bool:
+                    if pid == 888888:
+                        barrier.wait(timeout=5.0)
+                    return pid == os.getpid()
+
+                outcomes["c2"] = _try_acquire_reclaim_guard(reclaim_guard, pid_alive=_pid_alive_2)
+
+            with mock.patch("colab_runner.launcher.os.rename", side_effect=_gated_rename):
+                t1 = threading.Thread(target=_contender_1)
+                t2 = threading.Thread(target=_contender_2)
+                t1.start()
+                t2.start()
+                t1.join(timeout=5.0)
+                t2.join(timeout=5.0)
+
+            self.assertEqual(outcomes, {"c1": True, "c2": False})
+            self.assertTrue((reclaim_guard / "owner.json").is_file())
+            self.assertEqual(json.loads((reclaim_guard / "owner.json").read_text(encoding="utf-8"))["pid"], os.getpid())
+            self.assertEqual([p.name for p in Path(tmp).glob("*.stale-*")], [])
+
+            # Ownerless stale guard replaced concurrently -> contender fails cleanly without leaking stale dir.
+            rg_ownerless = Path(tmp) / "ownerless.reclaim"
+            rg_ownerless.mkdir()
+            old_t = 1000.0
+            os.utime(rg_ownerless, (old_t, old_t))
+            with mock.patch("colab_runner.launcher.time.time", return_value=old_t + 3000.0):
+                def _swap_during_rename(src, dst):
+                    real_rename(src, dst)
+                    rg_ownerless.mkdir()
+                    (rg_ownerless / "owner.json").write_text(
+                        json.dumps({"pid": os.getpid(), "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+                    )
+
+                with mock.patch("colab_runner.launcher._read_owner_bytes", side_effect=[b"", b"changed"]):
+                    with mock.patch("colab_runner.launcher.os.rename", side_effect=_swap_during_rename):
+                        self.assertFalse(_try_acquire_reclaim_guard(rg_ownerless, pid_alive=lambda pid: pid == os.getpid()))
+            self.assertTrue((rg_ownerless / "owner.json").is_file())
+
+            # LOW 4a: ownerless stale guard replaced during rename by a *fresh* ownerless dir -> restored, not stolen.
+            rg_fresh = Path(tmp) / "fresh_ownerless.reclaim"
+            rg_fresh.mkdir()
+            os.utime(rg_fresh, (old_t, old_t))
+            now_t = old_t + 3000.0
+            with mock.patch("colab_runner.launcher.time.time", return_value=now_t):
+                def _swap_with_fresh_ownerless(src, dst):
+                    real_rename(src, dst)
+                    if Path(src) == rg_fresh:
+                        rg_fresh.mkdir()
+                        os.utime(rg_fresh, (now_t, now_t))
+                        os.utime(dst, (now_t, now_t))
+
+                with mock.patch("colab_runner.launcher.os.rename", side_effect=_swap_with_fresh_ownerless):
+                    self.assertFalse(_try_acquire_reclaim_guard(rg_fresh, pid_alive=lambda pid: pid == os.getpid()))
+            self.assertTrue(rg_fresh.is_dir())
+            self.assertFalse((rg_fresh / "owner.json").exists())
+
+    def test_fu_3_overrun_kill_triggers_cleanup_download_clamp_and_skip_under_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            t4_seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=1.5, n=1, balance=99.9)]
+
+            # Case 1: kill takes 120s (50s overrun vs 70s kill bound) -> last salvage download is clamped < 120s.
+            c1 = FakeClock()
+            n_poll_1 = {"n": 0}
+
+            def _polls_1(n, env):
+                n_poll_1["n"] += 1
+                c1.advance(200.0 if n_poll_1["n"] <= 20 else 25.0)
+                return rec(progress=n)
+
+            sim1 = SimColab(
+                clock=c1,
+                after_open_rows=["[t4-clamp] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=_polls_1,
+                delay_kill_s=500.0,
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            out1 = launch_window(
+                self.EXAMPLE_SPEC, root / "overrun_clamp", session="t4-clamp",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, margin=0.0, wall_s=7200.0,
+                colab=sim1, clock=c1.now, sleep=c1.sleep,
+                state_dir=root / "st1", open_lock=root / "lock1",
+            )
+            self.assertEqual(out1["status"], "cap")
+            self.assertTrue(out1["session_stopped_confirmed"])
+            self.assertLessEqual(out1["spend_ccu"], 2.5)
+            dl_timeouts = [c["timeout"] for c in sim1.calls if c["kind"] == "download"]
+            self.assertTrue(any(t < 120.0 for t in dl_timeouts), dl_timeouts)
+
+            # Case 2: huge kill overrun (900s) -> later download hits `cleanup download skipped` and still stays <= cap.
+            c2 = FakeClock()
+            n_poll_2 = {"n": 0}
+
+            def _polls_2(n, env):
+                n_poll_2["n"] += 1
+                c2.advance(200.0 if n_poll_2["n"] <= 20 else 25.0)
+                return rec(progress=n)
+
+            sim2 = SimColab(
+                clock=c2,
+                after_open_rows=["[t4-skip] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=_polls_2,
+                delay_kill_s=1300.0,
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            logs: list[str] = []
+            out2 = launch_window(
+                self.EXAMPLE_SPEC, root / "overrun_skip", session="t4-skip",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, margin=0.0, wall_s=7200.0,
+                colab=sim2, clock=c2.now, sleep=c2.sleep, log=logs.append,
+                state_dir=root / "st2", open_lock=root / "lock2",
+            )
+            self.assertEqual(out2["status"], "cap")
+            self.assertTrue(out2["session_stopped_confirmed"])
+            self.assertLessEqual(out2["spend_ccu"], 2.5)
+            self.assertTrue(any("cleanup download skipped" in msg for msg in logs), logs)
+            self.assertLess(len([c for c in sim2.calls if c["kind"] == "download"]), 7)
+
+    def test_fix1_h1_cr_env_reserved_in_cli_and_job_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            for flag in ("CR_DRY_RUN=1", "CR_OUT_DIR=/tmp/x", "CR_SMOKE_STUB=1"):
+                with self.subTest(flag=flag):
+                    with self.assertRaises(Refused) as ctx:
+                        launch_window(spec, root / ("cli_" + flag.split("=")[0]), extra_env=[flag], dry=True)
+                    self.assertEqual(ctx.exception.code, "ENV_RESERVED")
+                    out, err = io.StringIO(), io.StringIO()
+                    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                        rc = main(["launch", "--spec", str(spec), "--out-dir", str(root / ("m_" + flag.split("=")[0])),
+                                   "--dry", "--env", flag])
+                    self.assertEqual(rc, 1)
+                    self.assertIn("REFUSED: ENV_RESERVED", err.getvalue())
+
+            with self.assertRaises(Refused) as ctx_run:
+                launch_window(spec, root / "cli_run_id", extra_env=["CR_RUN_ID=abc"], dry=True)
+            self.assertEqual(ctx_run.exception.code, "RUN_ID_RESERVED")
+
+            spec_job_env = root / "spec_cr_env.toml"
+            spec_job_env.write_text(
+                spec.read_text(encoding="utf-8").replace(
+                    'cpu_dry_run = ["python3 worker.py"]',
+                    'cpu_dry_run = ["python3 worker.py"]\nenv = ["CR_OUT_DIR=/tmp/override"]',
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Refused) as ctx_job:
+                launch_window(spec_job_env, root / "job_env_cr", dry=True)
+            self.assertEqual(ctx_job.exception.code, "ENV_RESERVED")
+
+    def test_fix1_h2_poll_mode_progress_glob_reports_progress_across_polls(self):
+        if os.name != "posix":
+            self.skipTest("LocalColab poll-mode execution requires POSIX bash/nohup")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            (root / "worker.py").write_text(
+                "import json, os, time\nfrom pathlib import Path\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "pdir = w / 'custom_prog'\nudir = w / 'custom_units'\n"
+                "pdir.mkdir(exist_ok=True)\nudir.mkdir(exist_ok=True)\n"
+                "time.sleep(0.25)\n"
+                "(pdir / 'a.cnt').write_text('3\\n', encoding='utf-8')\n"
+                "(udir / 'u1.done').write_text('ok\\n', encoding='utf-8')\n"
+                "time.sleep(0.25)\n"
+                "(pdir / 'b.cnt').write_text('7\\n', encoding='utf-8')\n"
+                "(udir / 'u2.done').write_text('ok\\n', encoding='utf-8')\n"
+                "time.sleep(0.25)\n"
+                "(w / 'result.json').write_text(json.dumps({'ok': True}) + '\\n', encoding='utf-8')\n"
+                "(w / 'out.txt').write_text('done\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec = root / "colab-window.toml"
+            spec.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nprogress_stall_s = 0.5\nwall_s = 30\ncap = 8.0\nresident = false\n'
+                '[inputs]\nroot = "."\nfiles = ["worker.py"]\n'
+                '[job]\n'
+                'run = ["python3 worker.py"]\n'
+                'progress_glob = "custom_prog/*.cnt"\n'
+                'units_glob = "custom_units/*.done"\n'
+                '[outputs]\ncollect = ["result.json", "out.txt"]\n',
+                encoding="utf-8",
+            )
+            seen_envs: list[dict[str, str]] = []
+            orig_exec = LocalColab.exec_cell
+
+            def _spy_exec(lc_self, session, source, env=None, timeout=60.0):
+                seen_envs.append(dict(env or {}))
+                return orig_exec(lc_self, session, source, env=env, timeout=timeout)
+
+            out_dir = root / "poll_h2_out"
+            with mock.patch.object(LocalColab, "exec_cell", autospec=True, side_effect=_spy_exec):
+                outcome = launch_window(spec, out_dir, local_cpu=True)
+
+            self.assertEqual(outcome["status"], "done", outcome)
+            poll_envs = [e for e in seen_envs if "CR_POLL_LOG_OFFSET" in e]
+            self.assertGreaterEqual(len(poll_envs), 2)
+            for pe in poll_envs:
+                self.assertEqual(pe.get("CR_PROGRESS_GLOB"), "custom_prog/*.cnt")
+                self.assertEqual(pe.get("CR_UNITS_GLOB"), "custom_units/*.done")
+            rr = json.loads((out_dir / "runner_result.json").read_text(encoding="utf-8"))
+            self.assertGreaterEqual(rr["last"]["progress"], 3)
+            self.assertGreaterEqual(rr["last"]["units_done"], 1)
+
+    def test_fix1_m1_directory_tar_collect_and_missing_outputs_partial(self):
+        if os.name != "posix":
+            self.skipTest("LocalColab tar-output execution requires POSIX bash/nohup")
+        t = fake_tokens()
+        leak = leak_lines(t)[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # LocalColab.download and download_unscrubbed reject missing files & raw directories like live colab download
+            lc = LocalColab(root / "lc_dir_check")
+            (lc.content_dir / "raw_dir").mkdir()
+            (lc.content_dir / "raw_dir" / "a.txt").write_text("hi\n", encoding="utf-8")
+            self.assertNotEqual(lc.download("s", "/content/raw_dir", str(root / "dst_dir")).rc, 0)
+            self.assertNotEqual(lc.download_unscrubbed("s", "/content/raw_dir", str(root / "dst_dir")).rc, 0)
+            self.assertNotEqual(lc.download_unscrubbed("s", "/content/no_such.tar", str(root / "dst_miss")).rc, 0)
+
+            (root / ".git").mkdir()
+            (root / "worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "d = w / 'dir_out' / 'nested'\n"
+                "d.mkdir(parents=True, exist_ok=True)\n"
+                f"(d / 'a.txt').write_text('url https://colab.example/x?colab-runtime-proxy-token=' + {t['proxy']!r} + ' ' + {leak!r} + '\\n', encoding='utf-8')\n"
+                "(w / 'dir_out' / 'crlf.txt').write_bytes(b'a\\r\\nb\\r\\n')\n"
+                "(w / 'result.json').write_text('{\"ok\": true}\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec = root / "spec_dir.toml"
+            spec.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["worker.py"]\n'
+                '[job]\nrun = ["python3 worker.py"]\n'
+                '[outputs]\ncollect = ["result.json", "dir_out"]\n',
+                encoding="utf-8",
+            )
+            out_dir = root / "m1_ok"
+            res = launch_window(spec, out_dir, local_cpu=True)
+            self.assertEqual(res["status"], "done", res)
+            self.assertEqual(res["exit_code"], 0)
+            self.assertEqual(res["collected_outputs"], ["result.json", "dir_out"])
+            self.assertEqual(res["missing_outputs"], [])
+            self.assertEqual(res["output_errors"], {})
+            self.assertTrue((out_dir / "_local_vm_content" / "demo_job_out" / "dir_out.tar").is_file())
+            txt = (out_dir / "collected" / "dir_out" / "nested" / "a.txt").read_text(encoding="utf-8")
+            self.assertIn("colab-runtime-proxy-token=[REDACTED]", txt)
+            self.assertIn("[REDACTED]", txt)
+            for v in values(t):
+                self.assertNotIn(v, txt)
+            self.assertEqual((out_dir / "collected" / "dir_out" / "crlf.txt").read_bytes(), b"a\r\nb\r\n")
+
+            # Binary token inside a directory output quarantines that file and sets runner._download_refusal,
+            # while continuing to collect later declared outputs -> raises BinaryDownloadRefused and records
+            # outcome status="error", exit_code=2, refusal.code="BINARY_DOWNLOAD_TOKEN", and output_errors.
+            (root / "bad_dir_worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "d = w / 'bad_dir'\n"
+                "d.mkdir(parents=True, exist_ok=True)\n"
+                f"(d / 'leak.png').write_bytes(b'\\x89PNG\\r\\n\\x1a\\n\\x00colab-runtime-proxy-token=' + {t['proxy'].encode('ascii')!r})\n"
+                "(w / 'result.json').write_text('{\"ok\": true}\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec_bin_dir = root / "spec_bin_dir.toml"
+            spec_bin_dir.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["bad_dir_worker.py"]\n'
+                '[job]\nrun = ["python3 bad_dir_worker.py"]\n'
+                '[outputs]\ncollect = ["bad_dir", "result.json"]\n',
+                encoding="utf-8",
+            )
+            out_bin_dir = root / "m1_bin_dir"
+            with self.assertRaises(BinaryDownloadRefused) as ctx_bin_dir:
+                launch_window(spec_bin_dir, out_bin_dir, local_cpu=True)
+            self.assertEqual(ctx_bin_dir.exception.code, "BINARY_DOWNLOAD_TOKEN")
+            res_b = json.loads((out_bin_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(res_b["status"], "error", res_b)
+            self.assertEqual(res_b["exit_code"], 2)
+            self.assertIsNotNone(res_b["refusal"])
+            self.assertEqual(res_b["refusal"]["code"], "BINARY_DOWNLOAD_TOKEN")
+            self.assertEqual(res_b["collected_outputs"], ["result.json"])
+            self.assertEqual(res_b["missing_outputs"], ["bad_dir"])
+            self.assertEqual(res_b["output_errors"], {"bad_dir": "BINARY_DOWNLOAD_TOKEN"})
+            self.assertEqual(len(res_b["quarantined"]), 1)
+            self.assertTrue(
+                res_b["quarantined"][0]["path"].replace("\\", "/").endswith("/collected/bad_dir/leak.png"),
+                res_b["quarantined"],
+            )
+            self.assertTrue((out_bin_dir / "collected" / "result.json").is_file())
+            self.assertFalse((out_bin_dir / "collected" / "bad_dir").exists())
+
+            # Non-refusal OSError during directory scrub records OUTPUT_SCRUB_FAILED and still collects next output.
+            (root / "two_dirs_worker.py").write_text(
+                "from pathlib import Path\nimport os\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "for name in ('dir_a', 'dir_b'):\n"
+                "    d = w / name\n"
+                "    d.mkdir(parents=True, exist_ok=True)\n"
+                "    (d / 'item.txt').write_text(name + '\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec_scrub_err = root / "spec_scrub_err.toml"
+            spec_scrub_err.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+                '[compute]\ncard = "CPU"\npoll_s = 0.15\nwall_s = 30\ncap = 8.0\n'
+                '[inputs]\nroot = "."\nfiles = ["two_dirs_worker.py"]\n'
+                '[job]\nrun = ["python3 two_dirs_worker.py"]\n'
+                '[outputs]\ncollect = ["dir_a", "dir_b"]\n',
+                encoding="utf-8",
+            )
+            out_scrub_err = root / "m1_scrub_err"
+            import colab_runner.launcher as launcher_mod
+            real_scrub_local = launcher_mod.scrub_local
+
+            def _fail_first_dir_scrub(target, *args, **kwargs):
+                if Path(target).name == "dir_a" and "colab-dir-tar-" in str(target):
+                    raise PermissionError("simulated permission denied")
+                return real_scrub_local(target, *args, **kwargs)
+
+            with mock.patch.object(launcher_mod, "scrub_local", side_effect=_fail_first_dir_scrub):
+                res_scrub = launch_window(spec_scrub_err, out_scrub_err, local_cpu=True)
+            self.assertEqual(res_scrub["status"], "partial", res_scrub)
+            self.assertEqual(res_scrub["exit_code"], 2)
+            self.assertIsNone(res_scrub["refusal"])
+            self.assertEqual(res_scrub["collected_outputs"], ["dir_b"])
+            self.assertEqual(res_scrub["missing_outputs"], ["dir_a"])
+            self.assertEqual(res_scrub["output_errors"], {"dir_a": "OUTPUT_SCRUB_FAILED"})
+            self.assertTrue((out_scrub_err / "collected" / "dir_b" / "item.txt").is_file())
+            self.assertFalse((out_scrub_err / "collected" / "dir_a").exists())
+
+            spec_missing = root / "spec_missing.toml"
+            spec_missing.write_text(
+                spec.read_text(encoding="utf-8").replace(
+                    'collect = ["result.json", "dir_out"]',
+                    'collect = ["result.json", "does_not_exist.json"]',
+                ),
+                encoding="utf-8",
+            )
+            out_partial = root / "m1_partial"
+            res_p = launch_window(spec_missing, out_partial, local_cpu=True)
+            self.assertEqual(res_p["status"], "partial", res_p)
+            self.assertEqual(res_p["exit_code"], 2)
+            self.assertEqual(res_p["collected_outputs"], ["result.json"])
+            self.assertEqual(res_p["missing_outputs"], ["does_not_exist.json"])
+            self.assertFalse((out_partial / "collect_confirmed.json").exists())
+
+    def test_fix1_edge_coverage_reclaim_tar_and_vm_glob(self):
+        import tarfile
+        from colab_runner.launcher import (
+            _check_lock_dir_stale,
+            _claim_reclaim_guard,
+            _download_declared_outputs,
+            _extract_dir_tar,
+            _read_owner_bytes,
+        )
+        from colab_runner.window_lib import launch_guards as lg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # vm/lib.py relative cr_glob_files + empty pattern + cr_progress + cr_units
+            vm_root = root / "vm"
+            work_dir = vm_root / "j_work"
+            out_dir = vm_root / "j_out"
+            (work_dir / "rel").mkdir(parents=True)
+            (out_dir / "rel").mkdir(parents=True)
+            (work_dir / "rel" / "a.cnt").write_text("5\n", encoding="utf-8")
+            (out_dir / "rel" / "b.done").write_text("1\n", encoding="utf-8")
+            lib_path = Path(__file__).resolve().parents[1] / "colab_runner" / "vm" / "lib.py"
+            with mock.patch.dict(os.environ, {"CR_CONTENT": str(vm_root), "CR_JOB": "j", "CR_OUT_DIR": str(out_dir)}):
+                ns: dict = {"scrub_colab_tokens": lg.scrub_colab_tokens}
+                exec(compile(lib_path.read_text(encoding="utf-8"), str(lib_path), "exec"), ns)
+                self.assertEqual(ns["cr_glob_files"](""), [])
+                self.assertGreaterEqual(len(ns["cr_glob_files"]("rel/*")), 2)
+                with mock.patch.dict(os.environ, {"CR_PROGRESS_GLOB": "rel/*.cnt", "CR_UNITS_GLOB": "rel/*.done"}):
+                    self.assertEqual(ns["cr_progress"](), 5)
+                    self.assertEqual(ns["cr_units"](), 1)
+
+            # _read_owner_bytes / _check_lock_dir_stale / _claim_reclaim_guard / _try_acquire_reclaim_guard OSError edges
+            dir_owner = root / "dir_owner"
+            (dir_owner / "owner.json").mkdir(parents=True)
+            self.assertIsNone(_read_owner_bytes(dir_owner))
+
+            stat_fail = root / "stat_fail.reclaim"
+            stat_fail.mkdir()
+            orig_stat = Path.stat
+            stat_calls = {"n": 0}
+
+            def _flaky_stat(self_p, *a, **kw):
+                if Path(self_p).name == "stat_fail.reclaim":
+                    stat_calls["n"] += 1
+                    if stat_calls["n"] >= 2:
+                        raise OSError("stat boom")
+                return orig_stat(self_p, *a, **kw)
+
+            with mock.patch.object(Path, "stat", autospec=True, side_effect=_flaky_stat):
+                self.assertEqual(_check_lock_dir_stale(stat_fail, pid_alive=lambda pid: False), (False, None))
+
+            race_guard = root / "race.reclaim"
+            with mock.patch("colab_runner.launcher.os.rename", side_effect=OSError("rename fail")):
+                self.assertFalse(_claim_reclaim_guard(race_guard))
+            self.assertEqual(list(root.glob("race.reclaim.prep-*")), [])
+
+            orig_exists = Path.exists
+
+            def _appear_before_second_exists(self_p):
+                if Path(self_p) == race_guard and list(root.glob("race.reclaim.prep-*")):
+                    self_p.mkdir(exist_ok=True)
+                    return True
+                return orig_exists(self_p)
+
+            with mock.patch.object(Path, "exists", autospec=True, side_effect=_appear_before_second_exists):
+                self.assertFalse(_claim_reclaim_guard(race_guard))
+            self.assertEqual(list(root.glob("race.reclaim.prep-*")), [])
+
+            stale_only = root / "stale_oserr.reclaim"
+            stale_only.mkdir()
+            os.utime(stale_only, (100.0, 100.0))
+            with mock.patch("colab_runner.launcher.time.time", return_value=3000.0):
+                with mock.patch("colab_runner.launcher.os.rename", side_effect=OSError("stale rename fail")):
+                    self.assertFalse(_try_acquire_reclaim_guard(stale_only, pid_alive=lambda pid: False))
+
+                def _stat_raise_on_moved(self_p, *a, **kw):
+                    if ".stale-" in Path(self_p).name:
+                        raise OSError("moved stat fail")
+                    return orig_stat(self_p, *a, **kw)
+
+                real_rename = os.rename
+
+                def _fail_restore_rename(src, dst):
+                    if ".stale-" in Path(src).name:
+                        raise OSError("restore rename fail")
+                    return real_rename(src, dst)
+
+                with mock.patch.object(Path, "stat", autospec=True, side_effect=_stat_raise_on_moved):
+                    with mock.patch("colab_runner.launcher.os.rename", side_effect=_fail_restore_rename):
+                        self.assertFalse(_try_acquire_reclaim_guard(stale_only, pid_alive=lambda pid: False))
+
+            # _extract_dir_tar missing/corrupt/unsafe/quarantine errors, and _download_declared_outputs None timeouts
+            runner = Runner(FakeColab(), "s", root / "r_out", job="j")
+            stage_root = root / "stage"
+            stage_root.mkdir()
+            self.assertEqual(
+                _extract_dir_tar(root / "missing.tar", stage_root, "d", root / "dst", runner),
+                "OUTPUT_TAR_CORRUPT",
+            )
+
+            corrupt_tar = root / "corrupt.tar"
+            corrupt_tar.write_bytes(b"not a tar archive")
+            self.assertEqual(
+                _extract_dir_tar(corrupt_tar, stage_root, "corrupt_d", root / "dst_corrupt", runner),
+                "OUTPUT_TAR_CORRUPT",
+            )
+
+            unsafe_tar = root / "unsafe.tar"
+            with tarfile.open(unsafe_tar, "w:") as tf:
+                ti = tarfile.TarInfo("../escape.txt")
+                ti.size = 2
+                tf.addfile(ti, io.BytesIO(b"hi"))
+            self.assertEqual(
+                _extract_dir_tar(unsafe_tar, stage_root, "unsafe_d", root / "dst_unsafe", runner),
+                "OUTPUT_TAR_UNSAFE",
+            )
+
+            t = fake_tokens()
+            poison_tar = root / "poison.tar"
+            payload = b"\x89PNG\r\n\x1a\n\x00colab-runtime-proxy-token=" + t["proxy"].encode("ascii")
+            with tarfile.open(poison_tar, "w:") as tf:
+                ti = tarfile.TarInfo("bad.bin")
+                ti.size = len(payload)
+                tf.addfile(ti, io.BytesIO(payload))
+            self.assertEqual(
+                _extract_dir_tar(
+                    poison_tar, stage_root, "poison_d", root / "poison_dst", runner, bucket="salvage",
+                ),
+                "BINARY_DOWNLOAD_TOKEN",
+            )
+            self.assertIsInstance(runner._download_refusal, BinaryDownloadRefused)
+            self.assertTrue(
+                any(
+                    q.get("path", "").replace("\\", "/").endswith("/salvage/poison_d/bad.bin")
+                    for q in runner._res.quarantined
+                ),
+                runner._res.quarantined,
+            )
+            self.assertTrue((root / "r_out.quarantine").exists())
+
+            from colab_runner.colab_cli import QuarantineEscape
+            import colab_runner.launcher as launcher_mod
+            esc_tar = root / "esc.tar"
+            with tarfile.open(esc_tar, "w:") as tf:
+                ti = tarfile.TarInfo("x.txt")
+                ti.size = 1
+                tf.addfile(ti, io.BytesIO(b"x"))
+            runner._download_refusal = None
+            with mock.patch.object(
+                launcher_mod,
+                "scrub_local",
+                side_effect=QuarantineEscape(root / "src", root / "dest", root / "q"),
+            ):
+                self.assertEqual(
+                    _extract_dir_tar(esc_tar, stage_root, "esc_d", root / "esc_dst", runner),
+                    "QUARANTINE_ESCAPE",
+                )
+            self.assertIsInstance(runner._download_refusal, QuarantineEscape)
+            runner._download_refusal = None
+
+            # Existing destination directory is cleanly replaced and QuarantineEscape returns its code
+            clean_tar = root / "clean.tar"
+            with tarfile.open(clean_tar, "w:") as tf:
+                ti = tarfile.TarInfo("ok.txt")
+                ti.size = 2
+                tf.addfile(ti, io.BytesIO(b"ok"))
+            existing_dst = root / "existing_dst"
+            existing_dst.mkdir()
+            (existing_dst / "old.txt").write_text("stale", encoding="utf-8")
+            self.assertIsNone(_extract_dir_tar(clean_tar, stage_root, "clean_d", existing_dst, runner))
+            self.assertTrue((existing_dst / "ok.txt").is_file())
+            self.assertFalse((existing_dst / "old.txt").exists())
+
+            sim_miss = SimColab(clock=FakeClock(), remote_files={"/content/j_out/d.tar": b""})
+            runner_sim = Runner(sim_miss, "s", root / "r_sim", job="j")
+            got1, ok1 = _download_declared_outputs(
+                runner_sim, ["d"], root / "dl1", content="/content", job="j",
+                next_timeout=lambda: 10.0, next_exec_timeout=lambda: None,
+            )
+            self.assertEqual((got1, ok1), ([], False))
+
+            touts = iter([10.0, 10.0, None])
+            got2, ok2 = _download_declared_outputs(
+                runner_sim, ["d"], root / "dl2", content="/content", job="j",
+                next_timeout=lambda: next(touts, None), next_exec_timeout=lambda: 10.0,
+            )
+            self.assertEqual((got2, ok2), ([], False))
 
 
 if __name__ == "__main__":

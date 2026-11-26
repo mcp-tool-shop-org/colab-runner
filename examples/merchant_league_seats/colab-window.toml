@@ -42,6 +42,8 @@ run = [
 cpu_dry_run = [
   "python3 run_seats.py --mode cpu-stub --cap-gpu-secs 120.2",
 ]
+progress_glob = "progress/seats_completed"
+units_glob = "from-seat/*.json"
 env = []
 
 [outputs]

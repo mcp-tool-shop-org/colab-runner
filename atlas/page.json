@@ -18,7 +18,7 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 12,
+      "changed": 4,
       "moved": 0,
       "parts": 3,
       "removed": 0
@@ -26,13 +26,13 @@
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-26; 12 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-26; 4 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "bc2299f62fa4c272f825d9c9e88d9e3912f7a36c",
-      "generatedAt": "2026-11-26T17:53:13.302Z"
+      "commit": "1f0f5677c4132ab3fbdc047dfc285f4c7afdfa09",
+      "generatedAt": "2026-11-26T22:46:51.684Z"
     },
     "unchanged": true
   },
@@ -41,7 +41,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "04a96eb3296e75e621e95d2db99b4f7bbff0f23b",
+  "commit": "a887fd29fb2dcfba21a8feddf583400985cda5e9",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
@@ -152,13 +152,13 @@
   "duplicatesLead": null,
   "duplicatesNote": [],
   "edges": [],
-  "engine": "1.26.0",
+  "engine": "1.23.0",
   "generated": [],
-  "generatedAt": "2026-11-26T18:40:55.701Z",
+  "generatedAt": "2026-11-26T23:10:07.985Z",
   "limits": [
-    "6 writes and 10 reads use paths built at run time and are not named here.",
+    "6 writes and 11 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "16 writes and 27 reads go to a path their caller passes, not to this repository.",
+    "20 writes and 26 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
     "24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
@@ -183,7 +183,6 @@
   "testedBy": {
     "colab_runner": 18
   },
-  "testedCodeParts": 1,
   "unnamedWrites": 6,
   "unread": [],
   "unreadFiles": 0,

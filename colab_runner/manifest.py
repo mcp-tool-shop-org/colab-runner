@@ -461,8 +461,7 @@ def _parse_preregistration(path: Path, raw_bytes: bytes) -> dict[str, Any]:
         for line in raw_text.splitlines():
             if in_fence is not None:
                 f_ch, f_len = in_fence
-                stripped_fence = line.strip()
-                if stripped_fence and len(stripped_fence) >= f_len and set(stripped_fence) == {f_ch}:
+                if re.match(r"^ {0,3}" + f_ch + r"{" + str(f_len) + r",}[ \t]*$", line) is not None:
                     in_fence = None
                 continue
             fm = PREREG_FENCE_RE.match(line)
@@ -729,6 +728,7 @@ def render_vm_script(
     lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
+        ': "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}"',
         f"export OMP_NUM_THREADS={spec.omp_num_threads}",
         'export CR_WORK_DIR="${CR_CONTENT%/}/${CR_JOB}_work"',
         'mkdir -p "$CR_OUT_DIR" "$CR_OUT_DIR/progress" "$CR_WORK_DIR"',
@@ -744,7 +744,7 @@ def render_vm_script(
     if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":
         check_src = vm_card_check_py(card_spec, min_vram_mib=spec.vram_floor_for(card_spec))
         lines.extend([
-            'if [ "${CR_DRY_RUN:-0}" != "1" ]; then',
+            'if [ "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}" != "1" ]; then',
             '  rc=0',
             '  python3 - <<\'CR_VM_CARD_EOF\' >> "$CR_OUT_DIR/setup.log" 2>&1 || rc=$?',
             check_src.rstrip("\n"),
@@ -763,7 +763,7 @@ def render_vm_script(
         'cd "$CR_WORK_DIR"',
     ])
     if spec.cpu_dry_run_commands:
-        lines.append('if [ "${CR_DRY_RUN:-0}" = "1" ]; then')
+        lines.append('if [ "${CR_DRY_RUN:?set by colab-runner; run this script through colab-runner}" = "1" ]; then')
         for cmd in spec.cpu_dry_run_commands:
             lines.append(f"  {cmd}")
         lines.append("else")

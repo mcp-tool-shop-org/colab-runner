@@ -83,13 +83,16 @@ class _MockLocalOpenAiHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"count": tokens, "tokens": list(range(tokens))})
             return
         if self.path.endswith("/chat/completions"):
-            guild = str(req.get("metadata", {}).get("guild") or "Unknown")
+            meta = req.get("metadata") or {}
+            guild = str(meta.get("guild") or "Unknown")
             reply_obj = {
                 "guild": guild,
                 "bid_units": 12,
                 "ask_price": 4.5,
                 "rationale": f"Synthetic CPU stub turn response for {guild}.",
             }
+            if meta.get("note"):
+                reply_obj["note"] = str(meta["note"])
             self._send_json(
                 200,
                 {
@@ -163,7 +166,7 @@ def run_turns(work_dir: Path, out_dir: Path, *, stub_server: bool, cap_gpu_secs:
                     "temperature": seat["temperature"],
                     "max_tokens": seat["max_output_tokens"],
                     "messages": [{"role": "user", "content": prompt}],
-                    "metadata": {"guild": guild},
+                    "metadata": {"guild": guild, "note": str(seat.get("note") or "")},
                 },
                 timeout_s=timeout_s,
             )
@@ -200,7 +203,8 @@ def run_turns(work_dir: Path, out_dir: Path, *, stub_server: bool, cap_gpu_secs:
 
 
 def _probe_nvidia_smi() -> str | None:
-    smi = os.environ.get("CR_NVIDIA_SMI") or shutil.which("nvidia-smi")
+    env_smi = (os.environ.get("CR_NVIDIA_SMI") or "").strip()
+    smi = env_smi if (env_smi and os.path.isabs(env_smi) and os.path.exists(env_smi)) else shutil.which(env_smi or "nvidia-smi")
     if not smi:
         return None
     proc = subprocess.run(
@@ -226,7 +230,9 @@ def main() -> int:
         seats = validate_seats(work_dir)
         print(f"[setup] validated {len(seats)} local seats", flush=True)
         return 0
-    smoke_stub = args.smoke_stub or (os.environ.get("CR_SMOKE_STUB") == "1")
+    smoke_stub = args.smoke_stub or any(
+        os.environ.get(k) == "1" for k in ("ML_SMOKE_STUB", "SMOKE_STUB", "CR_SMOKE_STUB")
+    )
     use_stub = args.mode == "cpu-stub" or (args.mode == "gpu-live" and smoke_stub)
     summary = run_turns(work_dir, out_dir, stub_server=use_stub, cap_gpu_secs=args.cap_gpu_secs)
     if args.mode == "gpu-live" and smoke_stub:

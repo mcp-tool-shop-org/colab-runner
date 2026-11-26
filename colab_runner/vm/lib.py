@@ -112,14 +112,33 @@ def cr_first_int(path):
     return int(m.group(0)) if m else 0
 
 
+def cr_glob_files(pattern):
+    if not pattern:
+        return []
+    if os.path.isabs(pattern):
+        cands = glob.glob(pattern)
+    else:
+        cands = []
+        for base in (CR_CONTENT, os.path.join(CR_CONTENT, CR_JOB + "_work"), CR_OUT):
+            cands.extend(glob.glob(os.path.join(base, pattern)))
+    seen, out = set(), []
+    for p in sorted(cands):
+        if os.path.isfile(p):
+            rp = os.path.realpath(p)
+            if rp not in seen:
+                seen.add(rp)
+                out.append(p)
+    return out
+
+
 def cr_progress():
     pattern = os.environ.get("CR_PROGRESS_GLOB") or os.path.join(CR_OUT, "progress", "*")
-    return sum(cr_first_int(p) for p in sorted(glob.glob(pattern)) if os.path.isfile(p))
+    return sum(cr_first_int(p) for p in cr_glob_files(pattern))
 
 
 def cr_units():
     pattern = os.environ.get("CR_UNITS_GLOB")
-    return len([p for p in glob.glob(pattern) if os.path.isfile(p)]) if pattern else 0
+    return len(cr_glob_files(pattern)) if pattern else 0
 
 
 def cr_run_id():
@@ -160,10 +179,12 @@ def cr_start_job():
         ]
     else:
         argv = ["bash", os.environ["CR_SCRIPT"]]
+    proc_env = dict(os.environ)
+    proc_env["CR_OUT_DIR"] = CR_OUT
     proc = subprocess.Popen(
         ["nohup", "bash", "-c", CR_WRAPPER, "crwrap", CR_RUN_LOG, CR_STATUS_FILE, json.dumps(want_id)] + argv,
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        env=dict(os.environ), start_new_session=True, close_fds=True,
+        env=proc_env, start_new_session=True, close_fds=True,
     )
     with open(CR_PID_FILE + ".tmp", "w") as fh:
         fh.write("%d\n" % proc.pid)
