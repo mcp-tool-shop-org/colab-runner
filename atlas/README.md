@@ -1,23 +1,14 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-26 from commit 0267b9f by Atlas 1.26.0.
+Mapped at 2026-11-26 from commit 95dd2c7 by Atlas 1.26.0.
 
 ## What this is
 
 4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-19 (a9abaff)
+## What changed since 2026-11-26 (0267b9f)
 
-- CI now also checks examples/.
-- examples/merchant_league_seats/colab-window.toml is now read by examples/merchant_league_seats/README.md and site/src/content/docs/handbook/getting-started.md.
-- examples/merchant_league_seats/response_schema.json is now read by examples/merchant_league_seats/colab-window.toml.
-- examples/merchant_league_seats/run_seats.py is now read by examples/merchant_league_seats/colab-window.toml.
-- And 2 more new writers and readers of places.
-- examples/merchant_league_seats/README.md is new and belongs to no part, so atlas check fails on it against the previous map.
-- examples/merchant_league_seats/colab-window.toml is new and belongs to no part, so atlas check fails on it against the previous map.
-- examples/merchant_league_seats/response_schema.json is new and belongs to no part, so atlas check fails on it against the previous map.
-- And 3 more new files that belong to no part.
-- 12 files added and 15 changed content, across 3 parts.
+Nothing structural changed since 2026-11-26; 18 files changed content.
 
 ## What comes in
 
@@ -77,9 +68,9 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 
 ## What this map cannot see
 
-- 6 writes and 8 reads use paths built at run time and are not named here.
+- 6 writes and 10 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
-- 13 writes and 24 reads go to a path their caller passes, not to this repository.
+- 14 writes and 26 reads go to a path their caller passes, not to this repository.
 - 1 write goes to a temporary directory or a path its caller passes, not to this repository.
 - 24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
