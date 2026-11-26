@@ -1,14 +1,14 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-26 from commit af3cda6 by Atlas 1.26.0.
+Mapped at 2026-11-26 from commit bc2299f by Atlas 1.26.0.
 
 ## What this is
 
 4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-26 (95dd2c7)
+## What changed since 2026-11-26 (af3cda6)
 
-Nothing structural changed since 2026-11-26; 2 files changed content.
+Nothing structural changed since 2026-11-26; 11 files changed content.
 
 ## What comes in
 
@@ -70,7 +70,7 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 
 - 6 writes and 10 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
-- 14 writes and 26 reads go to a path their caller passes, not to this repository.
+- 15 writes and 28 reads go to a path their caller passes, not to this repository.
 - 1 write goes to a temporary directory or a path its caller passes, not to this repository.
 - 24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.

@@ -18,21 +18,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 2,
+      "changed": 11,
       "moved": 0,
-      "parts": 1,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-26; 2 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-26; 11 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "95dd2c70220ebaccda21cc473236fb5327e81373",
-      "generatedAt": "2026-11-26T16:40:48.507Z"
+      "commit": "af3cda626761acc93ce23ef0b7d917adb6eb1742",
+      "generatedAt": "2026-11-26T16:49:43.617Z"
     },
     "unchanged": true
   },
@@ -41,7 +41,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "af3cda626761acc93ce23ef0b7d917adb6eb1742",
+  "commit": "bc2299f62fa4c272f825d9c9e88d9e3912f7a36c",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
@@ -154,11 +154,11 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-26T16:49:43.617Z",
+  "generatedAt": "2026-11-26T17:53:13.302Z",
   "limits": [
     "6 writes and 10 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "14 writes and 26 reads go to a path their caller passes, not to this repository.",
+    "15 writes and 28 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
     "24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
