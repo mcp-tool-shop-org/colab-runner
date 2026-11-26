@@ -28,7 +28,7 @@ from colab_runner.cards import (
 )
 from colab_runner.colab_cli import CliResult, Colab, parse_sessions_output
 from colab_runner.errors import Refused
-from colab_runner.manifest import WindowSpec, _parse_prereg_sealed_paths, render_vm_script, stage_inputs
+from colab_runner.manifest import WindowSpec, _parse_preregistration, render_vm_script, stage_inputs
 from colab_runner.runner import Runner
 
 
@@ -134,6 +134,19 @@ class CardCatalogTest(unittest.TestCase):
             ledger.check_card("study-a", "CPU")  # CPU dry runs never lock GPU card
             with self.assertRaises(Refused) as ctx:
                 ledger.reserve_card("study-a", "A100", session="s2", window_id="w2")
+            self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
+            # Item 9: releasing an un-opened reservation clears the lock so another card can reserve.
+            ledger.release_reservation("study-a", window_id="w1")
+            ledger.reserve_card("study-a", "A100", session="s2", window_id="w2")
+            ledger.record_window("study-a", {
+                "window_id": "w2", "session": "s2", "card": "A100", "card_class": "gpu",
+                "shape": "standard", "status": "done", "opened": True,
+            })
+            # Releasing a third window when w2 already opened preserves the A100 lock.
+            ledger.reserve_card("study-a", "A100", session="s3", window_id="w3")
+            ledger.release_reservation("study-a", window_id="w3")
+            with self.assertRaises(Refused) as ctx:
+                ledger.reserve_card("study-a", "T4", session="s4", window_id="w4")
             self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
 
     def test_vm_card_check_script_verifies_name_vram_and_compute_cap(self):
@@ -306,7 +319,12 @@ class ManifestSandboxTest(unittest.TestCase):
 
                 # 2e: glob in pre-registration paths -> SEALED_PREREG_INVALID
                 glob_prereg = repo / "prereg_glob.md"
-                glob_bytes = b"Study: study-alpha\nG4\ncolab.google.com\nsealed_path: sealed-eval/*.json\n"
+                glob_bytes = (
+                    b"study: study-alpha\n"
+                    b"allowed_cards: G4\n"
+                    b"allowed_host: colab.google.com\n"
+                    b"sealed_path: sealed-eval/*.json\n"
+                )
                 glob_prereg.write_bytes(glob_bytes)
                 _make_readonly(glob_prereg)
                 try:
@@ -323,6 +341,114 @@ class ManifestSandboxTest(unittest.TestCase):
                     self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
                 finally:
                     _make_writable(glob_prereg)
+
+                # Item 8: prose-only mention without structured study/cards/host -> SEALED_PREREG_INVALID
+                prose_prereg = repo / "prereg_prose.md"
+                prose_bytes = (
+                    b"# Note\n"
+                    b"This disclaimer does not cover study-alpha on G4 at colab.google.com.\n"
+                    b"sealed_path: sealed-eval/item.json\n"
+                )
+                prose_prereg.write_bytes(prose_bytes)
+                _make_readonly(prose_prereg)
+                try:
+                    spec_prose = WindowSpec.from_mapping(
+                        _minimal_spec_dict(
+                            ["sealed-eval/item.json"],
+                            sealed=dict(sealed_cfg, preregistration_path="prereg_prose.md",
+                                        preregistration_sha256=_sha256_bytes(prose_bytes)),
+                        ),
+                        base_dir=repo,
+                    )
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(spec_prose, root / "b_prose.tar.gz")
+                    self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+                finally:
+                    _make_writable(prose_prereg)
+
+                other_study_prereg = repo / "prereg_other_study.md"
+                other_bytes = (
+                    b"study: other-study\n"
+                    b"allowed_cards: G4\n"
+                    b"allowed_host: colab.google.com\n"
+                    b"sealed_path: sealed-eval/item.json\n"
+                    b"# Prose mention: not study-alpha\n"
+                )
+                other_study_prereg.write_bytes(other_bytes)
+                _make_readonly(other_study_prereg)
+                try:
+                    spec_other = WindowSpec.from_mapping(
+                        _minimal_spec_dict(
+                            ["sealed-eval/item.json"],
+                            sealed=dict(sealed_cfg, preregistration_path="prereg_other_study.md",
+                                        preregistration_sha256=_sha256_bytes(other_bytes)),
+                        ),
+                        base_dir=repo,
+                    )
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(spec_other, root / "b_other.tar.gz")
+                    self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+                finally:
+                    _make_writable(other_study_prereg)
+
+                # Item 6: pre-registration binds resolved path location, never just relative filename
+                (repo / "sealed-a").mkdir()
+                sealed_a_item = repo / "sealed-a" / "items.jsonl"
+                sealed_a_item.write_text('{"id": 1}\n', encoding="utf-8")
+                elsewhere = root / "elsewhere" / "sealed-b-holdout"
+                elsewhere.mkdir(parents=True)
+                (elsewhere / "items.jsonl").write_text('{"id": 99}\n', encoding="utf-8")
+                loc_prereg = repo / "prereg_loc.md"
+                loc_bytes = (
+                    b"study: study-alpha\n"
+                    b"allowed_cards: G4\n"
+                    b"allowed_host: colab.google.com\n"
+                    b"sealed_path: sealed-a/items.jsonl\n"
+                )
+                loc_prereg.write_bytes(loc_bytes)
+                _make_readonly(loc_prereg)
+                try:
+                    loc_sealed_cfg = dict(
+                        sealed_cfg,
+                        preregistration_path="prereg_loc.md",
+                        preregistration_sha256=_sha256_bytes(loc_bytes),
+                    )
+                    spec_ok_loc = WindowSpec.from_mapping(
+                        _minimal_spec_dict(["items.jsonl"], root="sealed-a", sealed=loc_sealed_cfg),
+                        base_dir=repo,
+                    )
+                    _, loc_rec = stage_inputs(
+                        spec_ok_loc, root / "b_loc_ok.tar.gz", actual_card="G4", live=True, cli_allow_sealed=True
+                    )
+                    self.assertEqual(loc_rec["resolved_paths"], [str(sealed_a_item.resolve())])
+                    self.assertEqual(len(loc_rec["files"]), 1)
+                    self.assertEqual(loc_rec["files"][0]["resolved_path"], str(sealed_a_item.resolve()))
+                    self.assertEqual(loc_rec["files"][0]["sha256"], _sha256_bytes(sealed_a_item.read_bytes()))
+
+                    spec_bad_loc = WindowSpec.from_mapping(
+                        _minimal_spec_dict(["items.jsonl"], root=str(elsewhere), sealed=loc_sealed_cfg),
+                        base_dir=repo,
+                    )
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(
+                            spec_bad_loc, root / "b_loc_bad.tar.gz", actual_card="G4", live=True, cli_allow_sealed=True
+                        )
+                    self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+                finally:
+                    _make_writable(loc_prereg)
+
+                # Item 7: directory without any `.git` above the spec treats inputs.root as outside-repo
+                no_repo = root / "no_git_dir"
+                holdout_dir = no_repo / "holdout-items"
+                holdout_dir.mkdir(parents=True)
+                (holdout_dir / "items.jsonl").write_text('{"id": 2}\n', encoding="utf-8")
+                no_repo_spec = WindowSpec.from_mapping(
+                    _minimal_spec_dict(["items.jsonl"], root="./holdout-items"),
+                    base_dir=no_repo,
+                )
+                with self.assertRaises(Refused) as ctx:
+                    stage_inputs(no_repo_spec, root / "b_norepo.tar.gz")
+                self.assertEqual(ctx.exception.code, "SEALED_DATA_REFUSED")
 
                 # 3a: wrong card destination -> SEALED_DESTINATION_REFUSED
                 with self.assertRaises(Refused) as ctx:
@@ -437,13 +563,20 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
 
             # JSON/TOML pre-registration parsers and WindowSpec edge validations
-            self.assertEqual(_parse_prereg_sealed_paths(Path("p.json"), '{"sealed_paths": ["a/b.txt"]}'), ["a/b.txt"])
+            json_prereg = json.dumps({
+                "study": "s1", "allowed_cards": ["G4"], "allowed_host": "colab.google.com", "sealed_paths": ["a/b.txt"]
+            }).encode("utf-8")
+            self.assertEqual(_parse_preregistration(Path("p.json"), json_prereg)["sealed_paths"], ["a/b.txt"])
             with self.assertRaises(Refused) as ctx:
-                _parse_prereg_sealed_paths(Path("p.json"), "{bad")
+                _parse_preregistration(Path("p.json"), b"{bad")
             self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
-            self.assertEqual(_parse_prereg_sealed_paths(Path("p.toml"), 'sealed_paths = ["a/b.txt"]\n'), ["a/b.txt"])
+            toml_prereg = (
+                b'study = "s1"\nallowed_cards = ["G4"]\nallowed_host = "colab.google.com"\n'
+                b'sealed_paths = ["a/b.txt"]\n'
+            )
+            self.assertEqual(_parse_preregistration(Path("p.toml"), toml_prereg)["sealed_paths"], ["a/b.txt"])
             with self.assertRaises(Refused) as ctx:
-                _parse_prereg_sealed_paths(Path("p.toml"), "=[")
+                _parse_preregistration(Path("p.toml"), b"=[")
             self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
 
             scalar_vram = _minimal_spec_dict()

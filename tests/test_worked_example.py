@@ -31,9 +31,11 @@ class WorkedExampleTest(unittest.TestCase):
             self.assertEqual(rc, 0, err.getvalue())
             self.assertIn("DRY_RUN_OK", out.getvalue())
             self.assertIn("open_phase_bound_s:", out.getvalue())
+            self.assertIn("unbounded until stop --out-dir", out.getvalue())
             plan = json.loads((smoke_dry / "dry_run_plan.json").read_text(encoding="utf-8"))
             self.assertEqual(plan["card"], "T4")
             self.assertEqual(plan["min_vram_mib"], 14000)
+            self.assertLessEqual(plan["budget"]["worst_case_total_spend"], 2.5)
             self.assertEqual(len(plan["staged_files"]), 4)
 
             # Item 25: `run_seats.py --mode gpu-live` with `CR_SMOKE_STUB=1` runs without external model server

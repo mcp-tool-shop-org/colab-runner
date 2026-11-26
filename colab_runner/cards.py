@@ -392,8 +392,33 @@ class StudyLedger:
         })
         write_json_atomic(self.ledger_file, data)
 
+    def release_reservation(self, study: str, *, window_id: str) -> None:
+        """Release a failed-open reservation and clear the study card lock if no GPU window ever opened."""
+        if not study or not self.ledger_file.is_file():
+            return
+        data = _load_json_dict(self.ledger_file)
+        studies = data.get("studies")
+        entry = studies.get(study) if isinstance(studies, dict) else None
+        if not isinstance(entry, dict):
+            return
+        reservations = entry.get("reservations")
+        if isinstance(reservations, list):
+            entry["reservations"] = [
+                r for r in reservations if isinstance(r, dict) and r.get("window_id") != window_id
+            ]
+        else:
+            entry["reservations"] = []
+        windows = entry.get("windows") if isinstance(entry.get("windows"), list) else []
+        opened_gpu = any(
+            isinstance(w, dict) and w.get("opened") and w.get("card_class") == "gpu"
+            for w in windows
+        )
+        if not entry["reservations"] and not opened_gpu:
+            entry["card"] = None
+        write_json_atomic(self.ledger_file, data)
+
     def record_window(self, study: str, outcome: Mapping[str, Any]) -> None:
-        """Append a finished/closed window summary to the study ledger and lock its GPU card if applicable."""
+        """Append or update a closed window summary in the study ledger and lock its GPU card only if opened."""
         if not study:
             return
         data = _load_json_dict(self.ledger_file)
@@ -402,19 +427,46 @@ class StudyLedger:
             studies = {}
             data["studies"] = studies
         entry = studies.setdefault(study, {"card": None, "reservations": [], "windows": []})
-        if outcome.get("card_class") == "gpu" and outcome.get("opened") and not entry.get("card"):
-            entry["card"] = outcome.get("card")
+        wid = outcome.get("window_id")
+        if isinstance(entry.get("reservations"), list):
+            entry["reservations"] = [
+                r for r in entry["reservations"] if isinstance(r, dict) and r.get("window_id") != wid
+            ]
+        else:
+            entry["reservations"] = []
         windows = entry.setdefault("windows", [])
-        windows.append({
-            "window_id": outcome.get("window_id"),
+        if not isinstance(windows, list):
+            windows = []
+            entry["windows"] = windows
+        rec_item = {
+            "window_id": wid,
             "session": outcome.get("session"),
             "card": outcome.get("card"),
+            "card_class": outcome.get("card_class"),
             "shape": outcome.get("shape"),
             "status": outcome.get("status"),
+            "opened": bool(outcome.get("opened")),
             "opened_at": outcome.get("opened_at"),
             "closed_at": outcome.get("closed_at"),
             "spend_ccu": outcome.get("spend_ccu"),
-        })
+        }
+        updated = False
+        if wid is not None:
+            for idx, existing in enumerate(windows):
+                if isinstance(existing, dict) and existing.get("window_id") == wid:
+                    windows[idx] = rec_item
+                    updated = True
+                    break
+        if not updated:
+            windows.append(rec_item)
+        opened_gpu = any(
+            isinstance(w, dict) and w.get("opened") and w.get("card_class") == "gpu"
+            for w in windows
+        )
+        if outcome.get("card_class") == "gpu" and outcome.get("opened") and not entry.get("card"):
+            entry["card"] = outcome.get("card")
+        elif not entry["reservations"] and not opened_gpu:
+            entry["card"] = None
         write_json_atomic(self.ledger_file, data)
 
 

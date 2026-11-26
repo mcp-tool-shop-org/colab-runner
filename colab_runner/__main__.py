@@ -387,6 +387,10 @@ def stop_command(argv: list[str]) -> int:
                 raise ValueError("no session name")
         except (ValueError, KeyError, TypeError) as exc:
             raise Refused("SESSION_MARKER_INVALID", "%s does not name a session (%s)" % (marker, exc)) from None
+        try:
+            marker_mtime = marker.stat().st_mtime
+        except OSError:
+            marker_mtime = None
         client = cli_from_env()
         ok = Runner(client, session, out_dir, log=_log_for(args.level)).stop_session()
     except Refused as exc:
@@ -394,7 +398,7 @@ def stop_command(argv: list[str]) -> int:
     except (Exception, KeyboardInterrupt) as exc:
         return _error("STOP_ERROR", exc, args.level)
     if ok:
-        reconcile_stopped_outcome(out_dir, client, session)
+        reconcile_stopped_outcome(out_dir, client, session, marker_mtime=marker_mtime)
     _out("STOP_END session=%s confirmed=%s" % (session, ok))
     if not ok:
         _err("hint: %s" % lookup("STOP_NOT_CONFIRMED").hint)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import io
 import json
 import os
@@ -24,7 +25,10 @@ from colab_runner.window_lib import launch_guards as lg
 SEALED_PATH_PATTERNS = ("sealed*", "*sealed*", "*bakeoff*", "restricted*")
 JOB_NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
-PREREG_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?sealed_path\s*:\s*(.+?)\s*$", re.I)
+PREREG_FIELD_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(study|allowed[_ ]cards|allowed[_ ]host|sealed[_ ]paths?)\s*[:=]\s*(.+?)\s*$",
+    re.I,
+)
 DEFAULT_SEALED_HOST = "colab.google.com"
 
 
@@ -374,12 +378,13 @@ def _segments_match_sealed(parts: tuple[str, ...], *, deny_globs: tuple[str, ...
     return None
 
 
-def _find_repo_root(start_dir: Path) -> Path:
+def _find_repo_root(start_dir: Path) -> Optional[Path]:
+    """Return the enclosing git repository root above `start_dir`, or None when outside any repo."""
     resolved = start_dir.resolve()
     for cand in (resolved, *resolved.parents):
         if (cand / ".git").exists():
             return cand
-    return resolved
+    return None
 
 
 def _is_readonly_file(path: Path) -> bool:
@@ -389,53 +394,129 @@ def _is_readonly_file(path: Path) -> bool:
     return (mode & stat.S_IWRITE) == 0
 
 
-def _contains_token(text: str, token: str) -> bool:
-    pat = r"(?<![A-Za-z0-9_.-])" + re.escape(token) + r"(?![A-Za-z0-9_.-])"
-    return re.search(pat, text) is not None
+def _strip_quotes(text: str) -> str:
+    return text.strip().strip("`\"'")
 
 
-def _parse_prereg_sealed_paths(path: Path, raw_text: str) -> list[str]:
-    paths_raw: Optional[list[Any]] = None
+def _split_structured_list(raw_val: str) -> list[str]:
+    cleaned = raw_val.strip()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    parts = [p for chunk in cleaned.split(",") for p in chunk.strip().split() if p]
+    return [_strip_quotes(p) for p in parts if _strip_quotes(p)]
+
+
+def _parse_preregistration(path: Path, raw_bytes: bytes) -> dict[str, Any]:
+    """Parse structured pre-registration metadata (study, allowed_cards, allowed_host, sealed_paths) from bytes."""
+    got_sha = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s is not valid UTF-8 (%s)" % (path, exc)) from None
+
     suf = path.suffix.lower()
+    study_raw: Optional[Any] = None
+    cards_raw: Optional[Any] = None
+    host_raw: Optional[Any] = None
+    paths_raw: Optional[Any] = None
+
     if suf == ".json":
         try:
             obj = json.loads(raw_text)
         except ValueError as exc:
             raise Refused("SEALED_PREREG_INVALID", "invalid JSON pre-registration %s (%s)" % (path, exc)) from None
-        if isinstance(obj, Mapping) and isinstance(obj.get("sealed_paths"), list):
-            paths_raw = obj["sealed_paths"]
+        if not isinstance(obj, Mapping):
+            raise Refused("SEALED_PREREG_INVALID", "JSON pre-registration %s must be an object" % path)
+        study_raw = obj.get("study")
+        cards_raw = obj.get("allowed_cards")
+        host_raw = obj.get("allowed_host")
+        paths_raw = obj.get("sealed_paths")
     elif suf == ".toml":
         try:
             obj = tomllib.loads(raw_text)
         except tomllib.TOMLDecodeError as exc:
             raise Refused("SEALED_PREREG_INVALID", "invalid TOML pre-registration %s (%s)" % (path, exc)) from None
-        if isinstance(obj, Mapping) and isinstance(obj.get("sealed_paths"), list):
-            paths_raw = obj["sealed_paths"]
+        if not isinstance(obj, Mapping):
+            raise Refused("SEALED_PREREG_INVALID", "TOML pre-registration %s must be a table" % path)
+        study_raw = obj.get("study")
+        cards_raw = obj.get("allowed_cards")
+        host_raw = obj.get("allowed_host")
+        paths_raw = obj.get("sealed_paths")
     else:
-        found: list[str] = []
+        found_paths: list[str] = []
+        found_cards: list[str] = []
         for line in raw_text.splitlines():
-            m = PREREG_LINE_RE.match(line)
-            if m:
-                found.append(m.group(1).strip().strip("`\"'"))
-        if found:
-            paths_raw = found
+            m = PREREG_FIELD_RE.match(line)
+            if not m:
+                continue
+            key = m.group(1).strip().lower().replace(" ", "_")
+            val = m.group(2).strip()
+            if key == "study":
+                cand = _strip_quotes(val)
+                if study_raw is not None and study_raw != cand:
+                    raise Refused("SEALED_PREREG_INVALID", "conflicting study declarations in %s" % path)
+                study_raw = cand
+            elif key == "allowed_cards":
+                found_cards.extend(_split_structured_list(val))
+            elif key == "allowed_host":
+                cand_h = _strip_quotes(val).lower()
+                if host_raw is not None and host_raw != cand_h:
+                    raise Refused("SEALED_PREREG_INVALID", "conflicting allowed_host declarations in %s" % path)
+                host_raw = cand_h
+            elif key == "sealed_path":
+                found_paths.append(_strip_quotes(val))
+            elif key == "sealed_paths":
+                found_paths.extend(_split_structured_list(val))
+        cards_raw = found_cards
+        paths_raw = found_paths
 
-    if not paths_raw:
+    if not isinstance(study_raw, str) or not study_raw.strip() or any(ch.isspace() for ch in study_raw.strip()):
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s missing structured single-token study field" % path)
+    study_val = study_raw.strip()
+
+    if not isinstance(cards_raw, list) or not cards_raw or not all(isinstance(c, str) and c.strip() for c in cards_raw):
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s missing structured allowed_cards field" % path)
+    try:
+        allowed_cards = tuple(resolve_card(c).name for c in cards_raw)
+    except Refused as exc:
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s invalid allowed_cards (%s)" % (path, exc.message)) from None
+
+    if (
+        not isinstance(host_raw, str)
+        or not host_raw.strip()
+        or any(ch.isspace() for ch in host_raw.strip())
+        or _has_glob_chars(host_raw)
+    ):
+        raise Refused("SEALED_PREREG_INVALID", "pre-registration %s missing structured allowed_host field" % path)
+    allowed_host = host_raw.strip().lower()
+
+    if not isinstance(paths_raw, list) or not paths_raw:
         raise Refused("SEALED_PREREG_INVALID", "pre-registration %s declares no sealed_paths" % path)
-    clean: list[str] = []
+    clean_paths: list[str] = []
     for entry in paths_raw:
         if not isinstance(entry, str) or not entry.strip():
             raise Refused("SEALED_PREREG_INVALID", "empty sealed path in pre-registration %s" % path)
         if _has_glob_chars(entry):
             raise Refused("SEALED_PREREG_INVALID", "glob patterns are forbidden in pre-registration paths: %r" % entry)
-        clean.append(_check_rel_path(entry, False, "sealed_path"))
-    return clean
+        clean_paths.append(_check_rel_path(entry, False, "sealed_path"))
+
+    prereg_dir = path.resolve().parent
+    resolved_paths = [str((prereg_dir / rel).resolve()) for rel in clean_paths]
+    return {
+        "sha256": got_sha,
+        "study": study_val,
+        "allowed_cards": allowed_cards,
+        "allowed_host": allowed_host,
+        "sealed_paths": clean_paths,
+        "resolved_paths": resolved_paths,
+    }
 
 
 def _verify_sealed_gate(
     spec: WindowSpec,
     *,
     root: Path,
+    resolved_items: list[tuple[InputFileSpec, Path]],
     actual_card: str,
     actual_host: str,
     live: bool,
@@ -443,26 +524,28 @@ def _verify_sealed_gate(
     cli_allow_sealed: bool,
 ) -> Optional[dict[str, Any]]:
     spec_repo_root = _find_repo_root(spec.spec_path.parent if spec.spec_path else spec.spec_base_dir)
-    root_outside_repo = not root.is_relative_to(spec_repo_root)
+    root_outside_repo = spec_repo_root is None or not root.is_relative_to(spec_repo_root)
     root_sealed_pat = _segments_match_sealed(root.parts, deny_globs=spec.deny_globs)
 
-    sealed_srcs: list[str] = []
-    for item in spec.input_files:
+    sealed_entries: list[tuple[InputFileSpec, Path]] = []
+    for item, resolved in resolved_items:
         pat_src = _segments_match_sealed(PurePosixPath(item.src).parts, deny_globs=spec.deny_globs)
         pat_dst = _segments_match_sealed(PurePosixPath(item.dst).parts, deny_globs=spec.deny_globs)
         if root_outside_repo or root_sealed_pat or pat_src or pat_dst:
-            sealed_srcs.append(item.src)
+            sealed_entries.append((item, resolved))
 
-    needs_gate = bool(sealed_srcs or root_outside_repo or root_sealed_pat or spec.sealed is not None)
+    needs_gate = bool(sealed_entries or root_outside_repo or root_sealed_pat or spec.sealed is not None)
     if not needs_gate:
         return None
     if spec.sealed is None:
-        if root_outside_repo:
+        if spec_repo_root is None:
+            why = "no .git repository above spec; inputs.root %s is treated as outside-repo without [inputs.sealed]" % root
+        elif root_outside_repo:
             why = "inputs.root %s is outside the spec repository %s without [inputs.sealed]" % (root, spec_repo_root)
         elif root_sealed_pat:
             why = "inputs.root %s matches sealed pattern %r without [inputs.sealed]" % (root, root_sealed_pat)
         else:
-            why = "manifest declares sealed path(s) %r without [inputs.sealed]" % (sealed_srcs,)
+            why = "manifest declares sealed path(s) %r without [inputs.sealed]" % ([it.src for it, _ in sealed_entries],)
         raise Refused("SEALED_DATA_REFUSED", why)
 
     prereg = spec.sealed.preregistration_path
@@ -470,36 +553,41 @@ def _verify_sealed_gate(
         raise Refused("SEALED_PREREG_INVALID", "pre-registration file missing or not a regular file: %s" % prereg)
     if not _is_readonly_file(prereg):
         raise Refused("SEALED_PREREG_INVALID", "pre-registration file must be read-only before launch: %s" % prereg)
-    got_sha = lg.sha256_file(prereg)
+
+    raw_bytes = prereg.read_bytes()
+    parsed = _parse_preregistration(prereg, raw_bytes)
+    got_sha = parsed["sha256"]
     if got_sha != spec.sealed.preregistration_sha256:
         raise Refused(
             "SEALED_PREREG_INVALID",
             "pre-registration sha256 mismatch for %s (got %s, expected %s)"
             % (prereg, got_sha, spec.sealed.preregistration_sha256),
         )
-    prereg_text = prereg.read_text(encoding="utf-8")
-    if not _contains_token(prereg_text, spec.study):
+    if parsed["study"] != spec.study:
         raise Refused(
             "SEALED_PREREG_INVALID",
-            "pre-registration %s does not authorize study %r" % (prereg, spec.study),
+            "pre-registration %s authorizes study %r, not %r" % (prereg, parsed["study"], spec.study),
         )
-    prereg_paths = _parse_prereg_sealed_paths(prereg, prereg_text)
-    if sorted(set(prereg_paths)) != sorted(set(sealed_srcs)):
+
+    want_resolved = sorted({str(rpath.resolve()) for _, rpath in sealed_entries})
+    prereg_resolved = sorted(set(parsed["resolved_paths"]))
+    if want_resolved != prereg_resolved:
         raise Refused(
             "SEALED_PREREG_INVALID",
-            "sealed input paths %r do not match pre-registered sealed_paths %r"
-            % (sorted(sealed_srcs), sorted(prereg_paths)),
+            "sealed input resolved paths %r do not match pre-registered paths %r" % (want_resolved, prereg_resolved),
         )
 
     eff_host = actual_host.strip().lower()
-    if eff_host != spec.sealed.allowed_host or not _contains_token(prereg_text.lower(), eff_host):
+    if eff_host != spec.sealed.allowed_host or eff_host != parsed["allowed_host"]:
         raise Refused(
             "SEALED_DESTINATION_REFUSED",
             "host %r is not authorized by [inputs.sealed] and pre-registration %s" % (actual_host, prereg),
         )
     check_card = spec.card if (local_cpu and not live) else resolve_card(actual_card).name
-    if check_card not in spec.sealed.allowed_cards or not all(
-        _contains_token(prereg_text, c) for c in spec.sealed.allowed_cards
+    if (
+        check_card not in spec.sealed.allowed_cards
+        or check_card not in parsed["allowed_cards"]
+        or not set(spec.sealed.allowed_cards).issubset(set(parsed["allowed_cards"]))
     ):
         raise Refused(
             "SEALED_DESTINATION_REFUSED",
@@ -512,7 +600,9 @@ def _verify_sealed_gate(
     return {
         "preregistration_path": str(prereg.resolve()),
         "preregistration_sha256": got_sha,
-        "sealed_files": list(sealed_srcs),
+        "sealed_files": [item.src for item, _ in sealed_entries],
+        "resolved_paths": want_resolved,
+        "files": [],
         "destination": {
             "allowed_cards": list(spec.sealed.allowed_cards),
             "allowed_host": spec.sealed.allowed_host,
@@ -549,38 +639,43 @@ def stage_inputs(
         raise Refused("INPUT_ROOT_INVALID", "inputs.root is missing, a link, or not a directory: %s" % root_raw)
     root = root_raw.resolve()
 
+    resolved_items: list[tuple[InputFileSpec, Path]] = []
+    seen_dst: set[str] = set()
+    for item in spec.input_files:
+        if item.dst in seen_dst:
+            raise Refused("SPEC_INVALID", "duplicate staged destination path %r in inputs.files" % item.dst)
+        seen_dst.add(item.dst)
+        cand = _check_no_links(root, item.src)
+        resolved = cand.resolve()
+        if not resolved.is_relative_to(root):
+            raise Refused(
+                "INPUT_PATH_OUTSIDE_ROOT",
+                "input file %r resolves outside inputs.root (%s)" % (item.src, resolved),
+            )
+        resolved_items.append((item, resolved))
+
     eff_card = actual_card or spec.card
     sealed_record = _verify_sealed_gate(
         spec,
         root=root,
+        resolved_items=resolved_items,
         actual_card=eff_card,
         actual_host=actual_host,
         live=live,
         local_cpu=local_cpu,
         cli_allow_sealed=cli_allow_sealed,
     )
+    sealed_resolved_set = set(sealed_record["resolved_paths"]) if sealed_record is not None else set()
 
     staged: list[StagedInputRecord] = []
-    seen_dst: set[str] = set()
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle_path, mode="w:gz", format=tarfile.PAX_FORMAT) as tf:
-        for item in spec.input_files:
-            if item.dst in seen_dst:
-                raise Refused("SPEC_INVALID", "duplicate staged destination path %r in inputs.files" % item.dst)
-            seen_dst.add(item.dst)
-
-            cand = _check_no_links(root, item.src)
-            resolved = cand.resolve()
-            if not resolved.is_relative_to(root):
-                raise Refused(
-                    "INPUT_PATH_OUTSIDE_ROOT",
-                    "input file %r resolves outside inputs.root (%s)" % (item.src, resolved),
-                )
+        for item, resolved in resolved_items:
             if not resolved.is_file():
-                raise Refused("INPUT_FILE_MISSING", "input file does not exist as a regular file: %s" % cand)
+                raise Refused("INPUT_FILE_MISSING", "input file does not exist as a regular file: %s" % (root / item.src))
 
             data = resolved.read_bytes()
-            digest = lg.sha256_file(resolved)
+            digest = hashlib.sha256(data).hexdigest()
             info = tarfile.TarInfo(name=item.dst)
             info.size = len(data)
             info.mode = 0o755 if item.dst.endswith(".sh") else 0o644
@@ -591,6 +686,13 @@ def stage_inputs(
             info.gname = ""
             tf.addfile(info, io.BytesIO(data))
             staged.append(StagedInputRecord(src=item.src, dst=item.dst, bytes=len(data), sha256=digest))
+            if sealed_record is not None and str(resolved) in sealed_resolved_set:
+                sealed_record["files"].append({
+                    "src": item.src,
+                    "dst": item.dst,
+                    "resolved_path": str(resolved),
+                    "sha256": digest,
+                })
     return staged, sealed_record
 
 
