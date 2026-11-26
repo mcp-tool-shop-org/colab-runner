@@ -9,10 +9,17 @@ sidebar:
 
 ```text
 usage: python -m colab_runner --version
+       python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu] [options] [--quiet | --verbose | --debug]
+       python -m colab_runner status --out-dir D [--json] [--quiet | --verbose | --debug]
        python -m colab_runner run --session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N [options] [--quiet | --verbose | --debug]
        python -m colab_runner stop --out-dir D [--quiet | --verbose | --debug]   (stops the session a killed run left in D/session_open.json)
 exit codes: 0 ok, 1 refusal or usage error, 2 runtime error, 3 done but the session's stop not confirmed
 ```
+
+### `launch` and `status`
+
+- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec, card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs, confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI.
+- `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json` (reporting `orphaned` if `launcher_pid` died while `session_open.json` exists), `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
 
 ### `run`
 
@@ -192,6 +199,38 @@ again.
 | `ASSIGNMENTS_UNREADABLE` | yes | `colab usage` gave no readable Active assignments count (or a stable rate below the floor) 3 times in a row: check `colab usage` by hand, then run the window again |
 | `COLAB_USAGE_PARSE_FAILED` | yes | `colab usage` could not be read or parsed, and the guard never prices a window it cannot read: check `colab usage` by hand (sign-in, network), then run the window again |
 | `UNEXPECTED_ERROR` | no | read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop --out-dir D`; rerun with --debug for the traceback |
+| `SPEC_NOT_FOUND` | no | pass --spec PATH pointing to an existing .toml or .json window spec |
+| `SPEC_INVALID` | no | fix the window spec file (TOML or JSON) at the field named in the message |
+| `INPUT_ROOT_INVALID` | no | set inputs.root to an existing directory on the local filesystem |
+| `INPUT_PATH_OUTSIDE_ROOT` | no | keep every inputs.files src and dst relative and inside inputs.root without '..' |
+| `INPUT_SYMLINK_REFUSED` | no | replace the symlink or junction in inputs.files with a regular file inside inputs.root |
+| `INPUT_FILE_MISSING` | no | ensure every file listed in inputs.files exists as a regular file before launching |
+| `SEALED_DATA_REFUSED` | no | declare a verified [inputs.sealed] pre-registration (read-only file, sha256, study id, exact paths) or remove the sealed/outside-repo path |
+| `SEALED_PREREG_INVALID` | no | provide an existing read-only pre-registration file matching preregistration_sha256, this study id, and exact non-glob sealed_path entries |
+| `SEALED_DESTINATION_REFUSED` | no | launch only to a card and host allowed by both [inputs.sealed] and the pre-registration text |
+| `ALLOW_SEALED_REQUIRED` | no | pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs |
+| `OUTPUT_PATH_INVALID` | no | list outputs.collect and outputs.salvage as relative paths without '..' |
+| `MAX_RATE_BELOW_FLOOR` | no | raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate |
+| `SESSIONS_READ_FAILED` | yes | check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a window |
+| `CARD_UNKNOWN` | no | choose a known Colab card from the catalog (CPU, T4, L4, G4, A100) |
+| `CARD_UNAVAILABLE` | no | choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan |
+| `CARD_CIRCUIT_OPEN` | no | two allocation or card refusals already tripped this card's circuit breaker today (UTC); wait for the next UTC day or start a new study on an available card |
+| `CARD_MIX_REFUSED` | no | keep one card type for the whole study: do not pool G4 and A100 or switch card mid-study |
+| `SHAPE_REQUIRED` | no | set compute.shape (or --shape) to 'standard' or 'high-mem' for a GPU card |
+| `SHAPE_INVALID` | no | set compute.shape (or --shape) to 'standard' or 'high-mem' |
+| `SHAPE_NOT_FOR_CPU` | no | omit compute.shape (and --shape) for a CPU card; CPU always opens with --high-mem |
+| `SHAPE_HIGH_MEM_UNAVAILABLE` | no | use shape='standard' for L4; Colab offers L4 only in Standard shape |
+| `SHAPE_STANDARD_UNAVAILABLE` | no | use shape='high-mem' for this accelerator; Colab offers it only in High-RAM shape |
+| `OPEN_LOCK_TIMEOUT` | yes | another window held the open lock past the timeout; wait for concurrent opens to finish and retry |
+| `SESSION_ALREADY_OPEN` | no | pass a fresh --session name, or stop the existing session first |
+| `POOL_CEILING_REACHED` | yes | close an active Colab session to free a slot below the plan's pool ceiling, then retry |
+| `PRE_OPEN_READ_FAILED` | yes | check colab usage (sign-in, network) before opening a GPU window, then retry |
+| `SESSION_OPEN_FAILED` | yes | Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state before retrying |
+| `SHAPE_MISMATCH` | yes | Colab assigned a different machine shape than requested; the session was stopped |
+| `POST_OPEN_RATE_UNREAD` | yes | Colab did not report a stable positive GPU rate after open; check colab usage and retry |
+| `UPLOAD_FAILED` | yes | check session connectivity and file size; colab upload into /content failed and the session was stopped |
+| `CARD_MISMATCH` | yes | Colab assigned a GPU that failed the requested card's name, VRAM, or compute-capability floor; the session was stopped |
+| `STATUS_DIR_MISSING` | no | pass --out-dir pointing to an existing run or launch output directory |
 
 ## Environment variables
 

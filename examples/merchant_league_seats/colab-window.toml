@@ -1,0 +1,56 @@
+schema_version = 1
+
+[project]
+repo = "mcp-tool-shop-org/merchant-league"
+study = "merchant-league-local-seats-demo"
+job = "league_turn_01"
+description = "Four-guild synthetic table running against a VM-local OpenAI-compatible model endpoint"
+
+[compute]
+card = "G4"
+shape = "standard"
+max_rate = 10.5
+cap = 8.0
+margin = 0.25
+wall_s = 1800
+poll_s = 10
+setup_stall_s = 300
+progress_stall_s = 300
+omp_num_threads = 4
+
+[compute.min_vram_mib_by_card]
+G4 = 90000
+L4 = 21500
+T4 = 14000
+
+[inputs]
+root = "."
+files = [
+  { src = "seats.json", dst = "seats.json" },
+  { src = "wrapper.md", dst = "wrapper.md" },
+  { src = "response_schema.json", dst = "response_schema.json" },
+  { src = "run_seats.py", dst = "run_seats.py" },
+]
+
+[job]
+setup = [
+  "python3 run_seats.py --mode validate-setup",
+]
+run = [
+  "python3 run_seats.py --mode gpu-live --cap-gpu-secs 120.2",
+]
+cpu_dry_run = [
+  "python3 run_seats.py --mode cpu-stub --cap-gpu-secs 120.2",
+]
+env = []
+
+[outputs]
+collect = [
+  "turn_summary.json",
+  "from-seat",
+]
+salvage = [
+  "setup.log",
+  "vm_card.json",
+  "turn_summary.json",
+]

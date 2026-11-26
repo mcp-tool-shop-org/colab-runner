@@ -5,6 +5,20 @@ sidebar:
   order: 2
 ---
 
+## Declarative specs vs raw `run`
+
+Most projects no longer need per-window `launch.sh` scripts. Write one declarative `colab-window.toml` (`WindowSpec`) with:
+
+- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`.
+- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`, `V5E1`, `V6E1`), explicit `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate` (>= catalog floor; explicit `--cap` and `--max-rate` required on live GPU/TPU launches), `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`, `min_vram_mib_by_card`.
+- `[inputs]`: `root`, explicit `files`, optional `deny_globs` (for project-specific patterns such as `staging*` or holdout directory names), and `[inputs.sealed]` (`preregistration_path`, `preregistration_sha256`, `allowed_cards`, `allowed_host`). Whole-path `inputs.root` components, outside-repo roots, and `inputs.files` entries are checked against sealed/deny patterns; verified sealed launches also require `--allow-sealed` on the CLI.
+- `[job]`: `setup`, `run`, optional `cpu_dry_run`, `env`.
+- `[outputs]`: relative `collect` (downloaded on `done`) and `salvage` (downloaded on failure/trip) paths scrubbed through `Runner.download`. GPU runs always fetch `vm_card.json`.
+
+`python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --cap C --max-rate R` handles session open under a global lock, strict `Hardware:`/`Shape:` pool ceilings, study card reservation (released on a failed open only once `stop` confirms, never if stops fail or on pre-0.2.0 entries), pre/post-open rate attribution, open-phase spend charging and timeout clamping from immediately before `colab new`, upload, detached polling, VM GPU verification (`nvidia-smi`), outputs-inclusive `cleanup_bound_s` (accounting for `vm_card.json`, `salvage`, and `collect` downloads, clamping each download to keep stop attempts inside `--cap`), stop confirmation, and `outcome.json` recording on every exit. `launch` starts no separate background watcher (the death path is `unbounded until stop --out-dir`); `python -m colab_runner status --out-dir runs/w1` inspects live, `orphaned`, `stop_pending`, or completed windows without touching the VM, and `stop --out-dir runs/w1` reconciles `outcome.json` or books killed orphans from `window_meta.json` (`max_rate_x_elapsed_orphan_reconciled`).
+
+## Low-level `run` contract
+
 **The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.
 - **A marker that stays** means the session may still be open: a stop that failed, or a `run` killed outright (SIGKILL, a lost

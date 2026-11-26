@@ -1,0 +1,1270 @@
+"""Tests for end-to-end launch, status, local-cpu dry run, FIX-1 money/lock/pool fixes, and failure paths."""
+
+import contextlib
+import hashlib
+import io
+import json
+import os
+import signal
+import tempfile
+import threading
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest import mock
+
+from colab_runner.__main__ import main
+from colab_runner.cards import CARD_CHECK_FAIL_RC, CircuitBreaker, resolve_card
+from colab_runner.colab_cli import KILL_WAIT_S, BinaryDownloadRefused, CliResult, Colab, parse_sessions_output
+from colab_runner.errors import Refused
+from colab_runner.launcher import (
+    LocalColab,
+    _acquire_dir_lock,
+    _check_empty_out_dir,
+    _default_open_lock_path,
+    _pid_alive,
+    _read_pre_open_usage,
+    _state_paths,
+    default_cleanup_bound_s,
+    launch_window,
+    reconcile_stopped_outcome,
+    resolve_kit_env,
+    status_window,
+)
+from colab_runner.runner import RunInterrupted, Runner
+from tests.fakes import FakeClock, FakeColab, rec, usage_text
+from tests.test_tokens import fake_tokens, leak_lines, values
+
+
+class SimColab(FakeColab):
+    """Extended FakeColab matching real `colab sessions` formatting, new_session, upload, shape, and pool rows."""
+
+    def __init__(self, *, new_results=None, sessions_rows=None, after_open_rows=None, upload_results=None,
+                 remote_files=None, delay_upload_s: float = 0.0, delay_new_s: float = 0.0,
+                 hang_downloads: bool = False, **kw):
+        super().__init__(**kw)
+        self.new_results = list(new_results or [])
+        self.sessions_rows = list(sessions_rows or [])
+        self.after_open_rows = list(after_open_rows) if after_open_rows is not None else None
+        self.upload_results = list(upload_results or [])
+        self.remote_files = dict(remote_files or {})
+        self.delay_upload_s = float(delay_upload_s)
+        self.delay_new_s = float(delay_new_s)
+        self.hang_downloads = bool(hang_downloads)
+        self.uploads: list[tuple[str, str, str]] = []
+        self.opened_sessions: set[str] = set()
+
+    def sessions(self, timeout: float = 30.0) -> CliResult:
+        self._record("sessions", None, timeout)
+        if self.after_open_rows is not None and self.opened_sessions:
+            nxt = self.after_open_rows.pop(0) if self.after_open_rows and isinstance(self.after_open_rows[0], CliResult) else None
+            if nxt is not None:
+                return nxt
+            rows = [r for r in self.after_open_rows if isinstance(r, str)]
+        else:
+            rows = list(self.sessions_rows)
+            for s in sorted(self.opened_sessions):
+                if not any(r.startswith("[%s] " % s) for r in rows):
+                    rows.append("[%s] gpu-g4-1 | Hardware: G4 | Shape: Standard | Variant: GPU" % s)
+        return CliResult(0, "\n".join(rows) + ("\n" if rows else ""))
+
+    def new_session(self, session: str, *, card: str, shape=None, cli_flag: str = "--gpu",
+                    timeout: float = 180.0) -> CliResult:
+        self._record("new", session, timeout)
+        if self.clock is not None and self.delay_new_s:
+            if self.delay_new_s > timeout:
+                self.clock.advance(max(0.0, float(timeout)))
+                return CliResult(124, "", "colab new timed out after %.1fs" % timeout)
+            self.clock.advance(self.delay_new_s)
+        if self.new_results:
+            res = self.new_results.pop(0)
+            if isinstance(res, CliResult):
+                if res.ok:
+                    self.opened_sessions.add(session)
+                return res
+        self.opened_sessions.add(session)
+        return CliResult(0, "Opened %s (%s)\n" % (session, shape or "high-mem"))
+
+    def upload(self, session: str, local: str, remote: str, timeout: float = 120.0) -> CliResult:
+        self._record("upload", session, timeout)
+        if self.clock is not None and self.delay_upload_s:
+            if self.delay_upload_s > timeout:
+                self.clock.advance(max(0.0, float(timeout)))
+                return CliResult(124, "", "upload timed out after %.1fs" % timeout)
+            self.clock.advance(self.delay_upload_s)
+        self.uploads.append((session, local, remote))
+        if self.upload_results:
+            return self.upload_results.pop(0)
+        return CliResult(0, "Uploaded %s\n" % remote)
+
+    def stop(self, session: str, timeout: float = 120.0) -> CliResult:
+        res = super().stop(session, timeout)
+        if res.ok:
+            self.opened_sessions.discard(session)
+        return res
+
+    def download(self, session, remote, local, timeout=120.0) -> CliResult:
+        name = remote.rsplit("/", 1)[-1]
+        if self.hang_downloads and not name.endswith((".poll.json", ".refused.json", ".run.out")):
+            self._record("download", session, timeout)
+            if self.clock is not None:
+                self.clock.advance(max(0.0, float(timeout)) + 2.0 * KILL_WAIT_S)
+            return CliResult(124, "", "download timed out after %.1fs" % timeout)
+        if remote in self.remote_files:
+            self._record("download", session, timeout)
+            data = self.remote_files[remote]
+            p = Path(local)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(data, bytes):
+                p.write_bytes(data)
+            else:
+                p.write_text(str(data), encoding="utf-8")
+            return CliResult(0, "")
+        return super().download(session, remote, local, timeout)
+
+
+def _write_spec(root: Path, *, card: str = "G4", shape: str | None = "standard", cap: float = 15.0,
+                max_rate: float | None = 10.5, wall_s: float = 1800,
+                collect=("result.json", "out.txt"), salvage=("setup.log", "vm_card.json"),
+                cleanup_bound_s: float | None = None, cpu_cmd: str = "python3 worker.py") -> Path:
+    (root / ".git").mkdir(exist_ok=True)
+    (root / "worker.py").write_text(
+        "import json, os\nfrom pathlib import Path\n"
+        "w = Path(os.environ['CR_WORK_DIR'])\n"
+        "(w / 'out.txt').write_text('hello worker\\n', encoding='utf-8')\n"
+        "(w / 'result.json').write_text(json.dumps({'ok': True}) + '\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    shape_line = ('shape = "%s"\n' % shape) if shape else ""
+    rate_line = ("max_rate = %s\n" % max_rate) if max_rate is not None else ""
+    cleanup_line = ("cleanup_bound_s = %s\n" % cleanup_bound_s) if cleanup_bound_s is not None else ""
+    collect_str = json.dumps(list(collect))
+    salvage_str = json.dumps(list(salvage))
+    spec = root / "colab-window.toml"
+    spec.write_text(
+        'schema_version = 1\n'
+        '[project]\nrepo = "org/demo"\nstudy = "demo-study"\njob = "demo_job"\n'
+        '[compute]\n'
+        f'card = "{card}"\n{shape_line}{rate_line}'
+        f'cap = {cap}\nwall_s = {wall_s}\n{cleanup_line}poll_s = 0.2\n'
+        '[inputs]\nroot = "."\nfiles = ["worker.py"]\n'
+        '[job]\n'
+        'setup = ["echo setup_ok"]\n'
+        'run = ["python3 worker.py"]\n'
+        f'cpu_dry_run = ["{cpu_cmd}"]\n'
+        f'[outputs]\ncollect = {collect_str}\nsalvage = {salvage_str}\n',
+        encoding="utf-8",
+    )
+    return spec
+
+
+class LauncherHappyAndLocalCpuTest(unittest.TestCase):
+    def test_dry_run_includes_open_phase_and_omits_false_eq_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, cap=15.0, max_rate=10.5)
+            out_dir = root / "dry_out"
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["launch", "--spec", str(spec), "--out-dir", str(out_dir), "--dry"])
+            self.assertEqual(rc, 0, err.getvalue())
+            stdout_txt = out.getvalue()
+            self.assertIn("DRY_RUN_OK", stdout_txt)
+            self.assertIn("open_phase_bound_s:", stdout_txt)
+            self.assertIn("open_phase_bound_units:", stdout_txt)
+            self.assertIn("(= cap 15.0)", stdout_txt)
+            self.assertIn("worst_case_launcher_death_path: unbounded until stop --out-dir", stdout_txt)
+            plan = json.loads((out_dir / "dry_run_plan.json").read_text(encoding="utf-8"))
+            self.assertGreater(plan["budget"]["open_phase_bound_s"], 0.0)
+            self.assertLessEqual(plan["budget"]["worst_case_total_spend"], plan["budget"]["cap"])
+            self.assertEqual(plan["budget"]["worst_case_launcher_death_path"], "unbounded until stop --out-dir")
+            self.assertEqual(status_window(out_dir)["state"], "dry_run")
+
+            # With non-zero margin, cap_path still equals cap (= margin + effective_trip + cleanup_reserve) <= cap
+            dry_m = root / "dry_margin"
+            out_m, err_m = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_m), contextlib.redirect_stderr(err_m):
+                rc_m = main(["launch", "--spec", str(spec), "--out-dir", str(dry_m), "--dry", "--margin", "0.25"])
+            self.assertEqual(rc_m, 0, err_m.getvalue())
+            self.assertIn("(= cap 15.0)", out_m.getvalue())
+            plan_m = json.loads((dry_m / "dry_run_plan.json").read_text(encoding="utf-8"))
+            self.assertLessEqual(plan_m["budget"]["worst_case_total_spend"], plan_m["budget"]["cap"])
+
+    def test_local_cpu_and_sealed_outcome_recording(self):
+        if os.name != "posix":
+            self.skipTest("local-cpu VM cell execution requires POSIX bash/nohup")
+        t = fake_tokens()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leak = leak_lines(t)[2]
+            (root / "leak_worker.py").write_text(
+                "import json, os\nfrom pathlib import Path\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                f"(w / 'out.txt').write_text('token ' + {leak!r} + '\\n', encoding='utf-8')\n"
+                "(w / 'result.json').write_text(json.dumps({'ok': True}) + '\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            prereg = root / "prereg.txt"
+            (root / "sealed-eval").mkdir()
+            sealed_file = root / "sealed-eval" / "item.txt"
+            sealed_file.write_text("ok\n", encoding="utf-8")
+            prereg_raw = (
+                b"study: demo-study\n"
+                b"allowed_cards: G4\n"
+                b"allowed_host: colab.google.com\n"
+                b"sealed_path: sealed-eval/item.txt\n"
+            )
+            prereg.write_bytes(prereg_raw)
+            prereg.chmod(0o444)
+            try:
+                spec = _write_spec(root, cpu_cmd="python3 leak_worker.py")
+                txt = spec.read_text(encoding="utf-8").replace(
+                    'files = ["worker.py"]',
+                    'files = ["worker.py", "leak_worker.py", "sealed-eval/item.txt"]\n'
+                    '[inputs.sealed]\n'
+                    'preregistration_path = "prereg.txt"\n'
+                    f'preregistration_sha256 = "{hashlib.sha256(prereg_raw).hexdigest()}"\n'
+                    'allowed_cards = ["G4"]\n'
+                    'allowed_host = "colab.google.com"\n',
+                )
+                spec.write_text(txt, encoding="utf-8")
+
+                out_dir = root / "cpu_out"
+                res = launch_window(spec, out_dir, local_cpu=True)
+                self.assertEqual(res["exit_code"], 0, res)
+                self.assertEqual(res["status"], "done")
+                self.assertEqual(res["card"], "CPU")
+                self.assertIsNotNone(res["sealed"])
+                self.assertEqual(res["sealed"]["sealed_files"], ["sealed-eval/item.txt"])
+                self.assertEqual(res["sealed"]["resolved_paths"], [str(sealed_file.resolve())])
+                self.assertEqual(len(res["sealed"]["files"]), 1)
+                self.assertEqual(
+                    res["sealed"]["files"][0]["sha256"],
+                    hashlib.sha256(sealed_file.read_bytes()).hexdigest(),
+                )
+                self.assertTrue(res["session_stopped_confirmed"])
+                self.assertTrue(res["session_gone_confirmed"])
+                collected_txt = (out_dir / "collected" / "out.txt").read_text(encoding="utf-8")
+                self.assertIn("[REDACTED]", collected_txt)
+                for v in values(t):
+                    self.assertNotIn(v, collected_txt)
+                self.assertTrue((out_dir / "collect_confirmed.json").is_file())
+            finally:
+                if prereg.exists():
+                    prereg.chmod(0o644)
+
+    def test_live_simulated_gpu_launch_and_open_phase_cap_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, cap=15.0, max_rate=10.5)
+            out_dir = root / "gpu_out"
+            clock = FakeClock()
+            usage_replies = [
+                usage_text(rate=0.0, n=0, balance=200.0),
+                usage_text(rate=10.2, n=1, balance=199.9),
+                usage_text(rate=10.2, n=1, balance=199.8),
+                usage_text(rate=10.2, n=1, balance=199.7),
+                usage_text(rate=10.2, n=1, balance=197.5),
+            ]
+            sim = SimColab(
+                clock=clock,
+                usage=lambda n: usage_replies[min(n - 1, len(usage_replies) - 1)],
+                polls=lambda n, env: (clock.advance(60.0) or rec(rc=0)),
+                remote_files={
+                    "/content/demo_job_work/result.json": '{"ok": true}\n',
+                    "/content/demo_job_work/out.txt": "clean output\n",
+                },
+            )
+            outcome = launch_window(
+                spec, out_dir, colab=sim, clock=clock.now, sleep=clock.sleep,
+                study_ledger=root / "ledger.json", state_dir=root / "state",
+            )
+            self.assertEqual(outcome["exit_code"], 0, outcome)
+            self.assertEqual(outcome["status"], "done")
+            self.assertEqual(outcome["window_rate_stable"], 10.2)
+            self.assertEqual(outcome["priced_rate"], 10.5)
+            self.assertEqual(outcome["spend_basis"], "window_rate_x_elapsed")
+            self.assertFalse(outcome["account_balance"]["used_for_pricing"])
+
+            # Item 3 (FIX-2): long open-phase uploads (115s + 115s = 230s) counts against cap in Runner.run;
+            # booked spend_ccu stays strictly <= cap (2.925) because cap counts from before colab new.
+            c_cap = FakeClock()
+            spec_tight = _write_spec(root, cap=2.925, max_rate=10.5, wall_s=3600, collect=(), salvage=())
+            sim_slow_open = SimColab(
+                clock=c_cap,
+                delay_upload_s=115.0,  # 2 uploads = 230s during open phase before Runner.run starts
+                usage=lambda n: usage_replies[min(n - 1, len(usage_replies) - 1)],
+                polls=lambda n, env: (c_cap.advance(90.0) or rec(progress=n)),
+            )
+            out_open_cap = launch_window(
+                spec_tight, root / "open_cap_out", colab=sim_slow_open, clock=c_cap.now, sleep=c_cap.sleep,
+                cleanup_bound_s=600.0, state_dir=root / "state2",
+            )
+            self.assertEqual(out_open_cap["status"], "cap")
+            self.assertLess(out_open_cap["elapsed_s"], 500.0)
+            self.assertLessEqual(out_open_cap["spend_ccu"], 2.925)
+            self.assertTrue(out_open_cap["session_stopped_confirmed"])
+
+
+class FailurePathsTest(unittest.TestCase):
+    def test_failure_1_dropped_session_unreachable_salvage_and_stop_rebooking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            out_dir = root / "drop_out"
+            clock = FakeClock()
+            seq = [
+                usage_text(rate=0.0, n=0, balance=200.0),
+                usage_text(rate=10.0, n=1, balance=200.0),
+                usage_text(rate=10.0, n=1, balance=199.9),
+            ]
+            sim = SimColab(
+                clock=clock,
+                usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                polls=lambda n, env: None,
+                stops=[1, 1, 1, 0],
+                remote_files={"/content/demo_job_out/setup.log": "setup started\n"},
+            )
+
+            outcome = launch_window(spec, out_dir, colab=sim, clock=clock.now, sleep=clock.sleep, state_dir=root / "s")
+            self.assertEqual(outcome["status"], "unreachable")
+            self.assertEqual(outcome["exit_code"], 2)
+            self.assertFalse(outcome["session_stopped_confirmed"])
+            self.assertTrue((out_dir / "session_open.json").is_file())
+            self.assertIn("setup.log", outcome["salvaged_outputs"])
+            self.assertEqual(status_window(out_dir)["state"], "stop_pending")
+
+            # Set opened_at 3600s before now so Item 11 stop reconciliation re-books spend up to close
+            past_open = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 3600.0, tz=timezone.utc)
+            raw_out = json.loads((out_dir / "outcome.json").read_text(encoding="utf-8"))
+            raw_out["opened_at"] = past_open.strftime("%Y-%m-%dT%H:%M:%SZ")
+            (out_dir / "outcome.json").write_text(json.dumps(raw_out), encoding="utf-8")
+
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch("colab_runner.__main__.cli_from_env", return_value=sim), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = main(["stop", "--out-dir", str(out_dir)])
+            self.assertEqual(rc, 0)
+            updated = json.loads((out_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertTrue(updated["session_stopped_confirmed"])
+            self.assertTrue(updated["spend_basis"].endswith("_reconciled"))
+            self.assertGreater(updated["elapsed_s"], 3500.0)
+            self.assertGreater(updated["spend_ccu"], 10.0)
+
+    def test_failure_2_oom_exit_137_and_vm_card_mismatch_even_with_empty_salvage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            out_dir = root / "oom_out"
+            clock = FakeClock()
+            seq = [
+                usage_text(rate=0.0, n=0, balance=100.0),
+                usage_text(rate=10.2, n=1, balance=100.0),
+                usage_text(rate=10.2, n=1, balance=99.9),
+            ]
+            sim = SimColab(
+                clock=clock,
+                usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                polls=lambda n, env: (rec(rc=137), ["Out of memory: Killed process 99 (python3)"]),
+                remote_files={"/content/demo_job_out/setup.log": "setup ok\n"},
+            )
+            outcome = launch_window(spec, out_dir, colab=sim, clock=clock.now, sleep=clock.sleep, state_dir=root / "s1")
+            self.assertEqual((outcome["status"], outcome["run_rc"], outcome["exit_code"]), ("oom", 137, 2))
+            self.assertTrue(outcome["session_stopped_confirmed"])
+
+            # Item 21: empty outputs.salvage still downloads vm_card.json so CARD_MISMATCH detects and trips breaker
+            spec_empty_salvage = _write_spec(root, salvage=())
+            state_dir = root / "state"
+            out_dir_mm = root / "mm_out"
+            sim_mm = SimColab(
+                clock=FakeClock(),
+                usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                polls=lambda n, env: (rec(rc=CARD_CHECK_FAIL_RC), ["failed"]),
+                remote_files={"/content/demo_job_out/vm_card.json": '{"ok": false, "requested_card": "G4"}\n'},
+            )
+            res_mm = launch_window(spec_empty_salvage, out_dir_mm, colab=sim_mm, clock=sim_mm.clock.now,
+                                   sleep=sim_mm.clock.sleep, state_dir=state_dir)
+            self.assertEqual(res_mm["status"], "card_mismatch")
+            self.assertEqual(res_mm["refusal"]["code"], "CARD_MISMATCH")
+            self.assertEqual(len(CircuitBreaker(state_dir / "card_refusals.json").events_for("G4")), 1)
+
+    def test_failure_3_cap_hits_money_limits_and_mid_run_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, cap=15.0, max_rate=10.5)
+            # Item 12: live GPU launch via CLI requires --cap and --max-rate
+            for bad_flags, want_code in [
+                (["--max-rate", "10.5"], "CAP_REQUIRED"),
+                (["--cap", "15.0"], "MAX_RATE_REQUIRED"),
+                (["--cap", "15.0", "--max-rate", "2.0"], "MAX_RATE_BELOW_FLOOR"),
+            ]:
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = main(["launch", "--spec", str(spec), "--out-dir", str(root / ("m_" + want_code))] + bad_flags)
+                self.assertEqual(rc, 1)
+                self.assertIn("REFUSED: " + want_code, err.getvalue())
+
+            # Pre-open CAP_TOO_SMALL_FOR_CLEANUP
+            small_dir = root / "small_spec"
+            small_dir.mkdir()
+            spec_small = _write_spec(small_dir, cap=1.0, max_rate=10.5)
+            with self.assertRaises(Refused) as ctx:
+                launch_window(spec_small, root / "c1", dry=True)
+            self.assertEqual(ctx.exception.code, "CAP_TOO_SMALL_FOR_CLEANUP")
+
+            # Post-open RATE_ABOVE_MAX under lock
+            high_seq = [
+                usage_text(rate=0.0, n=0, balance=100.0),
+                usage_text(rate=14.0, n=1, balance=100.0),
+                usage_text(rate=14.0, n=1, balance=99.8),
+            ]
+            c2 = FakeClock()
+            sim_high = SimColab(clock=c2, usage=lambda idx: high_seq[min(idx - 1, len(high_seq) - 1)])
+            res_high = launch_window(spec, root / "c2", colab=sim_high, clock=c2.now, sleep=c2.sleep,
+                                     state_dir=root / "s")
+            self.assertEqual(res_high["cap_trip"]["code"], "RATE_ABOVE_MAX")
+            self.assertTrue(res_high["session_stopped_confirmed"])
+
+            # Mid-run cap guard trip
+            spec_cap5 = _write_spec(root, cap=5.0, max_rate=10.5)
+            mid_seq = [
+                usage_text(rate=0.0, n=0, balance=100.0),
+                usage_text(rate=10.5, n=1, balance=100.0),
+                usage_text(rate=10.5, n=1, balance=99.9),
+            ]
+            c3 = FakeClock()
+            sim_mid = SimColab(
+                clock=c3,
+                usage=lambda idx: mid_seq[min(idx - 1, len(mid_seq) - 1)],
+                polls=lambda n, env: (c3.advance(1400.0) or rec(progress=n)),
+                remote_files={"/content/demo_job_out/setup.log": "running\n"},
+            )
+            res_mid = launch_window(spec_cap5, root / "c3", colab=sim_mid, clock=c3.now, sleep=c3.sleep,
+                                    state_dir=root / "s")
+            self.assertEqual((res_mid["status"], res_mid["cap_trip"]["code"]), ("cap", "CAP_GUARD_TRIPPED"))
+            self.assertEqual(sim_mid.kill_calls, 1)
+
+    def test_failure_4_unavailable_cards_real_pools_sessions_fail_open_fail_and_shape_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state_dir = root / "state"
+            # H100 unavailable up front
+            spec_h100 = _write_spec(root, card="H100", shape="standard", max_rate=20.0, cap=30.0)
+            with self.assertRaises(Refused) as ctx:
+                launch_window(spec_h100, root / "h100_out", state_dir=state_dir)
+            self.assertEqual(ctx.exception.code, "CARD_UNAVAILABLE")
+
+            # Item 15: Failed `colab new` always calls `stop` and keeps marker if stop failed!
+            spec_g4 = _write_spec(root, card="G4", shape="standard")
+            sim_new_fail_unstopped = SimColab(
+                clock=FakeClock(),
+                usage=usage_text(rate=0.0, n=0, balance=100.0),
+                new_results=[CliResult(124, "", "timeout after 180s")],
+                stops=[1, 1, 1],
+            )
+            res_nf = launch_window(spec_g4, root / "nf_unstopped", colab=sim_new_fail_unstopped,
+                                   clock=sim_new_fail_unstopped.clock.now,
+                                   sleep=sim_new_fail_unstopped.clock.sleep, state_dir=state_dir)
+            self.assertEqual(res_nf["refusal"]["code"], "SESSION_OPEN_FAILED")
+            self.assertGreaterEqual(sim_new_fail_unstopped.stop_calls, 1)
+            self.assertFalse(res_nf["session_stopped_confirmed"])
+            self.assertTrue((root / "nf_unstopped" / "session_open.json").is_file())
+
+            # 2nd allocation failure opens circuit breaker -> 3rd attempt refused CARD_CIRCUIT_OPEN
+            sim_alloc2 = SimColab(
+                clock=FakeClock(),
+                usage=usage_text(rate=0.0, n=0, balance=100.0),
+                new_results=[CliResult(1, "", "503 Service Unavailable")],
+            )
+            launch_window(spec_g4, root / "nf2", colab=sim_alloc2, clock=sim_alloc2.clock.now,
+                          sleep=sim_alloc2.clock.sleep, state_dir=state_dir)
+            with self.assertRaises(Refused) as ctx:
+                launch_window(spec_g4, root / "nf3", state_dir=state_dir)
+            self.assertEqual(ctx.exception.code, "CARD_CIRCUIT_OPEN")
+
+            # Item 13: real `colab sessions` format lines + 5 CPU rows + A100 40 vs 80 split + ignored session-name substring
+            cpu_rows = ["[my-g4-stub-%d] ep%d | Hardware: CPU | Shape: High-RAM | Variant: DEFAULT" % (i, i)
+                        for i in range(5)]
+            sim_cpu5 = SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0), sessions_rows=cpu_rows)
+            # Launching G4 sees 0 G4s even though session names contain "g4"!
+            seq_g4 = [usage_text(rate=0.0, n=5), usage_text(rate=10.5, n=6), usage_text(rate=10.5, n=6)]
+            c_g4 = FakeClock()
+            sim_cpu5.clock = c_g4
+            sim_cpu5.usage_reply = lambda n: seq_g4[min(n - 1, len(seq_g4) - 1)]
+            sim_cpu5.polls = lambda n, env: rec(rc=0)
+            sim_cpu5.remote_files = {"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"}
+            spec_diff_study = _write_spec(root, card="G4", shape="standard")
+            ok_with_5cpu = launch_window(spec_diff_study, root / "g4_ok_5cpu", colab=sim_cpu5, clock=c_g4.now,
+                                         sleep=c_g4.sleep, state_dir=root / "fresh_state")
+            self.assertEqual(ok_with_5cpu["status"], "done")
+
+            # 5 CPU rows hit CPU pool ceiling
+            with self.assertRaises(Refused) as ctx:
+                launch_window(spec_diff_study, root / "cpu_full", card="CPU", colab=sim_cpu5, state_dir=root / "s_cpu")
+            self.assertEqual(ctx.exception.code, "POOL_CEILING_REACHED")
+
+            # A100 40GB full does NOT block A100 80GB (`High-RAM`)
+            a100_40_rows = ["[a%d] ep%d | Hardware: A100 | Shape: Standard | Variant: GPU" % (i, i) for i in range(3)]
+            c_a80 = FakeClock()
+            sim_a80 = SimColab(
+                clock=c_a80,
+                sessions_rows=a100_40_rows,
+                after_open_rows=["[s-80] ep | Hardware: A100 | Shape: High-RAM | Variant: GPU"],
+                usage=lambda n: [usage_text(rate=3.0, n=3), usage_text(rate=8.5, n=4), usage_text(rate=8.5, n=4)][min(n - 1, 2)],
+                polls=lambda n, env: rec(rc=0),
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
+            )
+            res_a80 = launch_window(spec_diff_study, root / "a80_ok", card="A100", shape="high-mem", session="s-80",
+                                    max_rate=10.0, cap=15.0, colab=sim_a80, clock=c_a80.now, sleep=c_a80.sleep,
+                                    state_dir=root / "s_a80")
+            self.assertEqual(res_a80["status"], "done")
+
+            # Item 14: failed `colab sessions` refuses SESSIONS_READ_FAILED
+            sim_sess_err = SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0))
+            with mock.patch.object(sim_sess_err, "sessions", return_value=CliResult(1, "", "network error")):
+                with self.assertRaises(Refused) as ctx:
+                    launch_window(spec_diff_study, root / "sess_err", colab=sim_sess_err, state_dir=root / "s_err")
+            self.assertEqual(ctx.exception.code, "SESSIONS_READ_FAILED")
+
+            # Item 18: transient `colab sessions` failure after open retries cleanly; exhausted does not trip breaker
+            c_tr = FakeClock()
+            sim_transient = SimColab(
+                clock=c_tr,
+                after_open_rows=[CliResult(1, "", "502 temporary"), "[my-t4] ep | Hardware: T4 | Shape: High-RAM | Variant: GPU"],
+                usage=lambda n: [usage_text(rate=0.0, n=0), usage_text(rate=1.2, n=1), usage_text(rate=1.2, n=1)][min(n - 1, 2)],
+                polls=lambda n, env: rec(rc=0),
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
+            )
+            res_tr = launch_window(spec_diff_study, root / "tr_ok", card="T4", shape="high-mem", max_rate=2.0, cap=10.0,
+                                   session="my-t4", colab=sim_transient, clock=c_tr.now, sleep=c_tr.sleep,
+                                   state_dir=root / "s_tr")
+            self.assertEqual(res_tr["status"], "done")
+
+            st_exh = root / "s_exh"
+            sim_exh = SimColab(
+                clock=FakeClock(),
+                usage=usage_text(rate=0.0, n=0),
+                after_open_rows=[CliResult(1, "", "down"), CliResult(1, "", "down")],
+            )
+            res_exh = launch_window(spec_diff_study, root / "exh_out", card="T4", shape="high-mem", max_rate=2.0,
+                                    cap=10.0, colab=sim_exh, clock=sim_exh.clock.now, sleep=sim_exh.clock.sleep,
+                                    shape_check_attempts=2, state_dir=st_exh)
+            self.assertEqual(res_exh["refusal"]["code"], "SESSIONS_READ_FAILED")
+            self.assertEqual(CircuitBreaker(st_exh / "card_refusals.json").events_for("T4"), [])
+
+
+class SignalsLocksExceptionsAndPostOpenTest(unittest.TestCase):
+    def test_items_9_10_signals_orphaned_and_exceptions_book_spend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            seq = [
+                usage_text(rate=0.0, n=0, balance=100.0),
+                usage_text(rate=10.2, n=1, balance=100.0),
+                usage_text(rate=10.2, n=1, balance=99.9),
+            ]
+            # Item 9 + 10: SIGTERM during open phase -> stops, books spend, writes outcome.json, re-raises RunInterrupted
+            c_sig = FakeClock()
+            sim_sig = SimColab(clock=c_sig, usage=lambda n: seq[min(n - 1, len(seq) - 1)])
+
+            def _raise_on_upload(session, local, remote, timeout=120.0):
+                c_sig.advance(120.0)
+                os.kill(os.getpid(), signal.SIGTERM)
+
+            with mock.patch.object(sim_sig, "upload", side_effect=_raise_on_upload):
+                with self.assertRaises(RunInterrupted):
+                    launch_window(spec, root / "sig_open", colab=sim_sig, clock=c_sig.now, sleep=c_sig.sleep,
+                                  state_dir=root / "s_sig")
+            sig_out = json.loads((root / "sig_open" / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(sig_out["status"], "interrupted")
+            self.assertGreater(sig_out["spend_ccu"], 0.0)
+            self.assertTrue(sig_out["session_stopped_confirmed"])
+
+            # Item 10: unexpected crash in upload writes outcome.json (`error`) before re-raising
+            c_err = FakeClock()
+            sim_err = SimColab(clock=c_err, usage=lambda n: seq[min(n - 1, len(seq) - 1)])
+            with mock.patch.object(sim_err, "upload", side_effect=RuntimeError("disk full")):
+                with self.assertRaises(RuntimeError):
+                    launch_window(spec, root / "err_open", colab=sim_err, clock=c_err.now, sleep=c_err.sleep,
+                                  state_dir=root / "s_err2")
+            err_out = json.loads((root / "err_open" / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(err_out["status"], "error")
+            self.assertEqual(err_out["refusal"]["code"], "UNEXPECTED_ERROR")
+
+            # Item 10: BinaryDownloadRefused during collect writes outcome.json before re-raising
+            t = fake_tokens()
+            c_bin = FakeClock()
+            sim_bin = SimColab(
+                clock=c_bin,
+                usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                polls=lambda n, env: rec(rc=0),
+                remote_files={
+                    "/content/demo_job_work/result.json": b"\x00BIN Bearer " + t["bearer"].encode("ascii") + b"\x00",
+                },
+            )
+            with self.assertRaises(BinaryDownloadRefused):
+                launch_window(spec, root / "bin_leak", colab=sim_bin, clock=c_bin.now, sleep=c_bin.sleep,
+                              state_dir=root / "s_bin")
+            bin_out = json.loads((root / "bin_leak" / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(bin_out["status"], "error")
+            self.assertEqual(bin_out["refusal"]["code"], "BINARY_DOWNLOAD_TOKEN")
+            self.assertEqual(len(bin_out["quarantined"]), 1)
+            self.assertTrue(bin_out["session_stopped_confirmed"])
+
+            # Item 9: orphaned status when launcher_pid is dead and session_open.json remains
+            orp_dir = root / "orp"
+            orp_dir.mkdir()
+            (orp_dir / "session_open.json").write_text('{"session": "s1", "job": "j"}\n', encoding="utf-8")
+            (orp_dir / "window_meta.json").write_text('{"session": "s1", "launcher_pid": 999999}\n', encoding="utf-8")
+            with mock.patch("colab_runner.launcher._pid_alive", return_value=False):
+                self.assertEqual(status_window(orp_dir)["state"], "orphaned")
+
+    def test_items_16_17_22_24_locks_study_reservation_runner_file_out_dir_and_post_open_unread(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root)
+            # Item 13 (FIX-2): real two-window test proving reserve_card runs under lock BEFORE record_window
+            ledger_p = root / "ledger.json"
+            lock_16 = root / "item16.lock"
+            entered_run = threading.Event()
+            release_run = threading.Event()
+            seq_16 = [usage_text(rate=0.0, n=0), usage_text(rate=10.2, n=1), usage_text(rate=10.2, n=1)]
+
+            def _blocking_polls(n, env):
+                entered_run.set()
+                release_run.wait(timeout=5.0)
+                return rec(rc=0)
+
+            c_w1 = FakeClock()
+            sim_w1 = SimColab(
+                clock=c_w1,
+                usage=lambda n: seq_16[min(n - 1, len(seq_16) - 1)],
+                polls=_blocking_polls,
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
+            )
+            w1_box: list[dict] = []
+            w1_err: list[BaseException] = []
+
+            def _run_w1():
+                try:
+                    w1_box.append(launch_window(
+                        spec, root / "w1_res_out", colab=sim_w1, clock=c_w1.now, sleep=c_w1.sleep,
+                        study_ledger=ledger_p, state_dir=root / "s_w1", open_lock=lock_16,
+                    ))
+                except BaseException as exc:
+                    w1_err.append(exc)
+
+            t1 = threading.Thread(target=_run_w1)
+            t1.start()
+            self.assertTrue(entered_run.wait(timeout=5.0), "window 1 never reached Runner.run")
+            try:
+                # Window 1 is mid-run (record_window has NOT run yet), so G4 is locked solely via reserve_card.
+                ledger_snap = json.loads(ledger_p.read_text(encoding="utf-8"))
+                self.assertEqual(ledger_snap["studies"]["demo-study"]["card"], "G4")
+                self.assertEqual(len(ledger_snap["studies"]["demo-study"]["windows"]), 0)
+                sim_mix = SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0))
+                with self.assertRaises(Refused) as ctx:
+                    launch_window(
+                        spec, root / "mix_out", card="L4", shape="standard", max_rate=2.0, cap=10.0,
+                        colab=sim_mix, study_ledger=ledger_p, state_dir=root / "s_mix", open_lock=lock_16,
+                    )
+                self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
+            finally:
+                release_run.set()
+                t1.join(timeout=5.0)
+            self.assertFalse(w1_err, w1_err)
+            self.assertEqual(w1_box[0]["status"], "done")
+
+            # Item 11 + Item 17: default user state & open lock live outside tempdir; stale lockdir recovery works
+            def_state, _ = _state_paths(None, None, live=True)
+            self.assertIsNotNone(def_state)
+            self.assertNotIn(Path(tempfile.gettempdir()), def_state.parents)
+            self.assertNotEqual(def_state, Path(tempfile.gettempdir()) / "colab-runner-state")
+            self.assertEqual(_default_open_lock_path(None), def_state / "open.lock")
+            lock_dir = root / "win.lockdir"
+            lock_dir.mkdir()
+            (lock_dir / "owner.json").write_text(json.dumps({"pid": 999999}), encoding="utf-8")
+            with _acquire_dir_lock(lock_dir, pid_alive=lambda pid: False):
+                owner = json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))
+                self.assertEqual(owner["pid"], os.getpid())
+            self.assertFalse(lock_dir.exists())
+
+            # Item 22: Runner(pre_opened=False) on an existing file keeps 0.1.4 OUT_DIR_NOT_EMPTY
+            bad_out = root / "file_not_dir"
+            bad_out.write_text("existing file", encoding="utf-8")
+            with self.assertRaises(Refused) as ctx:
+                Runner(Colab(), "s1", bad_out).run(script="/content/x.sh", wall_s=60)
+            self.assertEqual(ctx.exception.code, "OUT_DIR_NOT_EMPTY")
+
+            # Item 24: clean POST_OPEN_RATE_UNREAD test asserting stop confirmed
+            c2 = FakeClock()
+            sim_unread = SimColab(clock=c2, usage=usage_text(rate=0.0, n=0))
+            res_ur = launch_window(spec, root / "ur_fail", colab=sim_unread, clock=c2.now, sleep=c2.sleep,
+                                   post_open_polls=2, state_dir=root / "s_ur")
+            self.assertEqual(res_ur["status"], "open_failed")
+            self.assertEqual(res_ur["refusal"]["code"], "POST_OPEN_RATE_UNREAD")
+            self.assertTrue(res_ur["session_stopped_confirmed"])
+
+            # Existing test helper parse_sessions_output & status error check
+            parsed = parse_sessions_output("[s1] ep | Hardware: G4 | Shape: Standard | Variant: GPU\n")
+            self.assertEqual((parsed[0]["hardware"], parsed[0]["shape"], parsed[0]["variant"]), ("G4", "Standard", "GPU"))
+            self.assertEqual(LocalColab(root / "vm_e").restart_kernel("none").rc, 0)
+
+
+class AdditionalPatchCoverageTest(unittest.TestCase):
+    def test_env_locks_open_bounds_shape_mismatch_status_and_cli_handlers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # resolve_kit_env + default_cleanup_bound_s
+            self.assertEqual(resolve_kit_env(["FOO=bar", "BAZ"], environ={"BAZ": "qux"}), {"FOO": "bar", "BAZ": "qux"})
+            with self.assertRaises(Refused) as ctx:
+                resolve_kit_env(["1BAD=x"], environ={})
+            self.assertEqual(ctx.exception.code, "ENV_INVALID")
+            with self.assertRaises(Refused) as ctx:
+                resolve_kit_env(["MISSING_VAR"], environ={})
+            self.assertEqual(ctx.exception.code, "ENV_UNSET")
+            self.assertGreater(default_cleanup_bound_s(True), default_cleanup_bound_s(False))
+
+            # _default_open_lock_path, _pid_alive, _acquire_dir_lock timeout + stale recovery
+            self.assertEqual(_default_open_lock_path(root / "x.lock"), root / "x.lock")
+            with mock.patch.dict(os.environ, {"COLAB_RUNNER_OPEN_LOCK": str(root / "env.lock")}):
+                self.assertEqual(_default_open_lock_path(None), root / "env.lock")
+            self.assertFalse(_pid_alive(0))
+            self.assertTrue(_pid_alive(os.getpid()))
+            self.assertFalse(_pid_alive(99999999))
+
+            lock_bad = root / "corrupt.lockdir"
+            lock_bad.mkdir()
+            (lock_bad / "owner.json").write_text("{corrupt", encoding="utf-8")
+            clk = FakeClock()
+            with self.assertRaises(Refused) as ctx:
+                with _acquire_dir_lock(lock_bad, timeout_s=0.1, clock=clk.now, sleep=clk.sleep):
+                    pass
+            self.assertEqual(ctx.exception.code, "OPEN_LOCK_TIMEOUT")
+
+            lock_stale = root / "stale_no_owner.lockdir"
+            lock_stale.mkdir()
+            old_t = 1000.0
+            os.utime(lock_stale, (old_t, old_t))
+            with mock.patch("colab_runner.launcher.time.time", return_value=old_t + 3000.0):
+                with _acquire_dir_lock(lock_stale, timeout_s=1.0):
+                    self.assertTrue((lock_stale / "owner.json").is_file())
+
+            # Confirmed SHAPE_MISMATCH + CircuitBreaker event
+            spec = _write_spec(root, cap=15.0, max_rate=10.5)
+            seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=10.2, n=1, balance=100.0)]
+            c_mm = FakeClock()
+            st_mm = root / "st_mm"
+            sim_mm = SimColab(
+                clock=c_mm, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                after_open_rows=["[sess-mm] ep | Hardware: G4 | Shape: High-RAM | Variant: GPU"],
+            )
+            res_mm = launch_window(
+                spec, root / "mm_out", session="sess-mm", colab=sim_mm, clock=c_mm.now, sleep=c_mm.sleep, state_dir=st_mm
+            )
+            self.assertEqual(res_mm["status"], "shape_mismatch")
+            self.assertEqual(res_mm["refusal"]["code"], "SHAPE_MISMATCH")
+            self.assertEqual(len(CircuitBreaker(st_mm / "card_refusals.json").events_for("G4")), 1)
+
+            # Open-phase wall trip + cap trip + UPLOAD_FAILED
+            c_w = FakeClock()
+            sim_w = SimColab(clock=c_w, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)], delay_upload_s=20.0)
+            res_w = launch_window(
+                spec, root / "wall_open", wall_s=10.0, colab=sim_w, clock=c_w.now, sleep=c_w.sleep, state_dir=root / "s_w"
+            )
+            self.assertEqual(res_w["status"], "wall")
+
+            cap2_dir = root / "cap2"
+            cap2_dir.mkdir()
+            spec_cap2 = _write_spec(cap2_dir, cap=2.5, max_rate=10.5, wall_s=1800, collect=(), salvage=())
+            c_c = FakeClock()
+            sim_c = SimColab(clock=c_c, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)], delay_upload_s=115.0)
+            res_c = launch_window(
+                spec_cap2, root / "cap_open", cleanup_bound_s=600.0, colab=sim_c, clock=c_c.now, sleep=c_c.sleep,
+                state_dir=root / "s_c",
+            )
+            self.assertEqual(res_c["status"], "cap")
+
+            c_up = FakeClock()
+            sim_up = SimColab(
+                clock=c_up, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)],
+                upload_results=[CliResult(1, "", "500 upload error")],
+            )
+            res_up = launch_window(spec, root / "up_fail", colab=sim_up, clock=c_up.now, sleep=c_up.sleep, state_dir=root / "s_up")
+            self.assertEqual(res_up["status"], "upload_failed")
+            self.assertEqual(res_up["refusal"]["code"], "UPLOAD_FAILED")
+
+            # status_window variants + CLI status
+            with self.assertRaises(Refused) as ctx:
+                status_window(root / "no_such_dir")
+            self.assertEqual(ctx.exception.code, "STATUS_DIR_MISSING")
+            unk = root / "unk_dir"
+            unk.mkdir()
+            self.assertEqual(status_window(unk)["state"], "unknown")
+
+            live_dir = root / "live_dir"
+            live_dir.mkdir()
+            (live_dir / "session_open.json").write_text('{"session": "s1", "job": "demo_job"}\n', encoding="utf-8")
+            (live_dir / "window_meta.json").write_text(
+                json.dumps({"session": "s1", "launcher_pid": os.getpid(), "card": "G4"}), encoding="utf-8"
+            )
+            (live_dir / "demo_job.run.out").write_text("line 1\n", encoding="utf-8")
+            st_live = status_window(live_dir)
+            self.assertEqual(st_live["state"], "running")
+            self.assertEqual(st_live["last_log_lines"], ["line 1"])
+
+            for cli_args in (["status", "--out-dir", str(live_dir)], ["status", "--out-dir", str(live_dir), "--json"]):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(main(cli_args), 0)
+
+            # CLI launch exception handlers: RunInterrupted (with outcome.json + marker) + unexpected error
+            int_dir = root / "cli_int"
+            int_dir.mkdir()
+            (int_dir / "session_open.json").write_text('{"session": "s1", "job": "j"}\n', encoding="utf-8")
+            (int_dir / "outcome.json").write_text(
+                json.dumps({"status": "interrupted", "session": "s1", "spend_ccu": 0.1, "session_stopped_confirmed": False}),
+                encoding="utf-8",
+            )
+            with mock.patch("colab_runner.__main__.launch_window", side_effect=RunInterrupted(signal.SIGTERM)):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc_i = main(["launch", "--spec", str(spec), "--out-dir", str(int_dir), "--cap", "15", "--max-rate", "10.5"])
+            self.assertEqual(rc_i, 2)
+            self.assertIn("LAUNCH_END status=interrupted", out.getvalue())
+
+            with mock.patch("colab_runner.__main__.launch_window", side_effect=RuntimeError("boom")):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc_e = main(["launch", "--spec", str(spec), "--out-dir", str(int_dir), "--cap", "15", "--max-rate", "10.5"])
+            self.assertEqual(rc_e, 2)
+            self.assertIn("LAUNCH_ERROR", err.getvalue())
+
+            # LocalColab edge branches (_translate_remote, closed session upload/exec, nested upload, start_cell + kill)
+            lc = LocalColab(root / "lc_cov")
+            self.assertEqual(lc._translate_remote("/content"), lc.content_dir)
+            self.assertEqual(lc._translate_remote("rel.txt"), (lc.content_dir / "rel.txt").resolve())
+            with self.assertRaises(ValueError):
+                lc._translate_remote("/content/../outside")
+            with self.assertRaises(ValueError):
+                lc._translate_remote("../outside")
+            self.assertEqual(lc.upload("closed", __file__, "/content/a").rc, 1)
+            self.assertEqual(lc.exec_cell("closed", "print(1)").rc, 1)
+            lc.new_session("s", card="CPU")
+            self.assertEqual(lc.upload("s", __file__, "/content/sub/a").rc, 1)
+            bg = lc.start_cell("s", "print('ok')", timeout=5.0)
+            bg.kill()
+
+            # Launcher helper edges (_check_empty_out_dir, _read_pre_open_usage, reconcile_stopped_outcome)
+            f_out = root / "f_out"
+            f_out.write_text("x", encoding="utf-8")
+            with self.assertRaises(Refused) as ctx:
+                _check_empty_out_dir(f_out)
+            self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
+
+            c_fail = SimColab(clock=FakeClock(), usage=lambda n: CliResult(1, "", "err"))
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(c_fail, card_spec=resolve_card("G4"))
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU")), (None, None, None))
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"))
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(
+                    SimColab(clock=FakeClock(), usage="Current balance: 100.00 compute units\nUsage rate: 0.00 / hr\n"),
+                    card_spec=resolve_card("G4"),
+                )
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+
+            self.assertIsNone(reconcile_stopped_outcome(root / "missing_reconcile", c_fail, "s1"))
+            bad_rec_dir = root / "bad_rec"
+            bad_rec_dir.mkdir()
+            (bad_rec_dir / "outcome.json").write_text("{bad", encoding="utf-8")
+            self.assertIsNone(reconcile_stopped_outcome(bad_rec_dir, c_fail, "s1"))
+            (bad_rec_dir / "outcome.json").write_text("[1]", encoding="utf-8")
+            self.assertIsNone(reconcile_stopped_outcome(bad_rec_dir, c_fail, "s1"))
+
+            # CLI __main__ branches: STATUS_DIR_MISSING, empty out_dir RunInterrupted, refusal+cap_trip+marker hints
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(main(["status", "--out-dir", str(root / "missing_status_dir")]), 1)
+            self.assertIn("REFUSED: STATUS_DIR_MISSING", err.getvalue())
+
+            empty_cli = root / "empty_cli"
+            empty_cli.mkdir()
+            with mock.patch("colab_runner.__main__.launch_window", side_effect=RunInterrupted(signal.SIGTERM)):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(
+                        main(["launch", "--spec", str(spec), "--out-dir", str(empty_cli), "--cap", "15", "--max-rate", "10.5"]),
+                        2,
+                    )
+            self.assertIn("LAUNCH_ERROR", err.getvalue())
+
+            hint_cli = root / "hint_cli"
+            hint_cli.mkdir()
+            (hint_cli / "session_open.json").write_text('{"session": "s1", "job": "j"}\n', encoding="utf-8")
+            fake_res = {
+                "status": "cap",
+                "session": "s1",
+                "spend_ccu": 0.2,
+                "session_stopped_confirmed": False,
+                "exit_code": 2,
+                "refusal": {"code": "SESSION_OPEN_FAILED", "hint": "h1"},
+                "cap_trip": {"code": "CAP_GUARD_TRIPPED", "hint": "h2"},
+            }
+            with mock.patch("colab_runner.__main__.launch_window", return_value=fake_res):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(
+                        main(["launch", "--spec", str(spec), "--out-dir", str(hint_cli), "--cap", "15", "--max-rate", "10.5"]),
+                        2,
+                    )
+            self.assertIn("hint: h1", err.getvalue())
+            self.assertIn("hint: h2", err.getvalue())
+
+
+class Fix2CapTimingOrphanAndLockTest(unittest.TestCase):
+    def test_failed_open_books_spend_and_releases_card_to_allow_retry_on_a100(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, card="G4", shape="standard", cap=15.0, max_rate=10.5)
+            ledger_p = root / "ledger.json"
+            lock_p = root / "lock"
+
+            # Item 1 + Item 9: G4 `colab new` runs 36s then fails; spends >0 from pre-new clock and releases card!
+            c1 = FakeClock()
+            sim_fail = SimColab(
+                clock=c1, delay_new_s=36.0, usage=usage_text(rate=0.0, n=0, balance=100.0),
+                new_results=[CliResult(1, "", "capacity exhausted")],
+            )
+            res_fail = launch_window(
+                spec, root / "g4_fail", colab=sim_fail, clock=c1.now, sleep=c1.sleep,
+                study_ledger=ledger_p, state_dir=root / "st", open_lock=lock_p,
+            )
+            self.assertEqual(res_fail["status"], "open_failed")
+            self.assertFalse(res_fail["opened"])
+            self.assertIsNotNone(res_fail["opened_at"])
+            self.assertGreater(res_fail["spend_ccu"], 0.0)
+            self.assertTrue(res_fail["session_stopped_confirmed"])
+
+            # Now the SAME study reserves and succeeds on A100!
+            c2 = FakeClock()
+            seq_a = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=10.0, n=1, balance=99.9)]
+            sim_a100 = SimColab(
+                clock=c2,
+                after_open_rows=["[s-a100] ep | Hardware: A100 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: seq_a[min(idx - 1, len(seq_a) - 1)],
+                polls=lambda n, env: (c2.advance(10.0) or rec(rc=0)),
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
+            )
+            res_ok = launch_window(
+                spec, root / "a100_ok", card="A100", shape="standard", max_rate=12.0, cap=15.0,
+                session="s-a100", colab=sim_a100, clock=c2.now, sleep=c2.sleep,
+                study_ledger=ledger_p, state_dir=root / "st", open_lock=lock_p,
+            )
+            self.assertEqual(res_ok["status"], "done")
+            ledger_data = json.loads(ledger_p.read_text(encoding="utf-8"))
+            self.assertEqual(ledger_data["studies"]["demo-study"]["card"], "A100")
+
+            # Item 1 reconcile even when opened=False (failed open whose stop later confirms)
+            unstopped_dir = root / "fail_unstopped"
+            c3 = FakeClock()
+            sim_us = SimColab(
+                clock=c3, delay_new_s=36.0, usage=usage_text(rate=0.0, n=0, balance=100.0),
+                new_results=[CliResult(124, "", "timeout")], stops=[1, 1, 1, 0],
+            )
+            res_us = launch_window(
+                spec, unstopped_dir, colab=sim_us, clock=c3.now, sleep=c3.sleep, state_dir=root / "st2", open_lock=lock_p
+            )
+            self.assertFalse(res_us["opened"])
+            self.assertFalse(res_us["session_stopped_confirmed"])
+            self.assertGreater(res_us["spend_ccu"], 0.0)
+            past_open = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 600.0, tz=timezone.utc)
+            raw_us = json.loads((unstopped_dir / "outcome.json").read_text(encoding="utf-8"))
+            raw_us["opened_at"] = past_open.strftime("%Y-%m-%dT%H:%M:%SZ")
+            (unstopped_dir / "outcome.json").write_text(json.dumps(raw_us), encoding="utf-8")
+            with mock.patch("colab_runner.__main__.cli_from_env", return_value=sim_us):
+                self.assertEqual(main(["stop", "--out-dir", str(unstopped_dir), "--quiet"]), 0)
+            rec_us = json.loads((unstopped_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertTrue(rec_us["spend_basis"].endswith("_reconciled"))
+            self.assertGreater(rec_us["elapsed_s"], 500.0)
+
+    def test_item_2_open_phase_timeout_clamping_never_overruns_cleanup_reserve(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # cap=2.5, cleanup=600 (own 466 + vm_card 130 = 596) -> reserve=1.75 -> ceiling=0.75 -> 257.14s at 10.5/h
+            spec = _write_spec(root, card="G4", shape="standard", cap=2.5, max_rate=10.5, wall_s=1800,
+                               collect=(), salvage=())
+            c = FakeClock()
+            seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=10.5, n=1, balance=99.9)]
+            # Upload 1 completes in 115s; Upload 2 gets clamped (< 120s) and hits cap before overrunning reserve.
+            sim = SimColab(clock=c, delay_upload_s=115.0, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)])
+            res = launch_window(
+                spec, root / "clamp_out", cleanup_bound_s=600.0, colab=sim, clock=c.now, sleep=c.sleep,
+                state_dir=root / "st",
+            )
+            self.assertEqual(res["status"], "cap")
+            reserve = 600.0 / 3600.0 * 10.5
+            self.assertLessEqual(res["spend_ccu"] + reserve, 2.5 + 1e-5)
+
+    def test_item_5_orphan_booking_from_window_meta_and_marker_mtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger_p = root / "ledger.json"
+            lock_p = root / "lock"
+            orp = root / "orphan_win"
+            orp.mkdir()
+            started = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 1800.0, tz=timezone.utc)
+            (orp / "window_meta.json").write_text(json.dumps({
+                "window_id": "job-orp1",
+                "session": "s-orp1",
+                "launcher_pid": 999999,
+                "project": {"repo": "org/r", "study": "orp-study", "job": "job", "description": ""},
+                "card": "G4",
+                "card_class": "gpu",
+                "shape": "standard",
+                "mode": "live",
+                "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "cap_ccu": 15.0,
+                "max_rate": 10.5,
+                "study_ledger": str(ledger_p),
+                "open_lock": str(lock_p),
+            }), encoding="utf-8")
+            (orp / "session_open.json").write_text('{"session": "s-orp1", "job": "job"}\n', encoding="utf-8")
+            sim = SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0, balance=95.0))
+            with mock.patch("colab_runner.__main__.cli_from_env", return_value=sim):
+                self.assertEqual(main(["stop", "--out-dir", str(orp), "--quiet"]), 0)
+            out = json.loads((orp / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(out["status"], "orphaned")
+            self.assertEqual(out["spend_basis"], "max_rate_x_elapsed_orphan_reconciled")
+            self.assertGreater(out["elapsed_s"], 1700.0)
+            self.assertGreater(out["spend_ccu"], 4.5)
+            ledger_data = json.loads(ledger_p.read_text(encoding="utf-8"))
+            self.assertEqual(ledger_data["studies"]["orp-study"]["windows"][0]["status"], "orphaned")
+
+            # Fallback to session_open.json mtime when window_meta lacks started_at
+            orp2 = root / "orphan_mtime"
+            orp2.mkdir()
+            (orp2 / "window_meta.json").write_text(json.dumps({
+                "window_id": "job-orp2", "session": "s-orp2", "card": "CPU", "card_class": "cpu", "max_rate": 0.26,
+            }), encoding="utf-8")
+            marker2 = orp2 / "session_open.json"
+            marker2.write_text('{"session": "s-orp2", "job": "job"}\n', encoding="utf-8")
+            past_m = datetime.now(timezone.utc).timestamp() - 900.0
+            os.utime(marker2, (past_m, past_m))
+            with mock.patch("colab_runner.__main__.cli_from_env", return_value=sim):
+                self.assertEqual(main(["stop", "--out-dir", str(orp2), "--quiet"]), 0)
+            out2 = json.loads((orp2 / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(out2["spend_basis"], "max_rate_x_elapsed_orphan_reconciled")
+            self.assertGreater(out2["elapsed_s"], 800.0)
+
+    def test_item_10_and_12_atomic_lock_takeover_and_gapless_cleanup_signals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Item 10: two waiters racing to reclaim one dead-PID lockdir -> exactly one acquires, one times out
+            lock_dir = root / "race.lockdir"
+            lock_dir.mkdir()
+            (lock_dir / "owner.json").write_text(json.dumps({"pid": 999999}), encoding="utf-8")
+            barrier = threading.Barrier(2)
+            results: list[str] = []
+            res_lock = threading.Lock()
+
+            def _waiter():
+                barrier.wait(timeout=5.0)
+                try:
+                    with _acquire_dir_lock(lock_dir, timeout_s=0.15, pid_alive=lambda pid: pid == os.getpid()):
+                        with res_lock:
+                            results.append("acquired")
+                        threading.Event().wait(0.25)
+                except Refused as exc:
+                    with res_lock:
+                        results.append(exc.code)
+
+            t1 = threading.Thread(target=_waiter)
+            t2 = threading.Thread(target=_waiter)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5.0)
+            t2.join(timeout=5.0)
+            self.assertEqual(sorted(results), ["OPEN_LOCK_TIMEOUT", "acquired"])
+
+            # Item 12a: SIGTERM arriving during open-phase cleanup (stop) is deferred until outcome.json is saved
+            spec = _write_spec(root)
+            seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=10.2, n=1, balance=99.9)]
+            c_def = FakeClock()
+            sim_def = SimColab(clock=c_def, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)])
+
+            def _stop_with_sig(session, timeout=120.0):
+                sim_def.stops.append((session, 0))
+                os.kill(os.getpid(), signal.SIGTERM)
+                return CliResult(0, "")
+
+            with mock.patch.object(sim_def, "new_session", return_value=CliResult(1, "", "503")), \
+                    mock.patch.object(sim_def, "stop", side_effect=_stop_with_sig):
+                with self.assertRaises(RunInterrupted):
+                    launch_window(
+                        spec, root / "def_sig_out", colab=sim_def, clock=c_def.now, sleep=c_def.sleep,
+                        state_dir=root / "st_def",
+                    )
+            self.assertTrue((root / "def_sig_out" / "outcome.json").is_file())
+
+            # Item 12b: SIGTERM in the gap before Runner._arm_signals is still caught and books spend
+            class GapSignalRunner(Runner):
+                def run(self, *args, **kwargs):
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+            c_gap = FakeClock()
+            sim_gap = SimColab(clock=c_gap, usage=lambda idx: seq[min(idx - 1, len(seq) - 1)])
+            with self.assertRaises(RunInterrupted):
+                launch_window(
+                    spec, root / "gap_sig_out", colab=sim_gap, runner_cls=GapSignalRunner,
+                    clock=c_gap.now, sleep=c_gap.sleep, state_dir=root / "st_gap",
+                )
+            gap_out = json.loads((root / "gap_sig_out" / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(gap_out["status"], "interrupted")
+            self.assertTrue(gap_out["session_stopped_confirmed"])
+
+
+class Fix3CleanupCapCardLockAndReclaimTest(unittest.TestCase):
+    EXAMPLE_SPEC = Path(__file__).resolve().parents[1] / "examples" / "merchant_league_seats" / "colab-window.toml"
+
+    def test_item_1_cleanup_bound_covers_outputs_and_hanging_salvage_or_collect_stay_under_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # Item 1a: T4 smoke spec (vm_card + 3 salvage outputs) refuses explicit --cleanup-bound-s below 1376.0s
+            for bad_bound in (600.0, 1375.0):
+                with self.assertRaises(Refused) as ctx:
+                    launch_window(
+                        self.EXAMPLE_SPEC, root / ("small_%d" % int(bad_bound)), dry=True,
+                        card="T4", shape="standard", max_rate=1.5, cap=2.5, cleanup_bound_s=bad_bound,
+                    )
+                self.assertEqual(ctx.exception.code, "CLEANUP_BOUND_TOO_SMALL")
+
+            # Dry run on T4 smoke spec reports >= 1376.0 cleanup_bound_s and worst_case_total_spend <= 2.5
+            dry_plan = launch_window(
+                self.EXAMPLE_SPEC, root / "t4_dry", dry=True,
+                card="T4", shape="standard", max_rate=1.5, wall_s=180.0, cap=2.5,
+            )
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_bound_s"], 1376.0)
+            self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"], 910.0)
+            self.assertLessEqual(dry_plan["budget"]["worst_case_total_spend"], 2.5)
+
+            t4_seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=1.5, n=1, balance=99.9)]
+
+            # Item 1b: cap trip with every salvage + vm_card download hanging (plus 2 failed stops before stop 3 ok)
+            c_trip = FakeClock()
+            sim_trip = SimColab(
+                clock=c_trip,
+                after_open_rows=["[t4-hang] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=lambda n, env: (c_trip.advance(600.0) or rec(progress=n)),
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            out_trip = launch_window(
+                self.EXAMPLE_SPEC, root / "t4_trip_hang", session="t4-hang",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, wall_s=7200.0,
+                colab=sim_trip, clock=c_trip.now, sleep=c_trip.sleep,
+                state_dir=root / "st_trip", open_lock=root / "trip.lock",
+            )
+            self.assertEqual(out_trip["status"], "cap")
+            self.assertTrue(out_trip["session_stopped_confirmed"])
+            self.assertLessEqual(out_trip["spend_ccu"], 2.5)
+
+            # Item 1c: `done` path (with margin=0.0 and polls right up near ceiling) with every collect download hanging
+            c_done = FakeClock()
+            poll_ticks = {"n": 0}
+
+            def _done_polls(n, env):
+                poll_ticks["n"] += 1
+                c_done.advance(1160.0)
+                return rec(progress=n, rc=0 if poll_ticks["n"] >= 4 else None)
+
+            sim_done = SimColab(
+                clock=c_done,
+                after_open_rows=["[t4-done] ep | Hardware: T4 | Shape: Standard | Variant: GPU"],
+                usage=lambda idx: t4_seq[min(idx - 1, len(t4_seq) - 1)],
+                polls=_done_polls,
+                stops=[1, 1, 0],
+                hang_downloads=True,
+            )
+            out_done = launch_window(
+                self.EXAMPLE_SPEC, root / "t4_done_hang", session="t4-done",
+                card="T4", shape="standard", max_rate=1.5, cap=2.5, wall_s=7200.0, margin=0.0,
+                colab=sim_done, clock=c_done.now, sleep=c_done.sleep,
+                state_dir=root / "st_done", open_lock=root / "done.lock",
+            )
+            self.assertEqual(out_done["status"], "done")
+            self.assertTrue(out_done["session_stopped_confirmed"])
+            self.assertLessEqual(out_done["spend_ccu"], 2.5)
+            dl_calls = [c for c in sim_done.calls if c["kind"] == "download"]
+            self.assertGreaterEqual(len(dl_calls), 1)
+
+    def test_item_2_unstopped_failed_open_keeps_card_locked_and_item_4_dead_reclaim_guard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, card="G4", shape="standard", cap=15.0, max_rate=10.5)
+            ledger_p = root / "ledger.json"
+            lock_p = root / "lock"
+
+            # Item 2 (FIX-3): failed open whose stops all fail leaves session_stopped_confirmed=False -> card stays locked
+            c_fail = FakeClock()
+            sim_unstopped = SimColab(
+                clock=c_fail, delay_new_s=36.0, usage=usage_text(rate=0.0, n=0, balance=100.0),
+                new_results=[CliResult(124, "", "timeout")], stops=[1, 1, 1],
+            )
+            res_us = launch_window(
+                spec, root / "unstopped_g4", colab=sim_unstopped, clock=c_fail.now, sleep=c_fail.sleep,
+                study_ledger=ledger_p, state_dir=root / "st_us", open_lock=lock_p,
+            )
+            self.assertEqual(res_us["status"], "open_failed")
+            self.assertFalse(res_us["session_stopped_confirmed"])
+            ledger_snap = json.loads(ledger_p.read_text(encoding="utf-8"))
+            self.assertEqual(ledger_snap["studies"]["demo-study"]["card"], "G4")
+            self.assertEqual(len(ledger_snap["studies"]["demo-study"]["reservations"]), 1)
+
+            with self.assertRaises(Refused) as ctx:
+                launch_window(
+                    spec, root / "a100_blocked", card="A100", shape="standard", max_rate=12.0, cap=15.0,
+                    colab=SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0)),
+                    study_ledger=ledger_p, state_dir=root / "st_us", open_lock=lock_p,
+                )
+            self.assertEqual(ctx.exception.code, "CARD_MIX_REFUSED")
+
+            # Item 4 (FIX-3): dead-PID `.reclaim` guard left by a crashed reclaimer is recovered, not leaked forever
+            lock_dir = root / "reclaim_race.lockdir"
+            lock_dir.mkdir()
+            (lock_dir / "owner.json").write_text(json.dumps({"pid": 999999, "at": "2026-11-26T00:00:00Z"}), encoding="utf-8")
+            reclaim_guard = lock_dir.with_suffix(".reclaim")
+            reclaim_guard.mkdir()
+            (reclaim_guard / "owner.json").write_text(
+                json.dumps({"pid": 888888, "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+            )
+            with _acquire_dir_lock(lock_dir, timeout_s=1.0, pid_alive=lambda pid: pid == os.getpid()):
+                self.assertEqual(json.loads((lock_dir / "owner.json").read_text(encoding="utf-8"))["pid"], os.getpid())
+                self.assertFalse(reclaim_guard.exists())
+            self.assertFalse(lock_dir.exists())
+
+            # A live PID holding `.reclaim` is respected and never stolen -> OPEN_LOCK_TIMEOUT
+            lock_dir2 = root / "reclaim_live.lockdir"
+            lock_dir2.mkdir()
+            (lock_dir2 / "owner.json").write_text(json.dumps({"pid": 999999, "at": "2026-11-26T00:00:00Z"}), encoding="utf-8")
+            reclaim_guard2 = lock_dir2.with_suffix(".reclaim")
+            reclaim_guard2.mkdir()
+            (reclaim_guard2 / "owner.json").write_text(
+                json.dumps({"pid": os.getpid(), "at": "2026-11-26T00:00:00Z"}), encoding="utf-8"
+            )
+            clk2 = FakeClock()
+            with self.assertRaises(Refused) as ctx:
+                with _acquire_dir_lock(
+                    lock_dir2, timeout_s=0.1, clock=clk2.now, sleep=clk2.sleep,
+                    pid_alive=lambda pid: pid == os.getpid(),
+                ):
+                    pass
+            self.assertEqual(ctx.exception.code, "OPEN_LOCK_TIMEOUT")
+
+
+if __name__ == "__main__":
+    unittest.main()
