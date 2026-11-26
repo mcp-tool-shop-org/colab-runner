@@ -1639,6 +1639,125 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
             self.assertEqual(res_p["missing_outputs"], ["does_not_exist.json"])
             self.assertFalse((out_partial / "collect_confirmed.json").exists())
 
+    def test_fix1_edge_coverage_reclaim_tar_and_vm_glob(self):
+        import tarfile
+        from colab_runner.launcher import (
+            _check_lock_dir_stale,
+            _claim_reclaim_guard,
+            _download_declared_outputs,
+            _extract_dir_tar,
+            _read_owner_bytes,
+        )
+        from colab_runner.window_lib import launch_guards as lg
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # vm/lib.py relative cr_glob_files + empty pattern + cr_progress + cr_units
+            vm_root = root / "vm"
+            work_dir = vm_root / "j_work"
+            out_dir = vm_root / "j_out"
+            (work_dir / "rel").mkdir(parents=True)
+            (out_dir / "rel").mkdir(parents=True)
+            (work_dir / "rel" / "a.cnt").write_text("5\n", encoding="utf-8")
+            (out_dir / "rel" / "b.done").write_text("1\n", encoding="utf-8")
+            lib_path = Path(__file__).resolve().parents[1] / "colab_runner" / "vm" / "lib.py"
+            with mock.patch.dict(os.environ, {"CR_CONTENT": str(vm_root), "CR_JOB": "j", "CR_OUT_DIR": str(out_dir)}):
+                ns: dict = {"scrub_colab_tokens": lg.scrub_colab_tokens}
+                exec(compile(lib_path.read_text(encoding="utf-8"), str(lib_path), "exec"), ns)
+                self.assertEqual(ns["cr_glob_files"](""), [])
+                self.assertGreaterEqual(len(ns["cr_glob_files"]("rel/*")), 2)
+                with mock.patch.dict(os.environ, {"CR_PROGRESS_GLOB": "rel/*.cnt", "CR_UNITS_GLOB": "rel/*.done"}):
+                    self.assertEqual(ns["cr_progress"](), 5)
+                    self.assertEqual(ns["cr_units"](), 1)
+
+            # _read_owner_bytes / _check_lock_dir_stale / _claim_reclaim_guard / _try_acquire_reclaim_guard OSError edges
+            dir_owner = root / "dir_owner"
+            (dir_owner / "owner.json").mkdir(parents=True)
+            self.assertIsNone(_read_owner_bytes(dir_owner))
+
+            stat_fail = root / "stat_fail.reclaim"
+            stat_fail.mkdir()
+            orig_stat = Path.stat
+
+            def _flaky_stat(self_p, *a, **kw):
+                if Path(self_p).name == "stat_fail.reclaim" and "follow_symlinks" not in kw:
+                    raise OSError("stat boom")
+                return orig_stat(self_p, *a, **kw)
+
+            with mock.patch.object(Path, "stat", autospec=True, side_effect=_flaky_stat):
+                self.assertEqual(_check_lock_dir_stale(stat_fail, pid_alive=lambda pid: False), (False, None))
+
+            race_guard = root / "race.reclaim"
+            with mock.patch("colab_runner.launcher.os.rename", side_effect=OSError("rename fail")):
+                self.assertFalse(_claim_reclaim_guard(race_guard))
+            self.assertEqual(list(root.glob("race.reclaim.prep-*")), [])
+
+            orig_exists = Path.exists
+
+            def _appear_before_second_exists(self_p):
+                if Path(self_p) == race_guard and list(root.glob("race.reclaim.prep-*")):
+                    self_p.mkdir(exist_ok=True)
+                    return True
+                return orig_exists(self_p)
+
+            with mock.patch.object(Path, "exists", autospec=True, side_effect=_appear_before_second_exists):
+                self.assertFalse(_claim_reclaim_guard(race_guard))
+            self.assertEqual(list(root.glob("race.reclaim.prep-*")), [])
+
+            stale_only = root / "stale_oserr.reclaim"
+            stale_only.mkdir()
+            os.utime(stale_only, (100.0, 100.0))
+            with mock.patch("colab_runner.launcher.time.time", return_value=3000.0):
+                with mock.patch("colab_runner.launcher.os.rename", side_effect=OSError("stale rename fail")):
+                    self.assertFalse(_try_acquire_reclaim_guard(stale_only, pid_alive=lambda pid: False))
+
+                def _stat_raise_on_moved(self_p, *a, **kw):
+                    if ".stale-" in Path(self_p).name:
+                        raise OSError("moved stat fail")
+                    return orig_stat(self_p, *a, **kw)
+
+                real_rename = os.rename
+
+                def _fail_restore_rename(src, dst):
+                    if ".stale-" in Path(src).name:
+                        raise OSError("restore rename fail")
+                    return real_rename(src, dst)
+
+                with mock.patch.object(Path, "stat", autospec=True, side_effect=_stat_raise_on_moved):
+                    with mock.patch("colab_runner.launcher.os.rename", side_effect=_fail_restore_rename):
+                        self.assertFalse(_try_acquire_reclaim_guard(stale_only, pid_alive=lambda pid: False))
+
+            # _extract_dir_tar missing tar, binary token quarantine, and _download_declared_outputs None timeouts
+            runner = Runner(FakeColab(), "s", root / "r_out", job="j")
+            self.assertFalse(_extract_dir_tar(root / "missing.tar", root / "dst", runner))
+
+            t = fake_tokens()
+            poison_tar = root / "poison.tar"
+            payload = b"\x89PNG\r\n\x1a\n\x00colab-runtime-proxy-token=" + t["proxy"].encode("ascii")
+            with tarfile.open(poison_tar, "w:") as tf:
+                ti = tarfile.TarInfo("bad.bin")
+                ti.size = len(payload)
+                tf.addfile(ti, io.BytesIO(payload))
+            with self.assertRaises(BinaryDownloadRefused):
+                _extract_dir_tar(poison_tar, root / "poison_dst", runner)
+            self.assertTrue(runner._res.quarantined or (root / "r_out.quarantine").exists())
+
+            sim_miss = SimColab(clock=FakeClock(), remote_files={"/content/j_out/d.tar": b""})
+            runner_sim = Runner(sim_miss, "s", root / "r_sim", job="j")
+            got1, ok1 = _download_declared_outputs(
+                runner_sim, ["d"], root / "dl1", content="/content", job="j",
+                next_timeout=lambda: 10.0, next_exec_timeout=lambda: None,
+            )
+            self.assertEqual((got1, ok1), ([], False))
+
+            touts = iter([10.0, 10.0, None])
+            got2, ok2 = _download_declared_outputs(
+                runner_sim, ["d"], root / "dl2", content="/content", job="j",
+                next_timeout=lambda: next(touts, None), next_exec_timeout=lambda: 10.0,
+            )
+            self.assertEqual((got2, ok2), ([], False))
+
 
 if __name__ == "__main__":
     unittest.main()
