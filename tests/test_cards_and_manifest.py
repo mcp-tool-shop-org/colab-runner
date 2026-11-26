@@ -28,7 +28,7 @@ from colab_runner.cards import (
 )
 from colab_runner.colab_cli import CliResult, Colab, parse_sessions_output
 from colab_runner.errors import Refused
-from colab_runner.manifest import WindowSpec, render_vm_script, stage_inputs
+from colab_runner.manifest import WindowSpec, _parse_prereg_sealed_paths, render_vm_script, stage_inputs
 from colab_runner.runner import Runner
 
 
@@ -435,6 +435,38 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
             with self.assertRaises(Refused) as ctx:
                 Runner(Colab(), "s1", file_out, pre_opened=True).run(script="/content/x.sh", wall_s=60)
             self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
+
+            # JSON/TOML pre-registration parsers and WindowSpec edge validations
+            self.assertEqual(_parse_prereg_sealed_paths(Path("p.json"), '{"sealed_paths": ["a/b.txt"]}'), ["a/b.txt"])
+            with self.assertRaises(Refused) as ctx:
+                _parse_prereg_sealed_paths(Path("p.json"), "{bad")
+            self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+            self.assertEqual(_parse_prereg_sealed_paths(Path("p.toml"), 'sealed_paths = ["a/b.txt"]\n'), ["a/b.txt"])
+            with self.assertRaises(Refused) as ctx:
+                _parse_prereg_sealed_paths(Path("p.toml"), "=[")
+            self.assertEqual(ctx.exception.code, "SEALED_PREREG_INVALID")
+
+            scalar_vram = _minimal_spec_dict()
+            scalar_vram["compute"]["min_vram_mib"] = 16000
+            self.assertEqual(WindowSpec.from_mapping(scalar_vram, base_dir=root).vram_floor_for(resolve_card("G4")), 16000)
+
+            arr_json = root / "arr.json"
+            arr_json.write_text("[1, 2]", encoding="utf-8")
+            with self.assertRaises(Refused) as ctx:
+                WindowSpec.from_file(arr_json)
+            self.assertEqual(ctx.exception.code, "SPEC_INVALID")
+
+            legacy = _minimal_spec_dict()
+            legacy["inputs"]["allow_sealed"] = True
+            with self.assertRaises(Refused) as ctx:
+                WindowSpec.from_mapping(legacy, base_dir=root)
+            self.assertEqual(ctx.exception.code, "SPEC_INVALID")
+
+            no_run = _minimal_spec_dict()
+            no_run["job"]["run"] = []
+            with self.assertRaises(Refused) as ctx:
+                WindowSpec.from_mapping(no_run, base_dir=root)
+            self.assertEqual(ctx.exception.code, "SPEC_INVALID")
 
 
 if __name__ == "__main__":

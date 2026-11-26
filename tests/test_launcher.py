@@ -13,16 +13,19 @@ from pathlib import Path
 from unittest import mock
 
 from colab_runner.__main__ import main
-from colab_runner.cards import CARD_CHECK_FAIL_RC, CircuitBreaker, StudyLedger
+from colab_runner.cards import CARD_CHECK_FAIL_RC, CircuitBreaker, StudyLedger, resolve_card
 from colab_runner.colab_cli import BinaryDownloadRefused, CliResult, Colab, parse_sessions_output
 from colab_runner.errors import Refused
 from colab_runner.launcher import (
     LocalColab,
     _acquire_dir_lock,
+    _check_empty_out_dir,
     _default_open_lock_path,
     _pid_alive,
+    _read_pre_open_usage,
     default_cleanup_bound_s,
     launch_window,
+    reconcile_stopped_outcome,
     resolve_kit_env,
     status_window,
 )
@@ -761,6 +764,90 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
                     rc_e = main(["launch", "--spec", str(spec), "--out-dir", str(int_dir), "--cap", "15", "--max-rate", "10.5"])
             self.assertEqual(rc_e, 2)
             self.assertIn("LAUNCH_ERROR", err.getvalue())
+
+            # LocalColab edge branches (_translate_remote, closed session upload/exec, nested upload, start_cell + kill)
+            lc = LocalColab(root / "lc_cov")
+            self.assertEqual(lc._translate_remote("/content"), lc.content_dir)
+            self.assertEqual(lc._translate_remote("rel.txt"), (lc.content_dir / "rel.txt").resolve())
+            with self.assertRaises(ValueError):
+                lc._translate_remote("/content/../outside")
+            with self.assertRaises(ValueError):
+                lc._translate_remote("../outside")
+            self.assertEqual(lc.upload("closed", __file__, "/content/a").rc, 1)
+            self.assertEqual(lc.exec_cell("closed", "print(1)").rc, 1)
+            lc.new_session("s", card="CPU")
+            self.assertEqual(lc.upload("s", __file__, "/content/sub/a").rc, 1)
+            bg = lc.start_cell("s", "print('ok')", timeout=5.0)
+            bg.kill()
+
+            # Launcher helper edges (_check_empty_out_dir, _read_pre_open_usage, reconcile_stopped_outcome)
+            f_out = root / "f_out"
+            f_out.write_text("x", encoding="utf-8")
+            with self.assertRaises(Refused) as ctx:
+                _check_empty_out_dir(f_out)
+            self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
+
+            c_fail = SimColab(clock=FakeClock(), usage=lambda n: CliResult(1, "", "err"))
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(c_fail, card_spec=resolve_card("G4"))
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU")), (None, None, None))
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"))
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+            with self.assertRaises(Refused) as ctx:
+                _read_pre_open_usage(
+                    SimColab(clock=FakeClock(), usage="Current balance: 100.00 compute units\nUsage rate: 0.00 / hr\n"),
+                    card_spec=resolve_card("G4"),
+                )
+            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+
+            self.assertIsNone(reconcile_stopped_outcome(root / "missing_reconcile", c_fail, "s1"))
+            bad_rec_dir = root / "bad_rec"
+            bad_rec_dir.mkdir()
+            (bad_rec_dir / "outcome.json").write_text("{bad", encoding="utf-8")
+            self.assertIsNone(reconcile_stopped_outcome(bad_rec_dir, c_fail, "s1"))
+            (bad_rec_dir / "outcome.json").write_text("[1]", encoding="utf-8")
+            self.assertIsNone(reconcile_stopped_outcome(bad_rec_dir, c_fail, "s1"))
+
+            # CLI __main__ branches: STATUS_DIR_MISSING, empty out_dir RunInterrupted, refusal+cap_trip+marker hints
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.assertEqual(main(["status", "--out-dir", str(root / "missing_status_dir")]), 1)
+            self.assertIn("REFUSED: STATUS_DIR_MISSING", err.getvalue())
+
+            empty_cli = root / "empty_cli"
+            empty_cli.mkdir()
+            with mock.patch("colab_runner.__main__.launch_window", side_effect=RunInterrupted(signal.SIGTERM)):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(
+                        main(["launch", "--spec", str(spec), "--out-dir", str(empty_cli), "--cap", "15", "--max-rate", "10.5"]),
+                        2,
+                    )
+            self.assertIn("LAUNCH_ERROR", err.getvalue())
+
+            hint_cli = root / "hint_cli"
+            hint_cli.mkdir()
+            (hint_cli / "session_open.json").write_text('{"session": "s1", "job": "j"}\n', encoding="utf-8")
+            fake_res = {
+                "status": "cap",
+                "session": "s1",
+                "spend_ccu": 0.2,
+                "session_stopped_confirmed": False,
+                "exit_code": 2,
+                "refusal": {"code": "SESSION_OPEN_FAILED", "hint": "h1"},
+                "cap_trip": {"code": "CAP_GUARD_TRIPPED", "hint": "h2"},
+            }
+            with mock.patch("colab_runner.__main__.launch_window", return_value=fake_res):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(
+                        main(["launch", "--spec", str(spec), "--out-dir", str(hint_cli), "--cap", "15", "--max-rate", "10.5"]),
+                        2,
+                    )
+            self.assertIn("hint: h1", err.getvalue())
+            self.assertIn("hint: h2", err.getvalue())
 
 
 if __name__ == "__main__":
