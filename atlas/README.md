@@ -1,14 +1,14 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-26 from commit 95dd2c7 by Atlas 1.26.0.
+Mapped at 2026-11-26 from commit af3cda6 by Atlas 1.26.0.
 
 ## What this is
 
 4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-26 (0267b9f)
+## What changed since 2026-11-26 (95dd2c7)
 
-Nothing structural changed since 2026-11-26; 18 files changed content.
+Nothing structural changed since 2026-11-26; 2 files changed content.
 
 ## What comes in
 

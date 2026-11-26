@@ -1538,7 +1538,7 @@
           "testFramework": "unittest"
         },
         {
-          "hash": "aa0b00ab8c76ec45a3fd8f5ce14b2173318dd1ccddd637167fb455c7d4a5e7d4",
+          "hash": "359c623d3d098d1df1b329e3f2f9e0929a5d27faca0041070e981e70cca8fe24",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -1624,7 +1624,7 @@
           "testFramework": "unittest"
         },
         {
-          "hash": "1cbccc957fa4760705b00f444894a2926fd713d4cef790f75bb51767d2248546",
+          "hash": "ad46d5efbefc4eaa660f87a1856db5047131e3c268190a68d51ef4725ede0945",
           "importsFiles": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -2353,7 +2353,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "95dd2c70220ebaccda21cc473236fb5327e81373",
+    "commit": "af3cda626761acc93ce23ef0b7d917adb6eb1742",
     "tracked": 87
   },
   "landings": [
