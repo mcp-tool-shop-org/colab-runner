@@ -414,13 +414,18 @@ class FailurePathsTest(unittest.TestCase):
             for bad_flags, want_code in [
                 (["--max-rate", "10.5"], "CAP_REQUIRED"),
                 (["--cap", "15.0"], "MAX_RATE_REQUIRED"),
-                (["--cap", "15.0", "--max-rate", "2.0"], "MAX_RATE_BELOW_FLOOR"),
             ]:
                 out, err = io.StringIO(), io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     rc = main(["launch", "--spec", str(spec), "--out-dir", str(root / ("m_" + want_code))] + bad_flags)
                 self.assertEqual(rc, 1)
                 self.assertIn("REFUSED: " + want_code, err.getvalue())
+
+            # Addendum 3: max-rate below catalog floor logs a note instead of refusing
+            floor_logs = []
+            plan_floor = launch_window(spec, root / "m_floor_ok", dry=True, cap=15.0, max_rate=2.0, log=floor_logs.append)
+            self.assertEqual(plan_floor["mode"], "dry_run")
+            self.assertTrue(any("catalog floor" in ln for ln in floor_logs))
 
             # Pre-open CAP_TOO_SMALL_FOR_CLEANUP
             small_dir = root / "small_spec"
@@ -559,15 +564,19 @@ class FailurePathsTest(unittest.TestCase):
             self.assertEqual(res_tr["status"], "done")
 
             st_exh = root / "s_exh"
+            logs_exh: list[str] = []
             sim_exh = SimColab(
                 clock=FakeClock(),
                 usage=usage_text(rate=0.0, n=0),
                 after_open_rows=[CliResult(1, "", "down"), CliResult(1, "", "down")],
+                polls=lambda n, env: rec(rc=0),
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
             )
             res_exh = launch_window(spec_diff_study, root / "exh_out", card="T4", shape="high-mem", max_rate=2.0,
                                     cap=10.0, colab=sim_exh, clock=sim_exh.clock.now, sleep=sim_exh.clock.sleep,
-                                    shape_check_attempts=2, state_dir=st_exh)
-            self.assertEqual(res_exh["refusal"]["code"], "SESSIONS_READ_FAILED")
+                                    shape_check_attempts=2, state_dir=st_exh, log=logs_exh.append)
+            self.assertEqual(res_exh["status"], "done")
+            self.assertTrue(any("inconclusive" in ln for ln in logs_exh))
             self.assertEqual(CircuitBreaker(st_exh / "card_refusals.json").events_for("T4"), [])
 
 
@@ -714,14 +723,24 @@ class SignalsLocksExceptionsAndPostOpenTest(unittest.TestCase):
                 Runner(Colab(), "s1", bad_out).run(script="/content/x.sh", wall_s=60)
             self.assertEqual(ctx.exception.code, "OUT_DIR_NOT_EMPTY")
 
-            # Item 24: clean POST_OPEN_RATE_UNREAD test asserting stop confirmed
+            # Addendum 3: unsettled post-open usage rate logs and continues (no POST_OPEN_RATE_UNREAD kill)
             c2 = FakeClock()
-            sim_unread = SimColab(clock=c2, usage=usage_text(rate=0.0, n=0))
-            res_ur = launch_window(spec, root / "ur_fail", colab=sim_unread, clock=c2.now, sleep=c2.sleep,
-                                   post_open_polls=2, state_dir=root / "s_ur")
-            self.assertEqual(res_ur["status"], "open_failed")
-            self.assertEqual(res_ur["refusal"]["code"], "POST_OPEN_RATE_UNREAD")
+            unread_logs = []
+            sim_unread = SimColab(
+                clock=c2,
+                usage=usage_text(rate=0.0, n=0),
+                polls=lambda n, env: rec(rc=0, progress=1),
+                remote_files={
+                    "/content/demo_job_work/result.json": json.dumps({"ok": True}).encode("utf-8"),
+                    "/content/demo_job_work/out.txt": b"done\n",
+                    "/content/demo_job_out/vm_card.json": json.dumps({"ok": True}).encode("utf-8"),
+                },
+            )
+            res_ur = launch_window(spec, root / "ur_ok", colab=sim_unread, clock=c2.now, sleep=c2.sleep,
+                                   post_open_polls=2, state_dir=root / "s_ur", log=unread_logs.append)
+            self.assertEqual(res_ur["status"], "done")
             self.assertTrue(res_ur["session_stopped_confirmed"])
+            self.assertTrue(any("not settled" in ln for ln in unread_logs))
 
             # Existing test helper parse_sessions_output & status error check
             parsed = parse_sessions_output("[s1] ep | Hardware: G4 | Shape: Standard | Variant: GPU\n")
@@ -883,19 +902,22 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
 
             c_fail = SimColab(clock=FakeClock(), usage=lambda n: CliResult(1, "", "err"))
-            with self.assertRaises(Refused) as ctx:
-                _read_pre_open_usage(c_fail, card_spec=resolve_card("G4"))
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
-            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU")), (None, None, None))
-            with self.assertRaises(Refused) as ctx:
-                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"))
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
-            with self.assertRaises(Refused) as ctx:
+            pre_logs: list[str] = []
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("G4"), log=pre_logs.append), (None, None, None))
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU"), log=pre_logs.append), (None, None, None))
+            self.assertEqual(
+                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"), log=pre_logs.append),
+                (None, None, None),
+            )
+            self.assertEqual(
                 _read_pre_open_usage(
                     SimColab(clock=FakeClock(), usage="Current balance: 100.00 compute units\nUsage rate: 0.00 / hr\n"),
                     card_spec=resolve_card("G4"),
-                )
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+                    log=pre_logs.append,
+                ),
+                (None, None, 100.0),
+            )
+            self.assertGreaterEqual(len(pre_logs), 4)
 
             self.assertIsNone(reconcile_stopped_outcome(root / "missing_reconcile", c_fail, "s1"))
             bad_rec_dir = root / "bad_rec"

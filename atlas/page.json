@@ -17,48 +17,33 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 9,
+      "added": 0,
+      "changed": 22,
       "moved": 0,
-      "parts": 2,
-      "removed": 0
+      "parts": 3,
+      "removed": 1
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "colab_runner/**/*.py is now read by tests/test_errors.py.",
-        "subjects": [
-          "colab_runner/**/*.py",
-          "tests/test_errors.py"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "docs/reference.md is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "docs/reference.md"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "1 file added and 9 changed content, across 2 parts.",
+        "sentence": "Nothing structural changed since 2026-11-27; 1 file removed and 22 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "a887fd29fb2dcfba21a8feddf583400985cda5e9",
-      "generatedAt": "2026-11-26T23:10:07.985Z"
+      "commit": "878330acb01eb90b7771b01aff0a2e3b8de685bc",
+      "generatedAt": "2026-11-27T00:42:14.445Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "73b6b84e450f8c1b4a38b0ceb19c5af71979bc34",
+  "commit": "59ca9c007c44f174e63f2ca3d39e5e72542045b3",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
+  "derived": "4 parts, mostly Python (41 files), JavaScript (3), CSS (2), TypeScript (2), Astro (1) and shell (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
     {
       "checks": [
@@ -76,7 +61,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 17
+          "files": 18
         },
         {
           "boundary": "root",
@@ -86,7 +71,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 21
+          "files": 22
         }
       ],
       "runs": [
@@ -98,7 +83,7 @@
         "tests/"
       ],
       "runsCount": 6,
-      "runsMore": 24,
+      "runsMore": 25,
       "sends": [
         "uploads coverage to Codecov"
       ],
@@ -169,11 +154,11 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-27T00:19:54.875Z",
+  "generatedAt": "2026-11-27T01:21:21.909Z",
   "limits": [
-    "6 writes and 11 reads use paths built at run time and are not named here.",
+    "6 writes and 14 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
-    "20 writes and 26 reads go to a path their caller passes, not to this repository.",
+    "15 writes and 21 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
     "25 files belong to no part: docs/reference.md, examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml and 22 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
@@ -194,9 +179,9 @@
   "startNote": "CI runs no code this map can follow; it only checks code, so there is no path of files to read in order.",
   "summary": null,
   "summaryFrom": null,
-  "testFiles": 22,
+  "testFiles": 23,
   "testedBy": {
-    "colab_runner": 18
+    "colab_runner": 19
   },
   "testedCodeParts": 1,
   "unnamedWrites": 6,

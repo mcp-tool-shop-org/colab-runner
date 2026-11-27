@@ -32,7 +32,7 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 11,
+      "dynamicReads": 14,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 6,
@@ -48,9 +48,11 @@
         },
         {
           "exports": [
+            "board_command",
             "kit_env",
             "launch_command",
             "main",
+            "queue_command",
             "refuse_unbounded",
             "run_command",
             "run_exit_code",
@@ -61,104 +63,119 @@
             {
               "in": "kit_env",
               "kind": "raise",
-              "line": 134
+              "line": 141
             },
             {
               "in": "kit_env",
               "kind": "raise",
-              "line": 137
+              "line": 144
             },
             {
               "in": "run_command",
               "kind": "raise",
-              "line": 203
+              "line": 210
             },
             {
               "in": "run_command",
               "kind": "raise",
-              "line": 205
+              "line": 212
             },
             {
               "in": "run_command",
               "kind": "except",
-              "line": 218
+              "line": 226
             },
             {
               "in": "run_command",
               "kind": "except",
-              "line": 220
+              "line": 228
             },
             {
               "in": "launch_command",
               "kind": "raise",
-              "line": 275
+              "line": 285
             },
             {
               "in": "launch_command",
               "kind": "raise",
-              "line": 277
+              "line": 287
             },
             {
               "in": "launch_command",
               "kind": "except",
-              "line": 305
+              "line": 317
             },
             {
               "in": "launch_command",
               "kind": "except",
-              "line": 307
+              "line": 319
             },
             {
               "in": "launch_command",
               "kind": "except",
-              "line": 316
+              "line": 328
             },
             {
               "in": "launch_command",
               "kind": "except",
-              "line": 323
+              "line": 335
             },
             {
               "in": "status_command",
               "kind": "except",
-              "line": 360
+              "line": 374
             },
             {
               "in": "stop_command",
               "kind": "raise",
-              "line": 387
+              "line": 401
             },
             {
               "in": "stop_command",
               "kind": "except",
-              "line": 388
+              "line": 402
             },
             {
               "in": "stop_command",
               "kind": "raise",
-              "line": 389
+              "line": 403
             },
             {
               "in": "stop_command",
               "kind": "except",
-              "line": 392
+              "line": 406
             },
             {
               "in": "stop_command",
               "kind": "except",
-              "line": 396
+              "line": 410
             },
             {
               "in": "stop_command",
               "kind": "except",
-              "line": 398
+              "line": 412
+            },
+            {
+              "in": "queue_command",
+              "kind": "except",
+              "line": 447
+            },
+            {
+              "in": "queue_command",
+              "kind": "except",
+              "line": 449
+            },
+            {
+              "in": "board_command",
+              "kind": "except",
+              "line": 476
             },
             {
               "kind": "raise",
-              "line": 430
+              "line": 507
             }
           ],
-          "hash": "fcfc93de0b24b3747592c931da1e86eb41e374e228db02fd2a7141a209aa8b70",
+          "hash": "5a942e959dcc3c4809e4ba2bfb99df268be0df32524e13afa4983320df35126c",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/cards.py",
@@ -166,6 +183,7 @@
             "colab_runner/errors.py",
             "colab_runner/launcher.py",
             "colab_runner/manifest.py",
+            "colab_runner/queue.py",
             "colab_runner/runner.py",
             "colab_runner/spend.py"
           ],
@@ -295,135 +313,140 @@
             {
               "in": "default_quarantine_dir",
               "kind": "raise",
-              "line": 209
+              "line": 223
             },
             {
               "in": "is_binary_bytes",
               "kind": "except",
-              "line": 229
+              "line": 243
             },
             {
               "in": "kill_group",
-              "kind": "except",
-              "line": 265
-            },
-            {
-              "in": "kill_group",
-              "kind": "except",
-              "line": 269
-            },
-            {
-              "in": "_drain",
               "kind": "except",
               "line": 279
             },
             {
-              "in": "_drain",
+              "in": "kill_group",
               "kind": "except",
               "line": 283
             },
             {
               "in": "_drain",
               "kind": "except",
-              "line": 287
+              "line": 293
+            },
+            {
+              "in": "_drain",
+              "kind": "except",
+              "line": 297
+            },
+            {
+              "in": "_drain",
+              "kind": "except",
+              "line": 301
             },
             {
               "in": "_read",
               "kind": "except",
-              "line": 318
+              "line": 332
             },
             {
               "in": "_kill",
               "kind": "except",
-              "line": 354
+              "line": 368
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 391
+              "line": 405
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 395
+              "line": 409
             },
             {
               "in": "run",
               "kind": "except",
-              "line": 398
+              "line": 412
             },
             {
               "in": "run",
               "kind": "raise",
-              "line": 401
+              "line": 415
             },
             {
               "in": "start_cell",
               "kind": "except",
-              "line": 430
+              "line": 444
             },
             {
               "in": "_unlink_quiet",
               "kind": "except",
-              "line": 520
+              "line": 534
             },
             {
               "in": "_unlink_link",
               "kind": "except",
-              "line": 528
+              "line": 542
             },
             {
               "in": "_unlink_link",
               "kind": "except",
-              "line": 531
+              "line": 545
             },
             {
               "in": "_reparse_tag",
               "kind": "except",
-              "line": 544
+              "line": 558
             },
             {
               "in": "_quarantine_dest",
               "kind": "raise",
-              "line": 637
+              "line": 651
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 669
+              "line": 684
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 678
+              "line": 693
             },
             {
               "in": "scrub_local",
               "kind": "except",
-              "line": 690
+              "line": 705
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 704
+              "line": 722
             },
             {
               "in": "scrub_local",
               "kind": "raise",
-              "line": 706
+              "line": 724
+            },
+            {
+              "in": "scrub_local",
+              "kind": "raise",
+              "line": 726
             },
             {
               "in": "cli_from_env",
               "kind": "except",
-              "line": 716
+              "line": 736
             },
             {
               "in": "cli_from_env",
               "kind": "raise",
-              "line": 717
+              "line": 737
             }
           ],
-          "hash": "dc35565c4650fdf6180f3ddeacedba57b9b058a88eaf7be401f4febc0c6a5672",
+          "hash": "6f5d3e3bb188b64a3f16d17c5b4eb45f3050fe79b408df73adc70389c3c6b520",
           "importsFiles": [
             "colab_runner/errors.py",
             "colab_runner/window_lib/__init__.py",
@@ -437,7 +460,7 @@
             "error_record",
             "lookup"
           ],
-          "hash": "e11b56606b6628b9becdf0fa721668c1175f4108b30c8a6d6ae4b4741f15f438",
+          "hash": "59b9b5ec3c73e49c7681831b40e577047ba6efac4b29b223420d7722b90837c5",
           "path": "colab_runner/errors.py"
         },
         {
@@ -456,322 +479,309 @@
           ],
           "failurePaths": [
             {
-              "in": "resolve_kit_env",
+              "in": "_refuse_native_windows",
               "kind": "raise",
-              "line": 156
+              "line": 144
             },
             {
               "in": "resolve_kit_env",
               "kind": "raise",
-              "line": 159
+              "line": 164
+            },
+            {
+              "in": "resolve_kit_env",
+              "kind": "raise",
+              "line": 167
             },
             {
               "in": "_refuse_reserved_env",
               "kind": "raise",
-              "line": 168
+              "line": 176
             },
             {
               "in": "_refuse_reserved_env",
               "kind": "raise",
-              "line": 171
+              "line": 179
             },
             {
               "in": "_check_empty_out_dir",
               "kind": "raise",
-              "line": 330
+              "line": 338
             },
             {
               "in": "_check_empty_out_dir",
               "kind": "raise",
-              "line": 332
+              "line": 340
             },
             {
               "in": "_check_empty_out_dir",
               "kind": "except",
-              "line": 333
+              "line": 341
             },
             {
               "in": "_check_empty_out_dir",
               "kind": "raise",
-              "line": 334
+              "line": 342
             },
             {
               "in": "_pid_alive",
               "kind": "except",
-              "line": 380
+              "line": 388
             },
             {
               "in": "_pid_alive",
               "kind": "except",
-              "line": 382
+              "line": 390
             },
             {
               "in": "_pid_alive",
               "kind": "except",
-              "line": 387
+              "line": 395
             },
             {
               "in": "_read_owner_bytes",
               "kind": "except",
-              "line": 411
+              "line": 419
             },
             {
               "in": "_read_owner_bytes",
               "kind": "except",
-              "line": 413
+              "line": 421
             },
             {
               "in": "_check_lock_dir_stale",
               "kind": "except",
-              "line": 426
+              "line": 434
             },
             {
               "in": "_check_lock_dir_stale",
               "kind": "except",
-              "line": 433
+              "line": 441
             },
             {
               "in": "_claim_reclaim_guard",
               "kind": "except",
-              "line": 461
+              "line": 469
             },
             {
               "in": "_try_acquire_reclaim_guard",
               "kind": "except",
-              "line": 478
+              "line": 486
             },
             {
               "in": "_try_acquire_reclaim_guard",
               "kind": "except",
-              "line": 485
+              "line": 493
             },
             {
               "in": "_try_acquire_reclaim_guard",
               "kind": "except",
-              "line": 492
+              "line": 500
             },
             {
               "in": "_acquire_dir_lock",
               "kind": "except",
-              "line": 517
+              "line": 525
             },
             {
               "in": "_acquire_dir_lock",
               "kind": "except",
-              "line": 531
+              "line": 539
             },
             {
               "in": "_acquire_dir_lock",
               "kind": "raise",
-              "line": 537
+              "line": 545
             },
             {
               "in": "_open_lock",
               "kind": "except",
-              "line": 567
+              "line": 575
             },
             {
               "in": "_open_lock",
               "kind": "raise",
-              "line": 569
+              "line": 577
             },
             {
               "in": "_handler",
               "kind": "raise",
-              "line": 607
+              "line": 615
             },
             {
               "in": "_open_phase_signals",
               "kind": "except",
-              "line": 614
+              "line": 622
             },
             {
               "in": "_open_phase_signals",
               "kind": "raise",
-              "line": 616
+              "line": 624
             },
             {
               "in": "_open_phase_signals",
               "kind": "raise",
-              "line": 621
+              "line": 629
             },
             {
               "in": "_translate_remote",
               "kind": "raise",
-              "line": 643
+              "line": 651
             },
             {
               "in": "_translate_remote",
               "kind": "raise",
-              "line": 648
+              "line": 656
             },
             {
               "in": "_translate_remote",
               "kind": "raise",
-              "line": 652
-            },
-            {
-              "in": "_apply_overrides",
-              "kind": "raise",
-              "line": 789
+              "line": 660
             },
             {
               "in": "_extract_dir_tar",
               "kind": "except",
-              "line": 898
+              "line": 917
             },
             {
               "in": "_extract_dir_tar",
               "kind": "except",
-              "line": 902
+              "line": 921
             },
             {
               "in": "_extract_dir_tar",
               "kind": "except",
-              "line": 914
+              "line": 933
             },
             {
               "in": "_extract_dir_tar",
               "kind": "except",
-              "line": 918
+              "line": 937
             },
             {
               "in": "_pool_check",
               "kind": "raise",
-              "line": 1038
+              "line": 1057
             },
             {
               "in": "_pool_check",
               "kind": "raise",
-              "line": 1040
+              "line": 1059
             },
             {
               "in": "_pool_check",
               "kind": "raise",
-              "line": 1047
+              "line": 1066
             },
             {
               "in": "_read_sessions_strict",
               "kind": "raise",
-              "line": 1058
-            },
-            {
-              "in": "_read_sessions_strict",
-              "kind": "raise",
-              "line": 1064
-            },
-            {
-              "in": "_read_pre_open_usage",
-              "kind": "raise",
-              "line": 1072
-            },
-            {
-              "in": "_read_pre_open_usage",
-              "kind": "except",
               "line": 1077
             },
             {
-              "in": "_read_pre_open_usage",
+              "in": "_read_sessions_strict",
               "kind": "raise",
-              "line": 1081
+              "line": 1083
             },
             {
               "in": "_read_pre_open_usage",
-              "kind": "raise",
-              "line": 1087
+              "kind": "except",
+              "line": 1100
             },
             {
               "in": "_finalize_close",
               "kind": "except",
-              "line": 1117
+              "line": 1139
             },
             {
               "in": "_read_end_balance",
               "kind": "except",
-              "line": 1125
+              "line": 1147
             },
             {
               "in": "_read_end_balance",
               "kind": "except",
-              "line": 1131
+              "line": 1153
             },
             {
               "in": "reconcile_stopped_outcome",
               "kind": "except",
-              "line": 1154
+              "line": 1176
             },
             {
               "in": "reconcile_stopped_outcome",
               "kind": "except",
-              "line": 1175
+              "line": 1197
             },
             {
               "in": "reconcile_stopped_outcome",
               "kind": "except",
-              "line": 1184
+              "line": 1206
             },
             {
               "in": "reconcile_stopped_outcome",
               "kind": "except",
-              "line": 1249
+              "line": 1271
             },
             {
               "in": "launch_window",
               "kind": "raise",
-              "line": 1330
+              "line": 1363
             },
             {
               "in": "launch_window",
               "kind": "except",
-              "line": 1741
+              "line": 1761
             },
             {
               "in": "launch_window",
               "kind": "except",
-              "line": 1748
+              "line": 1768
             },
             {
               "in": "launch_window",
               "kind": "raise",
-              "line": 1762
+              "line": 1782
             },
             {
               "in": "launch_window",
               "kind": "raise",
-              "line": 1763
+              "line": 1783
             },
             {
               "in": "launch_window",
               "kind": "except",
-              "line": 1861
+              "line": 1884
             },
             {
               "in": "launch_window",
               "kind": "raise",
-              "line": 1932
+              "line": 1987
             },
             {
               "in": "launch_window",
               "kind": "raise",
-              "line": 1934
+              "line": 1989
             },
             {
               "in": "_load_opt_json",
               "kind": "except",
-              "line": 1944
+              "line": 1999
             },
             {
               "in": "status_window",
               "kind": "raise",
-              "line": 1952
+              "line": 2007
             }
           ],
-          "hash": "f7bb57b8040718b3059e22a8a5ecccc26eb6b9b600ac11c6b6546c987edd8ac2",
+          "hash": "677f0d1a9ed9f16c4ed921fd91db04687f866e9aa9a16fcd056d42df35e12761",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
             "colab_runner/manifest.py",
+            "colab_runner/publish.py",
+            "colab_runner/queue.py",
             "colab_runner/runner.py",
             "colab_runner/spend.py",
             "colab_runner/window_lib/__init__.py",
@@ -788,197 +798,207 @@
             {
               "in": "from_file",
               "kind": "raise",
-              "line": 117
+              "line": 134
             },
             {
               "in": "from_file",
               "kind": "except",
-              "line": 124
-            },
-            {
-              "in": "from_file",
-              "kind": "raise",
-              "line": 125
-            },
-            {
-              "in": "from_file",
-              "kind": "raise",
-              "line": 127
-            },
-            {
-              "in": "from_mapping",
-              "kind": "raise",
               "line": 141
             },
             {
-              "in": "from_mapping",
+              "in": "from_file",
               "kind": "raise",
-              "line": 147
+              "line": 142
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 144
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 151
+              "line": 158
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 157
+              "line": 164
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 195
+              "line": 168
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 199
+              "line": 174
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 203
+              "line": 214
             },
             {
               "in": "from_mapping",
               "kind": "raise",
-              "line": 216
+              "line": 218
+            },
+            {
+              "in": "from_mapping",
+              "kind": "raise",
+              "line": 222
+            },
+            {
+              "in": "from_mapping",
+              "kind": "raise",
+              "line": 235
+            },
+            {
+              "in": "from_mapping",
+              "kind": "raise",
+              "line": 239
+            },
+            {
+              "in": "from_mapping",
+              "kind": "raise",
+              "line": 244
+            },
+            {
+              "in": "from_mapping",
+              "kind": "raise",
+              "line": 250
+            },
+            {
+              "in": "_parse_publish_spec",
+              "kind": "raise",
+              "line": 306
+            },
+            {
+              "in": "_parse_publish_spec",
+              "kind": "raise",
+              "line": 309
+            },
+            {
+              "in": "_parse_publish_spec",
+              "kind": "raise",
+              "line": 312
+            },
+            {
+              "in": "_parse_publish_spec",
+              "kind": "raise",
+              "line": 317
+            },
+            {
+              "in": "_parse_publish_spec",
+              "kind": "raise",
+              "line": 320
             },
             {
               "in": "_require_table",
               "kind": "raise",
-              "line": 267
+              "line": 327
             },
             {
               "in": "_require_nonempty_str",
               "kind": "raise",
-              "line": 274
+              "line": 334
             },
             {
               "in": "_string_list",
               "kind": "raise",
-              "line": 282
+              "line": 342
             },
             {
               "in": "_parse_vram_by_card",
               "kind": "raise",
-              "line": 290
+              "line": 350
             },
             {
               "in": "_parse_vram_by_card",
               "kind": "raise",
-              "line": 294
+              "line": 354
             },
             {
               "in": "_parse_sealed_policy",
               "kind": "raise",
-              "line": 307
+              "line": 367
             },
             {
               "in": "_parse_sealed_policy",
               "kind": "raise",
-              "line": 311
+              "line": 371
             },
             {
               "in": "_parse_sealed_policy",
               "kind": "raise",
-              "line": 314
+              "line": 374
             },
             {
               "in": "_parse_sealed_policy",
               "kind": "raise",
-              "line": 318
+              "line": 378
             },
             {
               "in": "_raise_rel_path",
               "kind": "raise",
-              "line": 330
+              "line": 390
             },
             {
               "in": "_raise_rel_path",
               "kind": "raise",
-              "line": 331
+              "line": 391
             },
             {
               "in": "_parse_input_files",
               "kind": "raise",
-              "line": 347
+              "line": 407
             },
             {
               "in": "_parse_input_files",
               "kind": "raise",
-              "line": 357
+              "line": 417
             },
             {
               "in": "_parse_input_files",
               "kind": "raise",
-              "line": 363
+              "line": 423
             },
             {
               "in": "_parse_preregistration",
               "kind": "except",
-              "line": 415
+              "line": 475
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 416
+              "line": 476
             },
             {
               "in": "_reject_dup_keys",
               "kind": "raise",
-              "line": 429
+              "line": 489
             },
             {
               "in": "_parse_preregistration",
               "kind": "except",
-              "line": 435
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 436
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "except",
-              "line": 437
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 438
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 440
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "except",
-              "line": 448
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 449
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 451
-            },
-            {
-              "in": "_parse_preregistration",
-              "kind": "raise",
-              "line": 479
+              "line": 495
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
               "line": 496
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "except",
+              "line": 497
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 498
             },
             {
               "in": "_parse_preregistration",
@@ -988,105 +1008,135 @@
             {
               "in": "_parse_preregistration",
               "kind": "except",
-              "line": 503
+              "line": 508
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 504
+              "line": 509
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 512
+              "line": 511
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 516
+              "line": 539
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 520
+              "line": 556
             },
             {
               "in": "_parse_preregistration",
               "kind": "raise",
-              "line": 522
+              "line": 560
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "except",
+              "line": 563
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 564
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 572
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 576
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 580
+            },
+            {
+              "in": "_parse_preregistration",
+              "kind": "raise",
+              "line": 582
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 571
+              "line": 631
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 575
+              "line": 635
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 577
+              "line": 637
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 583
+              "line": 643
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 589
+              "line": 649
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 597
+              "line": 657
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 604
+              "line": 664
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 614
+              "line": 674
             },
             {
               "in": "_verify_sealed_gate",
               "kind": "raise",
-              "line": 620
+              "line": 680
             },
             {
               "in": "_check_no_links",
               "kind": "raise",
-              "line": 644
+              "line": 704
             },
             {
               "in": "stage_inputs",
               "kind": "raise",
-              "line": 661
+              "line": 721
             },
             {
               "in": "stage_inputs",
               "kind": "raise",
-              "line": 668
+              "line": 728
             },
             {
               "in": "stage_inputs",
               "kind": "raise",
-              "line": 673
+              "line": 733
             },
             {
               "in": "stage_inputs",
               "kind": "raise",
-              "line": 697
+              "line": 757
             }
           ],
-          "hash": "34daece1c869f2bfbcb7198e3010bb8663325ff54b2cb5ca54bd8d9f53b4b806",
+          "hash": "8826e14615c7dd67fcfb2de10daf0e331fc3bb292d5a95427f102c7d22772ef3",
           "importsFiles": [
             "colab_runner/cards.py",
             "colab_runner/colab_cli.py",
@@ -1096,6 +1146,174 @@
             "colab_runner/window_lib/launch_guards.py"
           ],
           "path": "colab_runner/manifest.py"
+        },
+        {
+          "exports": [
+            "default_hf_transport",
+            "is_non_publishable_line",
+            "publish_window_outputs",
+            "render_hf_card",
+            "resolve_hf_token",
+            "scan_publish_files"
+          ],
+          "failurePaths": [
+            {
+              "in": "resolve_hf_token",
+              "kind": "except",
+              "line": 74
+            },
+            {
+              "in": "default_hf_transport",
+              "kind": "except",
+              "line": 176
+            },
+            {
+              "in": "_api_json",
+              "kind": "except",
+              "line": 202
+            },
+            {
+              "in": "publish_window_outputs",
+              "kind": "raise",
+              "line": 221
+            }
+          ],
+          "hash": "824570b7315429b8e101edff14d14c4c704638166905cf5728b5080017cd1534",
+          "importsFiles": [
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/window_lib/__init__.py",
+            "colab_runner/window_lib/launch_guards.py"
+          ],
+          "path": "colab_runner/publish.py"
+        },
+        {
+          "exports": [
+            "build_board",
+            "classify_window_outcome",
+            "format_board",
+            "run_queue"
+          ],
+          "failurePaths": [
+            {
+              "in": "_load",
+              "kind": "except",
+              "line": 63
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 185
+            },
+            {
+              "in": "from_file",
+              "kind": "except",
+              "line": 189
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 190
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 192
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 195
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 205
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 212
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 215
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 220
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 226
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 229
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 240
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 249
+            },
+            {
+              "in": "from_file",
+              "kind": "raise",
+              "line": 254
+            },
+            {
+              "in": "run_queue",
+              "kind": "except",
+              "line": 374
+            },
+            {
+              "in": "run_queue",
+              "kind": "raise",
+              "line": 376
+            },
+            {
+              "in": "run_queue",
+              "kind": "except",
+              "line": 385
+            },
+            {
+              "in": "run_queue",
+              "kind": "except",
+              "line": 391
+            },
+            {
+              "in": "run_queue",
+              "kind": "except",
+              "line": 427
+            }
+          ],
+          "hash": "add558cf2a39d53513c7d2615b5a8cc687bfa257c06a28553f08c34d04b9b6fa",
+          "importOrder": [
+            "colab_runner/cards.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/manifest.py",
+            "colab_runner/runner.py",
+            "colab_runner/launcher.py"
+          ],
+          "importsFiles": [
+            "colab_runner/cards.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/launcher.py",
+            "colab_runner/manifest.py",
+            "colab_runner/runner.py"
+          ],
+          "path": "colab_runner/queue.py"
         },
         {
           "exports": [
@@ -1166,100 +1384,100 @@
             {
               "in": "run",
               "kind": "except",
-              "line": 611
-            },
-            {
-              "in": "run",
-              "kind": "except",
               "line": 613
             },
             {
               "in": "run",
+              "kind": "except",
+              "line": 615
+            },
+            {
+              "in": "run",
               "kind": "raise",
-              "line": 634
+              "line": 636
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 646
+              "line": 648
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 659
+              "line": 661
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 670
+              "line": 672
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 673
+              "line": 675
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 680
+              "line": 681
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 682
+              "line": 683
             },
             {
               "in": "_check_run",
               "kind": "except",
-              "line": 684
+              "line": 685
             },
             {
               "in": "_check_run",
               "kind": "raise",
-              "line": 685
+              "line": 686
             },
             {
               "in": "_loop",
               "kind": "except",
-              "line": 823
+              "line": 824
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 871
+              "line": 872
             },
             {
               "in": "_step",
               "kind": "except",
-              "line": 878
+              "line": 879
             },
             {
               "in": "_collect",
               "kind": "except",
-              "line": 931
+              "line": 932
             },
             {
               "in": "_salvage",
               "kind": "except",
-              "line": 958
+              "line": 959
             },
             {
               "in": "_on_signal",
               "kind": "raise",
-              "line": 971
+              "line": 972
             },
             {
               "in": "_on_signal",
               "kind": "raise",
-              "line": 975
+              "line": 976
             },
             {
               "in": "_signal_name",
               "kind": "except",
-              "line": 1026
+              "line": 1027
             }
           ],
-          "hash": "a2ab5d5738ac6ca83cc6558f2319da4c54a1ec98db9ffca0d967f588bd704655",
+          "hash": "e8d69f18d122d08b0960973149d525d68848eb82be199418a244d4bc58539ea6",
           "importsFiles": [
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
@@ -1276,20 +1494,20 @@
             {
               "in": "__post_init__",
               "kind": "raise",
-              "line": 68
+              "line": 62
             },
             {
               "in": "__post_init__",
               "kind": "raise",
-              "line": 72
+              "line": 66
             },
             {
               "in": "fold_usage",
               "kind": "except",
-              "line": 105
+              "line": 99
             }
           ],
-          "hash": "5a27198cb19db2d7ced28ac48635c6bea7d44d3b38e9b7109bccfec21576f4cd",
+          "hash": "368081286ae79bf69b0e69281ef92c9ae6734ca691b40488070c8aa15915a91b",
           "importsFiles": [
             "colab_runner/runner.py",
             "colab_runner/window_lib/__init__.py",
@@ -1392,7 +1610,7 @@
           "path": "colab_runner/vm/start.py"
         },
         {
-          "hash": "818467c545b7368fa4e1b81b18996e4cd677864b7c835fd5d2ee1208cd34a781",
+          "hash": "db3801712a12ce48c256234e5bc6702b79e5e32fac208c74135d7c4a6a4e8e53",
           "path": "colab_runner/window_lib/PROVENANCE.md"
         },
         {
@@ -1401,106 +1619,48 @@
           "path": "colab_runner/window_lib/__init__.py"
         },
         {
-          "hash": "d147ba95ade4ff7b17128a27750927d7092a143151841e0147fa7ecd33453ecf",
-          "path": "colab_runner/window_lib/colab_window.sh"
-        },
-        {
           "exports": [
-            "check_host_ram_projection",
             "compute_cap_trip",
             "evaluate_cap_budget",
             "evaluate_cap_guard",
-            "evaluate_host_ram_projection",
-            "evaluate_vitals_and_stall_guard",
             "evaluate_wall_guard",
-            "format_dry_cap_budget",
             "gpu_projection_rate",
-            "host_ram_reading",
-            "host_ram_status",
-            "is_vitals_line",
-            "main",
             "normalize_hex_sha",
             "parse_active_assignments",
             "parse_usage_text",
-            "parse_vitals_log",
-            "run_between_item_fetch",
-            "run_output_bytes",
             "scrub_colab_tokens",
-            "scrub_file_in_place",
-            "sha256_file",
-            "sha256_self_normalized",
             "update_window_rate",
-            "verify_input_shas",
-            "wall_cap_refusal",
             "window_rate_decision"
           ],
           "failurePaths": [
             {
-              "in": "verify_input_shas",
-              "kind": "raise",
-              "line": 70
-            },
-            {
-              "in": "verify_input_shas",
-              "kind": "raise",
-              "line": 78
-            },
-            {
               "in": "parse_usage_text",
               "kind": "raise",
-              "line": 341
+              "line": 272
             },
             {
               "in": "_select_rate",
               "kind": "raise",
-              "line": 361
+              "line": 292
             },
             {
               "in": "_failure_rates",
               "kind": "except",
-              "line": 374
+              "line": 305
             },
             {
               "in": "parse_usage_text",
               "kind": "except",
-              "line": 450
+              "line": 381
             },
             {
               "in": "parse_usage_text",
               "kind": "raise",
-              "line": 453
-            },
-            {
-              "in": "parse_vitals_log",
-              "kind": "except",
-              "line": 743
-            },
-            {
-              "in": "check_host_ram_projection",
-              "kind": "raise",
-              "line": 1132
-            },
-            {
-              "in": "main",
-              "kind": "except",
-              "line": 1277
-            },
-            {
-              "kind": "raise",
-              "line": 1391
+              "line": 384
             }
           ],
-          "hash": "2998b4f8e3aea3aea2ecc9f779c743b4b44824b30e7ff55fb1da782d7a416c69",
+          "hash": "dcc30f30dfb32ca3447b32fe93688b431ddcd430079b8d6984a0b13d5aa010b9",
           "path": "colab_runner/window_lib/launch_guards.py"
-        },
-        {
-          "exports": [
-            "prepare_content_downloads",
-            "run_remote_script",
-            "scrub_line"
-          ],
-          "hash": "393929ed704ccbacaee2b590010e348a5d635cbdd70361209d3e0103d1fba6eb",
-          "path": "colab_runner/window_lib/remote_runner.py"
         }
       ],
       "globs": [
@@ -1511,11 +1671,11 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 26,
+          "reads": 21,
           "where": [
             "caller"
           ],
-          "writes": 20
+          "writes": 15
         },
         {
           "reads": 0,
@@ -1526,13 +1686,13 @@
           "writes": 1
         }
       ],
-      "outsideReads": 26,
-      "outsideWrites": 21,
+      "outsideReads": 21,
+      "outsideWrites": 16,
       "role": "code",
       "testRunners": [
         "unittest"
       ],
-      "testedBy": 18,
+      "testedBy": 19,
       "unresolvedSites": 0
     },
     {
@@ -1556,7 +1716,7 @@
           "path": ".polyglot-pins.json"
         },
         {
-          "hash": "851b6950bd50403dacb37c81518b37404a35d83f2f2553a6b8e67223887c9781",
+          "hash": "9d4382baedfa45a575cf7be414764c4794be26f3af3e32e5c68198e5163a5813",
           "path": "CHANGELOG.md"
         },
         {
@@ -1600,7 +1760,7 @@
           "path": "SCORECARD.md"
         },
         {
-          "hash": "93287594d7f21628bbd7968f7a557a7d3e58ddb74a1dbd0482baa608b8fbe7a4",
+          "hash": "c94eea92cf1854c7b168b8f51f62a7d0e6ba3a539e85f8f764e26835ff7170ed",
           "path": "SECURITY.md"
         },
         {
@@ -1612,7 +1772,7 @@
           "path": "codecov.yml"
         },
         {
-          "hash": "3c8d5fb805f2b4936de886b25fe7a100f68f7f2dfbbce7bd6f19d3796e2216e7",
+          "hash": "4f70c627d66a0422b8706b4d7409df4cbdf748eef24f9c4deeab980bfc3188b1",
           "path": "pyproject.toml"
         },
         {
@@ -1713,13 +1873,46 @@
           "testFramework": "unittest"
         },
         {
+          "hash": "a9ff8b8a5d71c56878a9624cf2f1cf10c22138168c1267b22d74a128d933c37a",
+          "importOrder": [
+            "colab_runner/launcher.py",
+            "colab_runner/__main__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/publish.py",
+            "colab_runner/queue.py",
+            "colab_runner/window_lib/__init__.py",
+            "colab_runner/window_lib/launch_guards.py",
+            "tests/fakes.py",
+            "tests/test_launcher.py",
+            "tests/test_tokens.py",
+            "colab_runner/manifest.py"
+          ],
+          "importsFiles": [
+            "colab_runner/__main__.py",
+            "colab_runner/colab_cli.py",
+            "colab_runner/errors.py",
+            "colab_runner/launcher.py",
+            "colab_runner/manifest.py",
+            "colab_runner/publish.py",
+            "colab_runner/queue.py",
+            "colab_runner/window_lib/__init__.py",
+            "colab_runner/window_lib/launch_guards.py",
+            "tests/fakes.py",
+            "tests/test_launcher.py",
+            "tests/test_tokens.py"
+          ],
+          "path": "tests/test_continuous.py",
+          "testFramework": "unittest"
+        },
+        {
           "exports": [
             "cli",
             "library_refusal_codes",
             "source_codes",
             "trip_codes"
           ],
-          "hash": "a12e04e5e3435cb8f74ab869cf5d16aed5b1c8588d7a54ea7a1e020cc1bd3f7f",
+          "hash": "824fa6d4bc4ff9fd8e39d5fc0f438cafac8e8c0d44e2c5a1e971e7866983b9e3",
           "importOrder": [
             "colab_runner/__main__.py",
             "colab_runner/errors.py",
@@ -1762,7 +1955,7 @@
           "exports": [
             "poisoned"
           ],
-          "hash": "8ef7d98ded468231096f7dd1bc9ae13c54a07630f7823454dc36f8714e0dc6bf",
+          "hash": "f3966310c52871d928649f89f7d841a632c460e00fbf328b55767b9225dd9a92",
           "importOrder": [
             "colab_runner/colab_cli.py",
             "colab_runner/errors.py",
@@ -1787,7 +1980,7 @@
           "testFramework": "unittest"
         },
         {
-          "hash": "8ff6cc227a8f3952d909514718a0935d083512b50194c44079ffa6fe0c125d40",
+          "hash": "361f5b6d949729808c0a8317d91314be15450760c768b6357f8be1deb9263b74",
           "importOrder": [
             "colab_runner/__main__.py",
             "colab_runner/cards.py",
@@ -1823,7 +2016,7 @@
             "gone",
             "library_alone"
           ],
-          "hash": "7a0454436ca87237f3d4d61995c4c60cf9dda8e15bba5d534207d176c48436c3",
+          "hash": "3f534126e9ad52ad33c4e76e43eae2511c96c7d53c514f823aacdda6abbc8c22",
           "importsFiles": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -1855,7 +2048,7 @@
             "snapshot",
             "trip_scenarios"
           ],
-          "hash": "7f3751ae989f5cde19c6d107bb903ccea503aa28507c71794d1eedac959895b2",
+          "hash": "37ba874655e87e3cf5bac953dbfccfb653992abb338ae72d419427a25e90b895",
           "importOrder": [
             "colab_runner/__init__.py",
             "colab_runner/colab_cli.py",
@@ -1961,7 +2154,7 @@
             "png",
             "values"
           ],
-          "hash": "edba5cbaad014afe12651aa9f5a6b8719a801cbadc1841332b0231fb036b7225",
+          "hash": "9c73a1764267fd894cf5fcfb62d1123bf428616f3672d3cc2b45f6293182fd1c",
           "importOrder": [
             "colab_runner/colab_cli.py",
             "colab_runner/runner.py",
@@ -2011,7 +2204,7 @@
           "exports": [
             "parse_table"
           ],
-          "hash": "57ef6a582d252929c44b269f3fed16b9556e60f70758c1f5f46af8b09fa617b8",
+          "hash": "f3c6b796879598fec550cefd411d74d6d6c3f7779e22e12afd2289010001d6f6",
           "names": [
             "colab_runner/vm/kill.py",
             "colab_runner/vm/lib.py",
@@ -2019,8 +2212,7 @@
             "colab_runner/vm/resident.py",
             "colab_runner/vm/start.py",
             "colab_runner/window_lib/__init__.py",
-            "colab_runner/window_lib/launch_guards.py",
-            "colab_runner/window_lib/remote_runner.py"
+            "colab_runner/window_lib/launch_guards.py"
           ],
           "path": "tests/test_window_lib.py",
           "testFramework": "unittest"
@@ -2186,7 +2378,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 17
+          "files": 18
         },
         {
           "boundary": "root",
@@ -2196,7 +2388,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 21
+          "files": 22
         }
       ],
       "readers": [],
@@ -2283,7 +2475,7 @@
         },
         {
           "coverage": true,
-          "files": 21,
+          "files": 22,
           "job": "ci",
           "runner": "unittest",
           "step": "Coverage (floor 90)"
@@ -2544,8 +2736,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "73b6b84e450f8c1b4a38b0ceb19c5af71979bc34",
-    "tracked": 88
+    "commit": "59ca9c007c44f174e63f2ca3d39e5e72542045b3",
+    "tracked": 89
   },
   "landings": [
     {
@@ -2578,6 +2770,11 @@
     },
     {
       "readers": [
+        {
+          "by": "colab_runner/publish.py",
+          "call": "literal",
+          "confidence": "ast"
+        },
         {
           "by": "pyproject.toml",
           "call": "configuration",
@@ -2755,31 +2952,7 @@
           "fromTests": true
         }
       ],
-      "target": "colab_runner/window_lib/colab_window.sh",
-      "writers": []
-    },
-    {
-      "readers": [
-        {
-          "by": "tests/test_window_lib.py",
-          "call": "literal",
-          "confidence": "ast",
-          "fromTests": true
-        }
-      ],
       "target": "colab_runner/window_lib/launch_guards.py",
-      "writers": []
-    },
-    {
-      "readers": [
-        {
-          "by": "tests/test_window_lib.py",
-          "call": "literal",
-          "confidence": "ast",
-          "fromTests": true
-        }
-      ],
-      "target": "colab_runner/window_lib/remote_runner.py",
       "writers": []
     },
     {
@@ -2913,10 +3086,10 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 22,
+  "testFiles": 23,
   "unassigned": [
     {
-      "hash": "2e1c33ce76e87bc83403c6f29fd0d2f6d2fc225c2d2350763535caf04db5cac1",
+      "hash": "fd9580d7a8756a7bd55fa3701c40cc39ba775ff164c49576e19746a389b852a4",
       "path": "docs/reference.md"
     },
     {
@@ -2924,7 +3097,7 @@
       "path": "examples/merchant_league_seats/README.md"
     },
     {
-      "hash": "957f43c92a24830491f84097559ccb687f41c55bb56438aa789fad68fa2d4789",
+      "hash": "ba3da489af87c27a66e8330894d7780a84cd901bff5f162a67d02bdb16d09c37",
       "path": "examples/merchant_league_seats/colab-window.toml"
     },
     {
@@ -3046,23 +3219,23 @@
       "path": "site/src/content.config.ts"
     },
     {
-      "hash": "02f33b150f2858030bad41a2104fffe87ef5d0324518ead5d89c182717f3d28d",
+      "hash": "32f4eb8c6977b78864175d32ebc41ecbeb4e5aae5356dc3b130a972a38b4a283",
       "path": "site/src/content/docs/handbook/getting-started.md"
     },
     {
-      "hash": "7ed90912ed4a606da03b1d5a374bbebed14cc82ddbe6ab99717c390161115066",
+      "hash": "718473d8dce382ae5270a9686fb3820583af3fdc0a9bb1b0d409deb679ae2152",
       "path": "site/src/content/docs/handbook/index.md"
     },
     {
-      "hash": "8124edc7604ba8f1ed062f561843b093ec36eea59309f7ff5557a703266f868d",
+      "hash": "5b49665c7026e4d03a76626af78efb86b8cb400fc22fcc589f51a8a778c541cc",
       "path": "site/src/content/docs/handbook/lanes.md"
     },
     {
-      "hash": "0f33552493dc67083f944db36079877c4c0904b2866fbb6c6fb602c27a1ac634",
+      "hash": "2f1989b2550435ff2a3de711dac60cd440e62f55601c4b93e604a8d6acde3719",
       "path": "site/src/content/docs/handbook/reference.md"
     },
     {
-      "hash": "a40edb9e000e4b8ffa273594e3b4b0f3d2c1751c72b3017ade215049214b503f",
+      "hash": "a7ad8caab92f85ad3165e82ccb91c0edcd99da7255fe32c105a6bacfaaade1b3",
       "path": "site/src/content/docs/handbook/security.md"
     },
     {

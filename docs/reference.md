@@ -17,13 +17,13 @@ budget in compute units (see Pricing).
 
 `python -m colab_runner --help` lists every command; `launch --help`, `status --help`, and `run --help` list every flag.
 
-## Using it from a lane
+## Using it from your project
 
-**The session is the lane's.** The lane opens the Colab session and passes its name. Once `run` has written
+**The session belongs to the caller.** The caller opens the Colab session and passes its name. Once `run` has written
 `session_open.json` in the out dir, every exit tries to stop the session, and the marker is removed only after a confirmed stop.
-- **A marker that stays** means the session may still be open: a stop that failed, or a `run` killed outright (SIGKILL, a lost
-  rig) before its cleanup ran. The lane then runs `python -m colab_runner stop --out-dir D`.
-- **Before the marker exists** (a refusal or a usage error, both exit 1), the lane runs `colab stop -s S` itself.
+- **A marker that stays** means the session may still be open: a stop that failed, or a `run` killed outright (`SIGKILL`, a lost
+  local machine) before its cleanup ran. The caller then runs `python -m colab_runner stop --out-dir D`.
+- **Before the marker exists** (a refusal or a usage error, both exit 1), the caller runs `colab stop -s S` itself.
 
 **Required flags of `run`:** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C
 --cleanup-bound-s N`.
@@ -138,7 +138,7 @@ tmp.write_text("run\n", encoding="utf-8")
 os.replace(tmp, out / "phase.txt")
 ```
 
-**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
+**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the caller's environment. `--env NAME=VALUE`
 puts the value in the runner's own command line. Values reach the VM inside the uploaded notebook cell file, never as arguments to the `colab` CLI.
 Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
 directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
@@ -161,8 +161,10 @@ directories (including partial transfers) are classified by content only (a NUL 
   - The download is refused with `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). That ends `Runner.run` as `error` (CLI
     exit 2), and the session is still stopped.
 - **A directory download** is scrubbed of tokens file by file, and one failure never stops the rest: a hit whose move to quarantine
-  fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once all the remaining
-  files have been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
+  fails is removed, and a subdirectory that cannot be listed is noted. At the end, `QuarantineEscape` raises first if triggered;
+  otherwise any binary token hit still raises `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`, with `failures` and `removed`
+  attached) so a quarantine move failure cannot downgrade a token hit into `partial`, and any other `OSError` raises first.
+  Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
   followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
   read.
 - **Where the quarantine is.**
@@ -174,13 +176,53 @@ directories (including partial transfers) are classified by content only (a NUL 
     `Colab(quarantine_dir=...)` to choose the place.
   - Every quarantine path is resolved and checked to stay inside its quarantine folder before the move. A file that
     would land outside it is removed instead, and the download fails with `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-  - colab-runner never deletes a quarantine. **The calling lane must delete it and must never ship it.**
+  - colab-runner never deletes a quarantine. **The caller must delete it and must never ship it.**
 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.
 
-**Pricing.** The window is priced at `max(--max-rate, the highest stable window rate)` times elapsed, through the vendored
-library's rate and cap functions. A stable rate above `--max-rate` trips `RATE_ABOVE_MAX`, so every window that keeps running is
-priced at `--max-rate`: it is a floor, not a loose ceiling. Set it to the card's expected rate; a loose `--max-rate` trips the cap
-early. The account balance is recorded and never prices the window.
+**Pricing & three stop reasons.** A running paid window stops for only three reasons: (a) **cap** (`own_rate x elapsed >= ceiling`),
+(b) **wall** (`--wall-s`), or (c) **dead job** (`dead` after `dead_confirm` polls, `setup_stall`, `progress_stall`, or
+`unreachable`). Mid-run `colab usage` parse failures, missing `Active assignments` counts, rates below catalog floor, and
+mid-run rate drift are logged rather than killing the window; `--max-rate` is enforced against the session's rate only at
+open (`RATE_ABOVE_MAX`). The account balance is recorded and never prices the window.
+
+## Platform requirement (`PLATFORM_UNSUPPORTED`)
+
+`launch` and `queue run` refuse native Windows (`sys.platform == "win32"`) before opening directories or writing state
+files with exit code 1 (`REFUSED: PLATFORM_UNSUPPORTED: colab-runner runs on Linux or WSL`). Run `colab-runner` on Linux
+or inside WSL.
+
+## Continuous work (`purpose`, `line`, `queue`, `board`)
+
+A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) so `board` can total their spend and outcomes together.
+
+- **Purpose, line, and data class in `[project]`:** optional `purpose` (falls back to `description`, and is
+  required non-empty for every queued job), `line` (falls back to `study`), and `data_class` (`"public"`, `"synthetic"`,
+  `"private"`, or `"sealed"`, defaulting to `"sealed"` when `[inputs.sealed]` is declared and `"private"` otherwise).
+  Sealed manifests with `data_class` set to `"public"` or `"synthetic"`, or with `[publish] enabled = true`, are refused
+  (`SEALED_DATA_REFUSED`).
+- **Spend tracking (`line_ledger.json`):** windows record spend idempotently by `window_id` and classify into `done`,
+  `failed-ours`, `failed-Google`, or `refused-capacity` (`outcome_bucket`). The per-window `--cap` and `--wall-s` are the
+  only limits.
+- **Unattended queues (`queue validate` / `queue run`):** declare `[[jobs]]` in a TOML/JSON queue manifest with per-job
+  `spec`, `purpose`, `line`, `cap`, `max_rate`, and `wall_s`. `queue validate` verifies every spec. `queue run` respects
+  account/card pool ceilings through `launch_window` (`POOL_CEILING_REACHED` classifies as `refused-capacity`), enforces
+  single card per study (`CARD_MIX_REFUSED`), isolates per-job failures (stopping & recording before advancing to the next
+  job, halting only if a session stop cannot be confirmed), and writes `queue_state.json`.
+- **At-a-glance `board`:** `python -m colab_runner board [--out-root D | --out-dir D ...] [--state-dir S] [--json]`
+  shows line totals, ran/running windows (purpose, card, status, spend, artifacts, HF link), upcoming queued jobs, and
+  totals with four-way counts.
+
+## Opt-in Hugging Face publish (`[publish]`)
+
+Publishing runs **only** when `[publish]` sets `enabled = true` and an explicit `repo_id = "owner/name"` (there is no
+default org; `repo_type` defaults to `"dataset"`), and `[inputs.sealed]` is absent. Runs on dev, canary, or smoke lines
+(`colab-runner-dev`, `dev`, `canary`, any `*-dev`, or any line containing `smoke`) refuse to publish even when enabled.
+When enabled on an eligible `done` window, `colab-runner` closes the Colab session first, then creates the Hugging Face
+repo as **private** (stopping as `publish.status = "exists"` without modifying anything on HTTP `409`), uploads `collected/`
+artifacts plus a generated `README.md` card after a pre-upload identity/token scan, flips the repo public (`flip_unverified`
+if the verification `GET` fails), and records `repo_url` and `flipped_public_at` in `outcome.json`. A publish failure
+is recorded in `outcome["publish"]` and never alters the finished window's `status` or `exit_code`.
+
 

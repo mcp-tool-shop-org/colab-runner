@@ -5,19 +5,20 @@ sidebar:
   order: 0
 ---
 
-**colab-runner** is the studio's shared runner for paid Google Colab windows. Every Colab lane used to carry its own copy
-of this code. Now there is one place for it, and lanes vendor a pinned release.
+**colab-runner** is the shared runner for paid Google Colab windows. Every project used to carry its own copy
+of this code. Now there is one place for it, and projects install a pinned release.
 
 It does four things:
 
-1. **Starts the job detached.** The job runs on the VM in a process that keeps going if the rig-side process dies, with
+1. **Starts the job detached.** The job runs on the VM in a process that keeps going if the local process dies, with
    a status file and a log the runner follows.
-2. **Watches it inside a cap.** It polls with backoff, prices the window from the card's rate, and ends the run at the
-   wall, at the cap, or when the job stalls, dies or goes unreachable.
-3. **Scrubs what comes back.** Every log line and downloaded text file is scrubbed of tokens. A binary file holding a
-   token is quarantined unchanged, and the download is refused.
-4. **Always tries to stop the session.** Once it owns the session it stops it on every exit, and it leaves a marker
-   until the stop is confirmed, so a lane can always finish the job with `python -m colab_runner stop`.
+2. **Watches it inside a cap.** Stops a running window only for cap (`own rate x elapsed`), wall, or a dead/stalled job,
+   logging flaky account reads or mid-run rate drift without aborting healthy work.
+3. **Scrubs and optionally publishes.** Scrubs every log and downloaded file (quarantining binaries with token hits), and
+   when `[publish]` is opted in with `enabled = true` and an explicit `repo_id`, uploads finished non-dev/non-canary/non-smoke
+   outputs private-first to Hugging Face after an identity scan.
+4. **Always tries to stop and record.** Stops sessions on every exit, records spend by `line` (a short label grouping
+   related runs) and `purpose`, runs unattended multi-job queues (`queue run`), and summarizes progress in `board`.
 
 ## Status
 
@@ -36,6 +37,6 @@ Still to come: VM token-file secrets delivery, storage bucket sync receipts, and
 ## Where to go next
 
 - [Getting started](./getting-started/): install it and run a first window.
-- [Using it from a lane](./lanes/): what a lane owns, the flags, the job's side of the contract.
+- [Using it from your project](./lanes/): what a caller owns, the flags, the job's side of the contract.
 - [Reference](./reference/): every flag, exit code, end reason and error code.
 - [Security](./security/): the threat model, the scrub and the quarantine.

@@ -587,6 +587,8 @@ class Runner:
         now_m = self.clock()
         self._t0 = min(float(opened_monotonic), now_m) if opened_monotonic is not None else now_m
         self._wall_s, self._guard = float(wall_s), guard
+        if guard is not None and getattr(guard, "log", None) is None and hasattr(guard, "_emit"):
+            guard.log = lambda msg: self.log(scrub(msg))
         self._resident, self._oom_seen, self._log_collected, self._skip_salvage = None, False, False, False
         self._res = RunResult("error")
         self._download_refusal = None
@@ -675,8 +677,7 @@ class Runner:
                                                        "kernel restart, run log, " if resident else ""))
         try:
             if not self._pre_opened and self.out_dir.exists() and (not self.out_dir.is_dir() or any(self.out_dir.iterdir())):
-                # the confirmation markers are only true of this run if nothing was there before it (colab_window.sh
-                # refuses the same: colab_refuse_nonempty_out_dir)
+                # the confirmation markers are only true of this run if nothing was there before it
                 raise Refused("OUT_DIR_NOT_EMPTY", "%s already exists and is not an empty directory" % self.out_dir)
             if self.out_dir.exists() and not self.out_dir.is_dir():
                 raise Refused("OUT_DIR_INVALID", "%s exists and is not a directory" % self.out_dir)
