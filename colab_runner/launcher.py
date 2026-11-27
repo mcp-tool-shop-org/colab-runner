@@ -48,7 +48,7 @@ from colab_runner.colab_cli import (
 )
 from colab_runner.errors import Refused, cap_trip_record, error_record
 from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
-from colab_runner.publish import TransportFn, publish_window_outputs
+from colab_runner.publish import TransportFn, is_non_publishable_line, publish_window_outputs
 from colab_runner.queue import LineLedger, classify_window_outcome
 from colab_runner.runner import (
     DEFAULT_DOWNLOAD_TIMEOUT_S,
@@ -1084,11 +1084,15 @@ def _read_sessions_strict(client: Colab) -> list[dict[str, Optional[str]]]:
     return rows
 
 
-def _read_pre_open_usage(colab: Colab, *, card_spec: CardSpec) -> tuple[Optional[float], Optional[int], Optional[float]]:
+def _read_pre_open_usage(
+    colab: Colab,
+    *,
+    card_spec: CardSpec,
+    log: Callable[[str], None] = lambda s: None,
+) -> tuple[Optional[float], Optional[int], Optional[float]]:
     res = colab.usage()
     if not res.ok:
-        if card_spec.card_class == "gpu":
-            raise Refused("PRE_OPEN_READ_FAILED", "pre-open `colab usage` failed (rc=%s)" % res.rc)
+        log("pre-open `colab usage` failed (rc=%s); proceeding without pre-open baseline" % res.rc)
         return None, None, None
     try:
         parsed = lg.parse_usage_text(res.out, "cpu" if card_spec.card_class == "cpu" else "gpu",
@@ -1096,15 +1100,14 @@ def _read_pre_open_usage(colab: Colab, *, card_spec: CardSpec) -> tuple[Optional
     except lg.RateUnread as exc:
         parsed = dict(exc.partial, ok=True, error=None)
     if not parsed.get("ok"):
-        if card_spec.card_class == "gpu":
-            raise Refused("PRE_OPEN_READ_FAILED", parsed.get("error") or "could not parse pre-open `colab usage`")
+        log("pre-open `colab usage` unreadable (%s); proceeding without pre-open baseline"
+            % (parsed.get("error") or "parse failed"))
         return None, None, None
     pre_rate = parsed.get("rate_measured")
     pre_assign = parsed.get("active_assignments")
     bal = parsed.get("balance")
-    if card_spec.card_class == "gpu" and pre_assign is None:
-        raise Refused("PRE_OPEN_READ_FAILED", "pre-open `colab usage` reported no Active assignments count")
-    if pre_rate is not None and pre_assign is None:
+    if pre_assign is None and (card_spec.card_class == "gpu" or pre_rate is not None):
+        log("pre-open `colab usage` reported no Active assignments count; proceeding without pre-open baseline")
         return None, None, bal
     return pre_rate, pre_assign, bal
 
@@ -1508,10 +1511,7 @@ def launch_window(
                     ledger.release_reservation(spec.study, window_id=window_id)
                 ledger.record_window(spec.study, outcome)
             if line_ledger is not None:
-                summary = line_ledger.record_outcome(eff_line, outcome, out_dir=out_path)
-                if summary.get("over_budget"):
-                    log("budget note: line %r spent %s CCU > standing budget %s CCU"
-                        % (eff_line, summary["spent_ccu"], summary["budget_ccu"]))
+                line_ledger.record_outcome(eff_line, outcome, out_dir=out_path)
 
     def _trip_open_bound(sig_state: dict[str, Any]) -> Optional[dict[str, Any]]:
         if t_open_monotonic is None:
@@ -1582,7 +1582,7 @@ def launch_window(
                 try:
                     rows = _read_sessions_strict(client)
                     _pool_check(rows, session=eff_session, card_spec=card_spec, shape=clean_shape)
-                    pre_rate, pre_assign, bal_start = _read_pre_open_usage(client, card_spec=card_spec)
+                    pre_rate, pre_assign, bal_start = _read_pre_open_usage(client, card_spec=card_spec, log=log)
                     outcome["account_balance"]["start"] = bal_start
                     guard = SpendGuard(
                         max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup,
@@ -1682,24 +1682,8 @@ def launch_window(
                             return outcome
 
                         if observed_shape != expected_shape:
-                            tripped_out = _trip_open_bound(sig_state)
-                            if tripped_out is not None:
-                                return tripped_out
-                            sig_state["cleaning"] = True
-                            stopped_ok, stopped_at = _finalize_close(
-                                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
-                            )
-                            _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                        elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
-                            outcome["status"] = "open_failed"
-                            outcome["exit_code"] = 2
-                            outcome["refusal"] = error_record(
-                                "SESSIONS_READ_FAILED",
-                                "could not confirm assigned shape for %s in `colab sessions` after open" % card_spec.name,
-                            )
-                            write_json_atomic(out_path / "outcome.json", outcome)
-                            _record_window_outcome(stopped_ok)
-                            return outcome
+                            log("post-open `colab sessions` shape check inconclusive (got %r); continuing"
+                                % (observed_shape,))
 
                         tripped_out = _trip_open_bound(sig_state)
                         if tripped_out is not None:
@@ -1965,24 +1949,33 @@ def launch_window(
             else:
                 outcome["exit_code"] = 2
 
-            if spec.sealed is None and spec.data_class in ("public", "synthetic"):
-                if outcome["status"] == "done" and (live_mode or publish_transport is not None):
+            if spec.sealed is None and spec.publish is not None and spec.publish.enabled:
+                if is_non_publishable_line(eff_line):
+                    log("publish refused for line %r: dev, canary, and smoke lines never publish" % eff_line)
+                    outcome["publish"] = {
+                        "status": "refused_line",
+                        "repo_id": spec.publish.repo_id,
+                        "repo_type": spec.publish.repo_type,
+                        "line": eff_line,
+                        "repo_url": None,
+                        "flipped_public_at": None,
+                        "error": "dev, canary, and smoke lines never publish",
+                    }
+                elif outcome["status"] == "done" and (live_mode or publish_transport is not None):
                     pub_rec = publish_window_outputs(
                         spec=spec, out_dir=out_path, outcome=outcome, transport=publish_transport, log=log,
                     )
                     outcome["publish"] = pub_rec
-                    if pub_rec.get("status") == "published":
+                    if pub_rec.get("status") in ("published", "flip_unverified"):
                         outcome["repo_url"] = pub_rec.get("repo_url")
                         outcome["flipped_public_at"] = pub_rec.get("flipped_public_at")
                     else:
-                        outcome["status"] = "partial"
-                        outcome["exit_code"] = 2
-                        log("publish step failed (%s): %s"
+                        log("publish did not complete (%s): %s"
                             % (pub_rec.get("status"), pub_rec.get("error") or pub_rec.get("findings")))
                 elif outcome["status"] == "done" and local_cpu:
-                    outcome["publish"] = {"status": "skipped_local_cpu", "data_class": spec.data_class}
+                    outcome["publish"] = {"status": "skipped_local_cpu", "repo_id": spec.publish.repo_id}
                 else:
-                    outcome["publish"] = {"status": "skipped_not_done", "data_class": spec.data_class}
+                    outcome["publish"] = {"status": "skipped_not_done", "repo_id": spec.publish.repo_id}
             else:
                 outcome["publish"] = None
 

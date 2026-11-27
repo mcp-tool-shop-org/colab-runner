@@ -6,7 +6,6 @@ study = "merchant-league-local-seats-demo"
 job = "league_turn_01"
 line = "merchant-league-demo"
 purpose = "Validate four-guild synthetic seat runner on a single Colab GPU"
-data_class = "synthetic"
 description = "Four-guild synthetic table running against a VM-local OpenAI-compatible model endpoint"
 
 [compute]

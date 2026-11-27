@@ -1,10 +1,9 @@
-"""Continuous work engine: per-line spend & budget ledger (`LineLedger`), unattended multi-job queue, and board."""
+"""Continuous work engine: per-line spend ledger (`LineLedger`), unattended multi-job queue, and board."""
 
 from __future__ import annotations
 
 import json
 import re
-import sys
 import time
 import tomllib
 from dataclasses import dataclass
@@ -12,8 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from colab_runner.cards import TOTAL_SESSION_CEILING, resolve_card, validate_card_and_shape
-from colab_runner.colab_cli import Colab, cli_from_env, parse_sessions_output, scrub
+from colab_runner.cards import validate_card_and_shape
+from colab_runner.colab_cli import Colab, cli_from_env, scrub
 from colab_runner.errors import Refused
 from colab_runner.manifest import WindowSpec
 from colab_runner.runner import Runner, write_json_atomic
@@ -51,7 +50,7 @@ def classify_window_outcome(outcome: Mapping[str, Any]) -> str:
 
 
 class LineLedger:
-    """File-backed spend, four-way counts, and standing budget ledger keyed by `line` of work."""
+    """File-backed spend and four-way outcome count ledger keyed by `line` of work."""
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -70,22 +69,6 @@ class LineLedger:
     def _save(self, data: Mapping[str, Any]) -> None:
         write_json_atomic(self.path, dict(data))
 
-    def set_budget(self, line: str, budget_ccu: Optional[float], *, note: str = "") -> dict[str, Any]:
-        """Set or clear a standing budget (CCU) for one line of work."""
-        key = str(line or "").strip()
-        if not key:
-            raise Refused("SPEC_INVALID", "line must be a non-empty string")
-        if budget_ccu is not None and (not isinstance(budget_ccu, (int, float)) or isinstance(budget_ccu, bool) or budget_ccu < 0):
-            raise Refused("CAP_INVALID", "budget_ccu must be a non-negative number (got %r)" % (budget_ccu,))
-        data = self._load()
-        entry = dict(data["lines"].get(key) or {"windows": []})
-        entry["budget_ccu"] = None if budget_ccu is None else round(float(budget_ccu), 6)
-        entry["note"] = str(note or "").strip()
-        entry["updated_at"] = _utc_now()
-        data["lines"][key] = entry
-        self._save(data)
-        return self.line_summary(key)
-
     def record_outcome(
         self,
         line: str,
@@ -96,7 +79,7 @@ class LineLedger:
         """Idempotently record or update one window outcome under `line` (keyed by `window_id`)."""
         key = str(line or "").strip() or "default"
         data = self._load()
-        entry = dict(data["lines"].get(key) or {"budget_ccu": None, "note": "", "windows": []})
+        entry = dict(data["lines"].get(key) or {"windows": []})
         windows = [dict(w) for w in entry.get("windows", []) if isinstance(w, dict)]
         wid = str(outcome.get("window_id") or "")
         proj = outcome.get("project") or {}
@@ -134,19 +117,13 @@ class LineLedger:
     def _summarize_entry(line: str, entry: Mapping[str, Any]) -> dict[str, Any]:
         windows = [w for w in entry.get("windows", []) if isinstance(w, dict)]
         spent = round(sum(float(w.get("spend_ccu") or 0.0) for w in windows), 6)
-        budget = entry.get("budget_ccu")
         counts = {b: 0 for b in OUTCOME_BUCKETS}
         for w in windows:
             bucket = str(w.get("outcome_bucket") or "failed-ours")
             counts[bucket if bucket in counts else "failed-ours"] += 1
-        remaining = None if budget is None else round(float(budget) - spent, 6)
         return {
             "line": line,
-            "budget_ccu": budget,
             "spent_ccu": spent,
-            "remaining_ccu": remaining,
-            "over_budget": remaining is not None and remaining < -1e-9,
-            "note": entry.get("note", ""),
             "updated_at": entry.get("updated_at"),
             "window_count": len(windows),
             "counts": counts,
@@ -155,7 +132,7 @@ class LineLedger:
 
     def line_summary(self, line: str) -> dict[str, Any]:
         data = self._load()
-        entry = data["lines"].get(line) or {"budget_ccu": None, "note": "", "windows": []}
+        entry = data["lines"].get(line) or {"windows": []}
         return self._summarize_entry(line, entry)
 
     def all_summaries(self) -> dict[str, Any]:
@@ -230,7 +207,6 @@ class QueueSpec:
         jobs: list[QueueJobSpec] = []
         seen_ids: set[str] = set()
         seen_dirs: set[Path] = set()
-        study_cards: dict[str, str] = {}
         for idx, entry in enumerate(raw_jobs):
             if not isinstance(entry, Mapping):
                 raise Refused("SPEC_INVALID", "jobs[%d] must be a table/object" % idx)
@@ -256,14 +232,6 @@ class QueueSpec:
             raw_shape = entry["shape"] if "shape" in entry else spec.shape
             shape_in = None if raw_shape is None else str(raw_shape).strip().lower() or None
             card_spec, clean_shape = validate_card_and_shape(raw_card, shape_in)
-            if card_spec.card_class == "gpu":
-                prev = study_cards.get(spec.study)
-                if prev is not None and prev != card_spec.name:
-                    raise Refused(
-                        "CARD_MIX_REFUSED",
-                        "study %r cannot mix cards (%s vs %s) across queue jobs" % (spec.study, prev, card_spec.name),
-                    )
-                study_cards[spec.study] = card_spec.name
 
             eff_cap = float(entry.get("cap") if entry.get("cap") is not None else spec.cap)
             eff_rate = float(entry.get("max_rate") if entry.get("max_rate") is not None else (spec.max_rate or 0.0))
@@ -310,31 +278,12 @@ class QueueSpec:
         )
 
 
-def _has_pool_slot(colab: Colab, card_name: str, shape: Optional[str]) -> tuple[bool, Optional[str]]:
-    res = colab.sessions()
-    if not res.ok:
-        return True, None  # let launch_window's strict open check decide under lock
-    rows = parse_sessions_output(res.out)
-    if len(rows) >= TOTAL_SESSION_CEILING:
-        return False, "total active sessions %d reached ceiling %d" % (len(rows), TOTAL_SESSION_CEILING)
-    from colab_runner.cards import pool_key_for_card, pool_key_for_session_row
-
-    card_spec = resolve_card(card_name)
-    want_key = pool_key_for_card(card_spec, shape)
-    same = sum(1 for r in rows if pool_key_for_session_row(r) == want_key)
-    if card_spec.pool_ceiling and same >= card_spec.pool_ceiling:
-        return False, "%s active sessions %d reached ceiling %d" % (want_key, same, card_spec.pool_ceiling)
-    return True, None
-
-
 def run_queue(
     queue_path: Path | str,
     *,
     local_cpu: bool = False,
     dry: bool = False,
     state_dir: Optional[Path | str] = None,
-    pool_wait_s: float = 0.0,
-    pool_poll_s: float = 15.0,
     colab: Optional[Colab] = None,
     publish_transport: Optional[Any] = None,
     clock: Callable[[], float] = time.monotonic,
@@ -342,17 +291,13 @@ def run_queue(
     log: Callable[[str], None] = lambda s: None,
     trace: Callable[[str], None] = lambda s: None,
 ) -> dict[str, Any]:
-    """Run all jobs in `queue_path` unattended: enforce budgets & pool limits, isolate failures, and book spend."""
-    if sys.platform == "win32":
-        raise Refused("PLATFORM_UNSUPPORTED", "colab-runner runs on Linux or WSL")
-
+    """Run all jobs in `queue_path` unattended: isolate failures, enforce pool limits via launch, and record spend."""
     from colab_runner.launcher import launch_window, reconcile_stopped_outcome
 
     q = QueueSpec.from_file(queue_path)
     eff_state_dir = Path(state_dir).resolve() if state_dir is not None else q.state_dir
     eff_state_dir.mkdir(parents=True, exist_ok=True)
     q.out_root.mkdir(parents=True, exist_ok=True)
-    ledger = LineLedger(eff_state_dir / "line_ledger.json")
     open_lock_path = eff_state_dir / "open.lock"
     state_file = q.out_root / "queue_state.json"
 
@@ -397,34 +342,6 @@ def run_queue(
 
     for idx, job in enumerate(q.jobs):
         rec = records[idx]
-        line_info = ledger.line_summary(job.line)
-        budget = line_info.get("budget_ccu")
-        if not dry and budget is not None and (float(line_info["spent_ccu"]) + job.cap) > float(budget) + 1e-9:
-            rec["state"] = "deferred_budget"
-            rec["status"] = "deferred_budget"
-            rec["error"] = "line %r spent %.3f + cap %.3f exceeds standing budget %.3f" % (
-                job.line, float(line_info["spent_ccu"]), job.cap, float(budget)
-            )
-            log("queue skipping %s: %s" % (job.job_id, rec["error"]))
-            write_json_atomic(state_file, queue_state)
-            continue
-
-        if live_mode and client is not None:
-            deadline = clock() + max(0.0, float(pool_wait_s))
-            slot_ok, slot_why = _has_pool_slot(client, job.card, job.shape)
-            while not slot_ok and clock() < deadline:
-                sleep(min(max(0.1, float(pool_poll_s)), max(0.0, deadline - clock())))
-                slot_ok, slot_why = _has_pool_slot(client, job.card, job.shape)
-            if not slot_ok:
-                rec["state"] = "done"
-                rec["status"] = "pool_ceiling"
-                rec["outcome_bucket"] = "refused-capacity"
-                rec["session_stopped_confirmed"] = True
-                rec["error"] = slot_why
-                log("queue %s refused at pool ceiling: %s" % (job.job_id, slot_why))
-                write_json_atomic(state_file, queue_state)
-                continue
-
         rec["state"] = "running"
         write_json_atomic(state_file, queue_state)
 
@@ -455,6 +372,8 @@ def run_queue(
                 trace=trace,
             )
         except Refused as exc:
+            if exc.code == "PLATFORM_UNSUPPORTED":
+                raise
             err_msg = "%s: %s" % (exc.code, scrub(exc.message))
             rec["status"] = "refused"
             rec["outcome_bucket"] = classify_window_outcome({
@@ -515,9 +434,6 @@ def run_queue(
             write_json_atomic(state_file, queue_state)
             break
 
-        if not dry and outcome is not None:
-            ledger.record_outcome(job.line, outcome, out_dir=job.out_dir)
-
         rec["error"] = err_msg
         write_json_atomic(state_file, queue_state)
 
@@ -553,7 +469,7 @@ def build_board(
     out_dirs: Sequence[Path | str] = (),
     queue_state: Optional[Path | str] = None,
 ) -> dict[str, Any]:
-    """Assemble an at-a-glance view of lines, budgets, ran/running windows, queued next items, and totals."""
+    """Assemble an at-a-glance view of lines, ran/running windows, queued next items, and totals."""
     from colab_runner.launcher import _load_opt_json, _state_paths, status_window
 
     s_dir, _ = _state_paths(state_dir, None, live=True)
@@ -600,29 +516,9 @@ def build_board(
             "flipped_public_at": out_obj.get("flipped_public_at"),
         })
 
-    if not windows:
-        for line_name, info in ledger_data["lines"].items():
-            for w in info["windows"]:
-                windows.append({
-                    "out_dir": w.get("out_dir"),
-                    "window_id": w.get("window_id"),
-                    "line": line_name,
-                    "job": w.get("job"),
-                    "purpose": w.get("purpose"),
-                    "card": w.get("card"),
-                    "state": "finished",
-                    "status": w.get("status"),
-                    "outcome_bucket": w.get("outcome_bucket"),
-                    "spend_ccu": float(w.get("spend_ccu") or 0.0),
-                    "session_stopped_confirmed": w.get("session_stopped_confirmed"),
-                    "collected_outputs": [],
-                    "repo_url": w.get("repo_url"),
-                    "flipped_public_at": w.get("flipped_public_at"),
-                })
-
     next_jobs = [
         j for j in (q_data or {}).get("jobs", [])
-        if j.get("state") in ("queued", "running", "deferred_budget")
+        if j.get("state") in ("queued", "running")
     ]
     counts = {b: 0 for b in OUTCOME_BUCKETS}
     for w in windows:
@@ -640,15 +536,15 @@ def build_board(
 
 def format_board(board: Mapping[str, Any]) -> str:
     """Format `build_board()` as a concise, at-a-glance status report."""
-    lines_out = ["LINES & BUDGETS"]
+    lines_out = ["LINES"]
     lines_map = board.get("lines") or {}
     if not lines_map:
         lines_out.append("  (none)")
     for name, info in lines_map.items():
         c = info["counts"]
         lines_out.append(
-            "  %s  budget=%s  spent=%.6f  remaining=%s  done=%d failed-ours=%d failed-Google=%d refused-capacity=%d"
-            % (name, info["budget_ccu"], float(info["spent_ccu"]), info["remaining_ccu"],
+            "  %s  spent=%.6f  windows=%d  done=%d failed-ours=%d failed-Google=%d refused-capacity=%d"
+            % (name, float(info["spent_ccu"]), info["window_count"],
                c["done"], c["failed-ours"], c["failed-Google"], c["refused-capacity"])
         )
 

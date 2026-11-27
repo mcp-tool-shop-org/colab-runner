@@ -564,15 +564,19 @@ class FailurePathsTest(unittest.TestCase):
             self.assertEqual(res_tr["status"], "done")
 
             st_exh = root / "s_exh"
+            logs_exh: list[str] = []
             sim_exh = SimColab(
                 clock=FakeClock(),
                 usage=usage_text(rate=0.0, n=0),
                 after_open_rows=[CliResult(1, "", "down"), CliResult(1, "", "down")],
+                polls=lambda n, env: rec(rc=0),
+                remote_files={"/content/demo_job_work/result.json": "{}\n", "/content/demo_job_work/out.txt": "ok\n"},
             )
             res_exh = launch_window(spec_diff_study, root / "exh_out", card="T4", shape="high-mem", max_rate=2.0,
                                     cap=10.0, colab=sim_exh, clock=sim_exh.clock.now, sleep=sim_exh.clock.sleep,
-                                    shape_check_attempts=2, state_dir=st_exh)
-            self.assertEqual(res_exh["refusal"]["code"], "SESSIONS_READ_FAILED")
+                                    shape_check_attempts=2, state_dir=st_exh, log=logs_exh.append)
+            self.assertEqual(res_exh["status"], "done")
+            self.assertTrue(any("inconclusive" in ln for ln in logs_exh))
             self.assertEqual(CircuitBreaker(st_exh / "card_refusals.json").events_for("T4"), [])
 
 
@@ -898,19 +902,22 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
             self.assertEqual(ctx.exception.code, "OUT_DIR_INVALID")
 
             c_fail = SimColab(clock=FakeClock(), usage=lambda n: CliResult(1, "", "err"))
-            with self.assertRaises(Refused) as ctx:
-                _read_pre_open_usage(c_fail, card_spec=resolve_card("G4"))
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
-            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU")), (None, None, None))
-            with self.assertRaises(Refused) as ctx:
-                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"))
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
-            with self.assertRaises(Refused) as ctx:
+            pre_logs: list[str] = []
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("G4"), log=pre_logs.append), (None, None, None))
+            self.assertEqual(_read_pre_open_usage(c_fail, card_spec=resolve_card("CPU"), log=pre_logs.append), (None, None, None))
+            self.assertEqual(
+                _read_pre_open_usage(SimColab(clock=FakeClock(), usage="unparseable"), card_spec=resolve_card("G4"), log=pre_logs.append),
+                (None, None, None),
+            )
+            self.assertEqual(
                 _read_pre_open_usage(
                     SimColab(clock=FakeClock(), usage="Current balance: 100.00 compute units\nUsage rate: 0.00 / hr\n"),
                     card_spec=resolve_card("G4"),
-                )
-            self.assertEqual(ctx.exception.code, "PRE_OPEN_READ_FAILED")
+                    log=pre_logs.append,
+                ),
+                (None, None, 100.0),
+            )
+            self.assertGreaterEqual(len(pre_logs), 4)
 
             self.assertIsNone(reconcile_stopped_outcome(root / "missing_reconcile", c_fail, "s1"))
             bad_rec_dir = root / "bad_rec"

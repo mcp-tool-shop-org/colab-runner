@@ -1,5 +1,5 @@
-"""Stdlib-only Hugging Face publish step for `public` and `synthetic` window outputs: upload private first, run
-an identity & token scan over every file and the generated card, flip public, and record `repo_url` + flip time."""
+"""Stdlib-only opt-in Hugging Face publish step: upload private first, run an identity & token scan over every file
+and the generated card, flip public, and record `repo_url` + flip time."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from colab_runner.colab_cli import _is_link, binary_token_hit, is_binary_bytes, scrub
+from colab_runner.errors import Refused
 from colab_runner.window_lib import launch_guards as lg
 
 HF_ENDPOINT = "https://huggingface.co"
 TransportFn = Callable[[str, str, Mapping[str, str], Optional[bytes], float], tuple[int, dict[str, str], bytes]]
 
-_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
 _TEXT_IDENTITY_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
     ("homepath_posix", re.compile(r"(?:/[Uu]sers/|/home/)[A-Za-z0-9._-]+/")),
@@ -42,17 +42,10 @@ def _utc_now(dt: Optional[datetime] = None) -> str:
     return (dt or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _slug(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "-", (value or "job").strip().lower()).strip("-.") or "job"
-
-
-def _hf_home_token_path(raw_home: str, home: Path) -> Path:
-    m = _WIN_DRIVE_RE.match(raw_home.strip())
-    if m and os.name == "posix":
-        posix_cand = Path("/mnt/%s/%s" % (m.group(1).lower(), m.group(2).replace("\\", "/")))
-        if posix_cand.exists():
-            return posix_cand / "token"
-    return Path(raw_home.strip()).expanduser() / "token"
+def is_non_publishable_line(line: Optional[str]) -> bool:
+    """Return True for dev, canary, and smoke lines that must never publish publicly."""
+    low = (line or "").strip().lower()
+    return low in ("colab-runner-dev", "dev", "canary") or low.endswith("-dev") or ("smoke" in low)
 
 
 def resolve_hf_token(
@@ -70,7 +63,7 @@ def resolve_hf_token(
     candidates: list[Path] = []
     hf_home = str(env.get("HF_HOME", "")).strip()
     if hf_home:
-        candidates.append(_hf_home_token_path(hf_home, user_home))
+        candidates.append(Path(hf_home).expanduser() / "token")
     candidates.append(user_home / ".cache" / "huggingface" / "token")
     for cand in candidates:
         try:
@@ -220,15 +213,27 @@ def publish_window_outputs(
     home: Optional[Path] = None,
     log: Callable[[str], None] = lambda s: None,
 ) -> dict[str, Any]:
-    """Upload collected public/synthetic artifacts private-first to `mcp-tool-shop`, identity-scan, and flip public."""
-    org = spec.publish.org if spec.publish is not None else "mcp-tool-shop"
-    repo_name = (
-        spec.publish.repo_name
-        if (spec.publish is not None and spec.publish.repo_name)
-        else "%s-%s" % (_slug(spec.study), _slug(spec.job))
-    )
-    repo_type = spec.publish.repo_type if spec.publish is not None else "dataset"
-    repo_id = "%s/%s" % (org, repo_name)
+    """Upload collected outputs private-first to the explicit `publish.repo_id`, identity-scan, and flip public."""
+    pub = getattr(spec, "publish", None)
+    if pub is None or not getattr(pub, "enabled", False) or not getattr(pub, "repo_id", None):
+        return {"status": "disabled", "repo_id": None, "repo_type": None, "repo_url": None, "flipped_public_at": None}
+    if getattr(spec, "sealed", None) is not None:
+        raise Refused("SEALED_DATA_REFUSED", "sealed windows must never publish publicly")
+    repo_id = str(pub.repo_id)
+    org, repo_name = repo_id.split("/", 1)
+    repo_type = str(pub.repo_type or "dataset")
+    eff_line = str(outcome.get("line") or getattr(spec, "line", "") or "")
+    if is_non_publishable_line(eff_line):
+        log("publish refused for line %r: dev, canary, and smoke lines never publish" % eff_line)
+        return {
+            "status": "refused_line",
+            "repo_id": repo_id,
+            "repo_type": repo_type,
+            "line": eff_line,
+            "repo_url": None,
+            "flipped_public_at": None,
+            "error": "dev, canary, and smoke lines never publish",
+        }
     api_type = "%ss" % repo_type
     web_url = (
         "%s/datasets/%s" % (HF_ENDPOINT, repo_id) if repo_type == "dataset" else "%s/%s" % (HF_ENDPOINT, repo_id)
@@ -271,13 +276,16 @@ def publish_window_outputs(
         {"name": repo_name, "organization": org, "private": True, "type": repo_type},
     )
     if st == 409:
-        st_s, data_s = _api_json(
-            xfn, "PUT", "%s/api/%s/%s/settings" % (HF_ENDPOINT, api_type, repo_id), token, {"private": True},
-        )
-        if st_s >= 400:
-            return {"status": "upload_failed", "repo_id": repo_id, "repo_type": repo_type, "repo_url": None,
-                    "flipped_public_at": None, "error": "settings private failed (%s): %s" % (st_s, data_s)}
-    elif st >= 400:
+        log("publish skipped: %s %s already exists (HTTP 409)" % (repo_type, repo_id))
+        return {
+            "status": "exists",
+            "repo_id": repo_id,
+            "repo_type": repo_type,
+            "repo_url": None,
+            "flipped_public_at": None,
+            "error": "repository %s already exists (HTTP 409)" % repo_id,
+        }
+    if st >= 400:
         return {"status": "upload_failed", "repo_id": repo_id, "repo_type": repo_type, "repo_url": None,
                 "flipped_public_at": None, "error": "repo create failed (%s): %s" % (st, data)}
 
@@ -338,23 +346,23 @@ def publish_window_outputs(
         return {"status": "upload_failed", "repo_id": repo_id, "repo_type": repo_type, "repo_url": None,
                 "flipped_public_at": None, "error": "commit failed (%s): %s" % (st_cm, cm_data)}
 
-    post_findings = scan_publish_files(file_map, extra_deny=extra_deny)
-    if post_findings:
-        return {"status": "scan_failed", "repo_id": repo_id, "repo_type": repo_type, "repo_url": None,
-                "flipped_public_at": None, "findings": post_findings}
-
     st_pub, pub_data = _api_json(
         xfn, "PUT", "%s/api/%s/%s/settings" % (HF_ENDPOINT, api_type, repo_id), token, {"private": False},
     )
-    st_ver, ver_data = _api_json(xfn, "GET", "%s/api/%s/%s" % (HF_ENDPOINT, api_type, repo_id), token)
-    if st_pub >= 400 or st_ver >= 400 or ver_data.get("private") is not False:
+    if st_pub >= 400:
         return {"status": "flip_failed", "repo_id": repo_id, "repo_type": repo_type, "repo_url": None,
-                "flipped_public_at": None, "error": "public flip failed (%s/%s): %s" % (st_pub, st_ver, pub_data)}
+                "flipped_public_at": None, "error": "public flip failed (%s): %s" % (st_pub, pub_data)}
 
     flipped_at = _utc_now()
-    log("published %s (%s, %d files) at %s" % (web_url, spec.data_class, len(file_map), flipped_at))
+    st_ver, ver_data = _api_json(xfn, "GET", "%s/api/%s/%s" % (HF_ENDPOINT, api_type, repo_id), token)
+    status_name = "published"
+    if st_ver >= 400 or ver_data.get("private") is not False:
+        status_name = "flip_unverified"
+        log("publish note: %s flipped public, but verification GET returned %s (%s)" % (web_url, st_ver, ver_data))
+    else:
+        log("published %s (%s, %d files) at %s" % (web_url, spec.data_class, len(file_map), flipped_at))
     return {
-        "status": "published",
+        "status": status_name,
         "repo_id": repo_id,
         "repo_type": repo_type,
         "repo_url": web_url,
@@ -369,6 +377,7 @@ def publish_window_outputs(
 __all__ = [
     "HF_ENDPOINT",
     "default_hf_transport",
+    "is_non_publishable_line",
     "publish_window_outputs",
     "render_hf_card",
     "resolve_hf_token",

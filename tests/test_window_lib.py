@@ -23,7 +23,7 @@ class WindowLibProvenanceTest(unittest.TestCase):
 
     def test_the_vendored_files_match_the_provenance_table_byte_for_byte(self):
         table = self.table()
-        self.assertEqual(sorted(table), ["launch_guards.py", "remote_runner.py"])
+        self.assertEqual(sorted(table), ["launch_guards.py"])
         for name, want in table.items():
             self.assertEqual(hashlib.sha256((LIB / name).read_bytes()).hexdigest(), want, name)
         self.assertEqual(hashlib.sha256((LIB / "__init__.py").read_bytes()).hexdigest(), EMPTY_SHA256)
@@ -38,10 +38,10 @@ class WindowLibProvenanceTest(unittest.TestCase):
 
     def test_no_other_file_sits_in_the_vendored_directory(self):
         names = sorted(p.name for p in LIB.iterdir() if p.name != "__pycache__")
-        self.assertEqual(names, ["PROVENANCE.md", "__init__.py", "launch_guards.py", "remote_runner.py"])
+        self.assertEqual(names, ["PROVENANCE.md", "__init__.py", "launch_guards.py"])
 
     def test_the_vendored_files_have_unix_line_endings(self):
-        for name in ("__init__.py", "launch_guards.py", "remote_runner.py"):
+        for name in ("__init__.py", "launch_guards.py"):
             self.assertNotIn(b"\r\n", (LIB / name).read_bytes(), name)
 
 
@@ -64,7 +64,6 @@ class WheelContentsTest(unittest.TestCase):
         for want in (
             "colab_runner/window_lib/__init__.py",
             "colab_runner/window_lib/launch_guards.py",
-            "colab_runner/window_lib/remote_runner.py",
             "colab_runner/window_lib/PROVENANCE.md",
             "colab_runner/vm/lib.py",
             "colab_runner/vm/start.py",

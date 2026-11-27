@@ -154,8 +154,6 @@ CODES: dict[str, Code] = {
     "SESSION_ALREADY_OPEN": Code("pass a fresh --session name, or stop the existing session first", _FIX),
     "POOL_CEILING_REACHED": Code(
         "close an active Colab session to free a slot below the plan's pool ceiling, then retry", True),
-    "PRE_OPEN_READ_FAILED": Code(
-        "check colab usage (sign-in, network) before opening a GPU window, then retry", True),
     "SESSION_OPEN_FAILED": Code(
         "Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state "
         "before retrying", True),

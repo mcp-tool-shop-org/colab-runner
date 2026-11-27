@@ -574,18 +574,6 @@ class BinaryDownloadScrubTest(unittest.TestCase):
         fake_txt.write_bytes(raw)
         scrub_local(fake_txt)
         self.assertEqual(fake_txt.read_bytes(), raw)
-        # Every text case (LF, CRLF, CR, Unicode, clean and token-bearing) is byte-identical to scrub_file_in_place.
-        for idx, blob in enumerate([
-            b"clean\r\nlines\rcaf\xc3\xa9\n",
-            ("line1\r\n" + "\n".join(leak_lines(self.t)) + "\r\n").encode("utf-8"),
-        ]):
-            a = self.root / ("txt_a_%d.log" % idx)
-            b = self.root / ("txt_b_%d.log" % idx)
-            a.write_bytes(blob)
-            b.write_bytes(blob)
-            scrub_local(a)
-            lg.scrub_file_in_place(b)
-            self.assertEqual(a.read_bytes(), b.read_bytes())
 
     def test_clean_png_nul_byte_and_invalid_utf8_are_byte_identical(self):
         from colab_runner.colab_cli import scrub_local

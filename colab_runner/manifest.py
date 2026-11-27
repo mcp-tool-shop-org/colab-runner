@@ -52,16 +52,15 @@ class StagedInputRecord:
 
 
 DATA_CLASSES = ("public", "synthetic", "private", "sealed")
-PUBLISH_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
-DEFAULT_PUBLISH_ORG = "mcp-tool-shop"
+PUBLISH_REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 
 @dataclass(frozen=True)
 class PublishSpec:
-    """Hugging Face destination declaration for public or synthetic window outputs."""
+    """Opt-in Hugging Face destination declaration for window outputs."""
 
-    org: str = DEFAULT_PUBLISH_ORG
-    repo_name: Optional[str] = None
+    enabled: bool
+    repo_id: Optional[str] = None
     repo_type: str = "dataset"
 
 
@@ -235,12 +234,14 @@ class WindowSpec:
             if not isinstance(raw_dc, str) or raw_dc.strip().lower() not in DATA_CLASSES:
                 raise Refused("SPEC_INVALID", "project.data_class must be one of %s" % ", ".join(DATA_CLASSES))
             data_class = raw_dc.strip().lower()
-        if sealed is not None and data_class in ("public", "synthetic"):
+        publish = _parse_publish_spec(data.get("publish"))
+        if sealed is not None and (data_class in ("public", "synthetic") or (publish is not None and publish.enabled)):
             raise Refused(
                 "SEALED_DATA_REFUSED",
-                "project.data_class cannot be %r when [inputs.sealed] is present" % data_class,
+                "sealed inputs cannot use public/synthetic data_class or publish.enabled = true",
             )
-        publish = _parse_publish_spec(data.get("publish"))
+        if raw_dc is not None and data_class == "private" and publish is not None and publish.enabled:
+            raise Refused("SPEC_INVALID", "publish.enabled = true cannot be combined with project.data_class = 'private'")
         input_files = _parse_input_files(inp.get("files", []))
 
         setup_cmds = tuple(_string_list(job_tbl.get("setup", []), "job.setup"))
@@ -303,20 +304,21 @@ def _parse_publish_spec(raw: Any) -> Optional[PublishSpec]:
         return None
     if not isinstance(raw, Mapping):
         raise Refused("SPEC_INVALID", "publish must be a table/object")
-    raw_org = raw.get("org", DEFAULT_PUBLISH_ORG)
-    if not isinstance(raw_org, str) or not PUBLISH_NAME_RE.fullmatch(raw_org.strip()):
-        raise Refused("SPEC_INVALID", "publish.org must match [A-Za-z0-9._-]+")
-    org = raw_org.strip()
-    raw_name = raw.get("repo_name")
-    repo_name: Optional[str] = None
-    if raw_name is not None:
-        if not isinstance(raw_name, str) or not PUBLISH_NAME_RE.fullmatch(raw_name.strip()):
-            raise Refused("SPEC_INVALID", "publish.repo_name must match [A-Za-z0-9._-]+")
-        repo_name = raw_name.strip()
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise Refused("SPEC_INVALID", "publish.enabled must be a boolean")
     raw_type = raw.get("repo_type", "dataset")
     if not isinstance(raw_type, str) or raw_type.strip().lower() not in ("dataset", "model"):
         raise Refused("SPEC_INVALID", "publish.repo_type must be 'dataset' or 'model'")
-    return PublishSpec(org=org, repo_name=repo_name, repo_type=raw_type.strip().lower())
+    raw_repo_id = raw.get("repo_id")
+    repo_id: Optional[str] = None
+    if raw_repo_id is not None:
+        if not isinstance(raw_repo_id, str) or not PUBLISH_REPO_ID_RE.fullmatch(raw_repo_id.strip()):
+            raise Refused("SPEC_INVALID", "publish.repo_id must be 'owner/name' using [A-Za-z0-9._-]+")
+        repo_id = raw_repo_id.strip()
+    if enabled and not repo_id:
+        raise Refused("SPEC_INVALID", "publish.enabled = true requires an explicit publish.repo_id = 'owner/name'")
+    return PublishSpec(enabled=enabled, repo_id=repo_id, repo_type=raw_type.strip().lower())
 
 
 def _require_table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -836,7 +838,6 @@ def render_vm_script(
 
 __all__ = [
     "DATA_CLASSES",
-    "DEFAULT_PUBLISH_ORG",
     "DEFAULT_SEALED_HOST",
     "InputFileSpec",
     "PublishSpec",

@@ -8,20 +8,20 @@ sidebar:
 ## Threat model
 
 **What it touches.**
-- The Colab session the lane names: it uploads cell files, starts and kills the job it started, downloads the files
+- The Colab session the caller names: it uploads cell files, starts and kills the job it started, downloads the files
   it was asked for, and stops the session. It never sends a signal to a process that belongs to another run of colab-runner (`CR_NOT_OURS`).
-- The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the rig. A bare `Colab.download`
+- The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the local machine. A bare `Colab.download`
   with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
-- The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
+- The environment variables the caller names with `--env`, which it passes to the VM inside the cell file.
 
-**What it does not touch.** No files outside the declared `inputs.files` allowlist under `inputs.root` (during staging), the out dir, its quarantine, and the temp quarantine. Symlinks, NTFS junctions, `..` traversal, whole-path sealed or outside-repo `inputs.root` directories (including any directory without `.git` above the spec), and sealed/restricted paths (matching default patterns or caller `inputs.deny_globs` such as `staging*` or holdout names) are refused unless `[inputs.sealed]` verifies a read-only pre-registration file by SHA-256 and single unfenced declarations of `study`, `allowed_cards`, `allowed_host`, and `sealed_paths` (matched by resolved path against the pre-registration directory), authorized destination card/host, and `--allow-sealed` on live runs. No other Colab session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab` command line and never changes them.
+**What it does not touch.** No files outside the declared `inputs.files` allowlist under `inputs.root` (during staging), the out dir, its quarantine, and the temp quarantine. Symlinks, NTFS junctions, `..` traversal, whole-path sealed or outside-repo `inputs.root` directories (including any directory without `.git` above the spec), and sealed/restricted paths (matching default patterns or caller `inputs.deny_globs` such as `staging*` or holdout names) are refused unless `[inputs.sealed]` verifies a read-only pre-registration file by SHA-256 and single unfenced declarations of `study`, `allowed_cards`, `allowed_host`, and `sealed_paths` (matched by resolved path against the pre-registration directory), authorized destination card/host, and `--allow-sealed` on live runs. No other Colab session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab` command line and never changes them (a Hugging Face token is read only when `[publish] enabled = true` is explicitly configured).
 
-**Network.** Colab CLI (`colab`) to Google Colab, plus optional Hugging Face REST API publish (`huggingface.co`) when a `public` or `synthetic` non-sealed window completes `done` (after closing the Colab session, private upload first, identity scan verified before public flip).
+**Network.** Colab CLI (`colab`) to Google Colab, plus optional Hugging Face REST API publish (`https://huggingface.co`) **only when a job opts in** via `[publish]` with `enabled = true` and an explicit `repo_id` (refused on dev/canary/smoke lines and sealed runs; after closing the Colab session, creates private first, runs an identity scan, flips public, and never alters the window's `status` if publishing fails).
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
 and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged (or removed if
 the move fails, still raising `BinaryDownloadRefused` with `.failures`/`.removed`) and the download is refused (below).
-colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
+colab-runner never deletes the quarantine: the caller must delete it, and must never ship it.
 
 **Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
 elevation.
@@ -32,7 +32,7 @@ Reporting a vulnerability: see [SECURITY.md](https://github.com/mcp-tool-shop-or
 
 ## The scrub and the quarantine
 
-**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the lane's environment. `--env NAME=VALUE`
+**Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the caller's environment. `--env NAME=VALUE`
 puts the value in the runner's own command line. Values reach the VM inside the uploaded notebook cell file, never as arguments to the `colab` CLI.
 Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
 directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
@@ -68,4 +68,4 @@ directories (including partial transfers) are classified by content only (a NUL 
     `Colab(quarantine_dir=...)` to choose the place.
   - Every quarantine path is resolved and checked to stay inside its quarantine folder before the move. A file that
     would land outside it is removed instead, and the download fails with `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-  - colab-runner never deletes a quarantine. **The calling lane must delete it and must never ship it.**
+  - colab-runner never deletes a quarantine. **The caller must delete it and must never ship it.**

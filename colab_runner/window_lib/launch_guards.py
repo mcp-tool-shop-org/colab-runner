@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 OOM_KILL_RE = re.compile(r"\boom_kill\s+([1-9]\d*)\b|\bOut of memory: Killed process\b", re.I)
@@ -29,16 +28,6 @@ def scrub_colab_tokens(text: str) -> str:
     for pattern, repl in TOKEN_SCRUB_PATTERNS:
         out = pattern.sub(repl, out)
     return out
-
-
-def scrub_file_in_place(path: Path) -> None:
-    p = Path(path)
-    if not p.exists() or not p.is_file():
-        return
-    raw = p.read_text(encoding="utf-8", errors="replace")
-    scrubbed = scrub_colab_tokens(raw)
-    if scrubbed != raw:
-        p.write_text(scrubbed, encoding="utf-8", newline="\n")
 
 
 def evaluate_wall_guard(
