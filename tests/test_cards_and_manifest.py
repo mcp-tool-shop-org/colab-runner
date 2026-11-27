@@ -778,6 +778,67 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
             good_dp["outputs"]["download_parts"] = 5
             self.assertEqual(WindowSpec.from_mapping(good_dp, base_dir=root).download_parts, 5)
 
+    def test_mixed_in_repo_and_sealed_directory_staging(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            kit = root / "kit-repo"
+            (kit / ".git").mkdir(parents=True)
+            (kit / "job.sh").write_text("echo ok\n", encoding="utf-8")
+            ext = root / "sealed-ext"
+            (ext / "sub").mkdir(parents=True)
+            (ext / "sub" / "a.txt").write_text("alpha\n", encoding="utf-8")
+            (ext / "empty").mkdir()
+            prereg = ext / "prereg.json"
+            prereg_bytes = json.dumps({
+                "study": "demo", "allowed_cards": ["G4"], "allowed_host": "colab.google.com", "sealed_paths": ["sub"],
+            }).encode("utf-8")
+            prereg.write_bytes(prereg_bytes)
+            _make_readonly(prereg)
+            try:
+                spec = WindowSpec.from_mapping({
+                    "schema_version": 1,
+                    "project": {"repo": "o/r", "study": "demo", "job": "j"},
+                    "compute": {"card": "G4", "shape": "standard", "max_rate": 12.0, "cap": 8.0, "wall_s": 900},
+                    "inputs": {
+                        "root": "..",
+                        "files": ["kit-repo/job.sh", {"src": "sealed-ext/sub", "dst": "sub"}],
+                        "sealed": {
+                            "preregistration_path": "../sealed-ext/prereg.json",
+                            "preregistration_sha256": _sha256_bytes(prereg_bytes),
+                            "allowed_cards": ["G4"],
+                            "allowed_host": "colab.google.com",
+                        },
+                    },
+                    "job": {"run": ["bash kit-repo/job.sh"]},
+                }, base_dir=kit)
+                staged, sealed_rec = stage_inputs(spec, root / "mix.tar.gz", actual_card="G4", live=True, cli_allow_sealed=True)
+                self.assertEqual(sealed_rec["sealed_files"], ["sealed-ext/sub"])
+                self.assertEqual([f["dst"] for f in sealed_rec["files"]], ["sub/a.txt"])
+                self.assertEqual([s.dst for s in staged], ["kit-repo/job.sh", "sub/a.txt"])
+                (kit / "empty").mkdir()
+                (kit / "sub").mkdir()
+                (kit / "sub" / "a.txt").write_text("k\n", encoding="utf-8")
+                for bad_src, code in (("kit-repo/empty", "INPUT_FILE_MISSING"), ("kit-repo/missing", "INPUT_FILE_MISSING")):
+                    bad_spec = WindowSpec.from_mapping({
+                        "schema_version": 1, "project": {"repo": "o/r", "study": "demo", "job": "j"},
+                        "compute": {"card": "G4", "shape": "standard", "max_rate": 12.0, "cap": 8.0, "wall_s": 900},
+                        "inputs": {"root": "..", "files": [bad_src]}, "job": {"run": ["echo"]},
+                    }, base_dir=kit)
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(bad_spec, root / "bad.tar.gz")
+                    self.assertEqual(ctx.exception.code, code)
+                sym_spec = WindowSpec.from_mapping({
+                    "schema_version": 1, "project": {"repo": "o/r", "study": "demo", "job": "j"},
+                    "compute": {"card": "G4", "shape": "standard", "max_rate": 12.0, "cap": 8.0, "wall_s": 900},
+                    "inputs": {"root": "..", "files": ["kit-repo/sub"]}, "job": {"run": ["echo"]},
+                }, base_dir=kit)
+                with mock.patch("colab_runner.manifest._is_link", side_effect=lambda p: p.name == "a.txt"):
+                    with self.assertRaises(Refused) as ctx:
+                        stage_inputs(sym_spec, root / "sym.tar.gz")
+                    self.assertEqual(ctx.exception.code, "INPUT_SYMLINK_REFUSED")
+            finally:
+                _make_writable(prereg)
+
 
 if __name__ == "__main__":
     unittest.main()
