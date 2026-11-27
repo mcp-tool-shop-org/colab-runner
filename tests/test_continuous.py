@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -17,71 +16,11 @@ from colab_runner.__main__ import main
 from colab_runner.colab_cli import BinaryDownloadRefused, CliResult
 from colab_runner.errors import Refused
 from colab_runner.launcher import launch_window
-from colab_runner.publish import publish_window_outputs, resolve_hf_token, scan_publish_files
-from colab_runner.queue import LineLedger, QueueSpec, build_board, classify_window_outcome, format_board, run_queue
+from colab_runner.queue import QueueSpec, build_board, classify_window_outcome, format_board, run_queue
 from colab_runner.window_lib import launch_guards as lg
 from tests.fakes import FakeClock, rec, usage_text
 from tests.test_launcher import SimColab, _write_spec
 from tests.test_tokens import fake_tokens
-
-
-class _MemoryHfTransport:
-    """Offline Hugging Face REST mock recording every call and enforcing private-before-public ordering."""
-
-    def __init__(self, *, conflict_409: bool = False):
-        self.calls: list[tuple[str, str, dict | None]] = []
-        self.repos: dict[str, dict] = {}
-        self.conflict_409 = conflict_409
-        if conflict_409:
-            self.repos["datasets/org/existing-ds"] = {"private": False, "files": {"existing.txt": "keep"}}
-
-    def __call__(self, method: str, url: str, headers: dict, body: bytes | None, timeout: float = 60.0):
-        parsed = None
-        if body and headers.get("Content-Type") == "application/json":
-            parsed = json.loads(body.decode("utf-8"))
-        self.calls.append((method, url, parsed))
-
-        if method == "POST" and url.endswith("/api/repos/create"):
-            repo_id = "%s/%s" % (parsed["organization"], parsed["name"])
-            key = "%ss/%s" % (parsed["type"], repo_id)
-            if self.conflict_409 and key in self.repos:
-                return 409, {}, json.dumps({"error": "already exists"}).encode("utf-8")
-            self.repos[key] = {"private": bool(parsed["private"]), "files": {}}
-            return 200, {}, json.dumps({"url": url}).encode("utf-8")
-
-        if "/settings" in url and method == "PUT":
-            key = url.split("/api/", 1)[1].rsplit("/settings", 1)[0]
-            self.repos.setdefault(key, {})["private"] = bool(parsed["private"])
-            return 200, {}, json.dumps(self.repos[key]).encode("utf-8")
-
-        if "/preupload/main" in url and method == "POST":
-            out_files = [
-                {"path": f["path"], "uploadMode": "lfs" if f["path"].endswith(".bin") else "regular"}
-                for f in parsed["files"]
-            ]
-            return 200, {}, json.dumps({"files": out_files}).encode("utf-8")
-
-        if url.endswith("/info/lfs/objects/batch") and method == "POST":
-            objs = []
-            for o in parsed["objects"]:
-                objs.append({
-                    "oid": o["oid"],
-                    "size": o["size"],
-                    "actions": {"upload": {"href": "https://lfs.example/upload/%s" % o["oid"], "header": {}}},
-                })
-            return 200, {}, json.dumps({"objects": objs}).encode("utf-8")
-
-        if url.startswith("https://lfs.example/upload/") and method == "PUT":
-            return 200, {}, b""
-
-        if "/commit/main" in url and method == "POST":
-            return 200, {}, json.dumps({"commitOid": "abc123def456"}).encode("utf-8")
-
-        if method == "GET" and "/api/" in url:
-            key = url.split("/api/", 1)[1]
-            return 200, {}, json.dumps(self.repos.get(key, {"private": True})).encode("utf-8")
-
-        return 404, {}, b"{}"
 
 
 def _write_queue_spec(root: Path, jobs_toml: str) -> Path:
@@ -269,239 +208,6 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(outcome_b["refusal"]["code"], "BINARY_DOWNLOAD_TOKEN")
             self.assertEqual(outcome_b["missing_outputs"], [])
 
-    def test_hf_publish_opt_in_rules_non_publishable_lines_and_status_preservation(self):
-        from colab_runner.manifest import WindowSpec
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            base_spec = _write_spec(root, card="T4", shape="standard", cap=2.5, max_rate=1.6, wall_s=180)
-            base_text = base_spec.read_text(encoding="utf-8")
-
-            # Opt-in validation edge cases: non-table, non-bool enabled, bad repo_type, bad repo_id, missing repo_id, private data_class
-            bad_p = root / "bad_pub_cfg.toml"
-            bad_p.write_text('publish = "bad"\n' + base_text, encoding="utf-8")
-            with self.assertRaises(Refused) as ctx_nr:
-                WindowSpec.from_file(bad_p)
-            self.assertEqual(ctx_nr.exception.code, "SPEC_INVALID")
-            for snippet in (
-                '\n[publish]\nenabled = "yes"\nrepo_id = "org/ds"\n',
-                '\n[publish]\nenabled = true\nrepo_type = "space"\nrepo_id = "org/ds"\n',
-                '\n[publish]\nenabled = true\nrepo_id = "invalid-no-slash"\n',
-                '\n[publish]\nenabled = true\n',
-            ):
-                bad_p.write_text(base_text + snippet, encoding="utf-8")
-                with self.assertRaises(Refused) as ctx_nr:
-                    WindowSpec.from_file(bad_p)
-                self.assertEqual(ctx_nr.exception.code, "SPEC_INVALID")
-
-            bad_priv = root / "bad_priv.toml"
-            bad_priv.write_text(
-                base_text.replace("[project]", '[project]\ndata_class = "private"')
-                + '\n[publish]\nenabled = true\nrepo_id = "org/demo-ds"\n',
-                encoding="utf-8",
-            )
-            with self.assertRaises(Refused) as ctx_pr:
-                WindowSpec.from_file(bad_priv)
-            self.assertEqual(ctx_pr.exception.code, "SPEC_INVALID")
-
-            # Without [publish] enabled=true, zero publish happens even with a transport passed
-            tr_none = _MemoryHfTransport()
-            clk0 = FakeClock()
-            sim0 = SimColab(
-                clock=clk0,
-                sessions_rows=[],
-                usage=usage_text(rate=1.4, n=1),
-                polls=lambda n, env: rec(rc=0, progress=1),
-                remote_files={
-                    "/content/demo_job_work/result.json": json.dumps({"ok": True}).encode("utf-8"),
-                    "/content/demo_job_work/out.txt": b"clean\n",
-                    "/content/demo_job_out/vm_card.json": json.dumps({"ok": True}).encode("utf-8"),
-                },
-            )
-            res_none = launch_window(
-                base_spec, root / "no_pub_out", colab=sim0, publish_transport=tr_none,
-                clock=clk0.now, sleep=clk0.sleep, state_dir=root / "pub_state",
-            )
-            self.assertEqual((res_none["status"], res_none["publish"], res_none["repo_url"]), ("done", None, None))
-            self.assertEqual(tr_none.calls, [])
-
-            # Opt-in synthetic launch -> private first, scan, flip public, verify
-            spec = root / "pub_spec.toml"
-            spec.write_text(
-                base_text.replace(
-                    "[project]",
-                    '[project]\ndata_class = "synthetic"\npurpose = "Synthetic HF upload check"\nline = "eval-main"',
-                ) + '\n[publish]\nenabled = true\nrepo_id = "org/demo-ds"\nrepo_type = "dataset"\n',
-                encoding="utf-8",
-            )
-            hf_dir = root / "hf_home"
-            hf_dir.mkdir()
-            (hf_dir / "token").write_text("hf_test_token_value\n", encoding="utf-8")
-            self.assertEqual(resolve_hf_token(environ={"HF_HOME": str(hf_dir)}), "hf_test_token_value")
-
-            clk = FakeClock()
-            tr = _MemoryHfTransport()
-            sim = SimColab(
-                clock=clk,
-                sessions_rows=[],
-                usage=usage_text(rate=1.4, n=1),
-                polls=lambda n, env: rec(rc=0, progress=1),
-                remote_files={
-                    "/content/demo_job_work/result.json": json.dumps({"ok": True}).encode("utf-8"),
-                    "/content/demo_job_work/out.txt": b"clean synthetic\n",
-                    "/content/demo_job_out/vm_card.json": json.dumps({"ok": True}).encode("utf-8"),
-                },
-            )
-            with mock.patch.dict(os.environ, {"HF_HOME": str(hf_dir)}, clear=False):
-                os.environ.pop("HF_TOKEN", None)
-                os.environ.pop("COLAB_RUNNER_HF_TOKEN", None)
-                res = launch_window(
-                    spec, root / "pub_out", colab=sim, publish_transport=tr,
-                    clock=clk.now, sleep=clk.sleep, state_dir=root / "pub_state",
-                )
-            self.assertEqual(res["status"], "done", res)
-            self.assertEqual(res["exit_code"], 0)
-            self.assertEqual(res["repo_url"], "https://huggingface.co/datasets/org/demo-ds")
-            self.assertTrue(res["flipped_public_at"])
-            self.assertEqual(res["publish"]["status"], "published")
-            self.assertTrue(res["publish"]["uploaded_private_first"])
-            self.assertEqual(res["publish"]["identity_scan"], "clean")
-            methods_urls = [(m, u) for m, u, _ in tr.calls]
-            create_i = methods_urls.index(("POST", "https://huggingface.co/api/repos/create"))
-            commit_i = next(i for i, (m, u) in enumerate(methods_urls) if m == "POST" and u.endswith("/commit/main"))
-            flip_i = max(i for i, (m, u) in enumerate(methods_urls) if m == "PUT" and u.endswith("/settings"))
-            self.assertLess(create_i, commit_i)
-            self.assertLess(commit_i, flip_i)
-
-            # A.2: dev, canary, and smoke lines refuse to publish even when enabled=true (and keep status=done, exit_code=0)
-            for dev_line in ("colab-runner-dev", "canary", "nightly-smoke"):
-                tr_dev = _MemoryHfTransport()
-                clk_d = FakeClock()
-                sim_d = SimColab(
-                    clock=clk_d, sessions_rows=[], usage=usage_text(rate=1.4, n=1),
-                    polls=lambda n, env: rec(rc=0, progress=1),
-                    remote_files={
-                        "/content/demo_job_work/result.json": b'{"ok":true}\n',
-                        "/content/demo_job_work/out.txt": b"ok\n",
-                        "/content/demo_job_out/vm_card.json": b'{"ok":true}\n',
-                    },
-                )
-                r_dev = launch_window(
-                    spec, root / ("dev_%s" % dev_line), line=dev_line, colab=sim_d, publish_transport=tr_dev,
-                    clock=clk_d.now, sleep=clk_d.sleep, state_dir=root / "pub_state",
-                )
-                self.assertEqual((r_dev["status"], r_dev["exit_code"]), ("done", 0))
-                self.assertEqual(r_dev["publish"]["status"], "refused_line")
-                self.assertIsNone(r_dev["repo_url"])
-                self.assertEqual(tr_dev.calls, [])
-
-            # M3 + H1: 409 on create records publish.status="exists", leaves existing public repo untouched, window stays done/0
-            spec_409 = root / "spec_409.toml"
-            spec_409.write_text(spec.read_text(encoding="utf-8").replace("org/demo-ds", "org/existing-ds"), encoding="utf-8")
-            tr_409 = _MemoryHfTransport(conflict_409=True)
-            clk_409 = FakeClock()
-            sim_409 = SimColab(
-                clock=clk_409, sessions_rows=[], usage=usage_text(rate=1.4, n=1),
-                polls=lambda n, env: rec(rc=0, progress=1),
-                remote_files={
-                    "/content/demo_job_work/result.json": b'{"ok":true}\n',
-                    "/content/demo_job_work/out.txt": b"ok\n",
-                    "/content/demo_job_out/vm_card.json": b'{"ok":true}\n',
-                },
-            )
-            with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_tok_409"}):
-                r_409 = launch_window(
-                    spec_409, root / "out_409", colab=sim_409, publish_transport=tr_409,
-                    clock=clk_409.now, sleep=clk_409.sleep, state_dir=root / "pub_state",
-                )
-            self.assertEqual((r_409["status"], r_409["exit_code"]), ("done", 0))
-            self.assertEqual(r_409["publish"]["status"], "exists")
-            self.assertEqual(len(tr_409.calls), 1)
-            self.assertEqual(tr_409.repos["datasets/org/existing-ds"], {"private": False, "files": {"existing.txt": "keep"}})
-
-            # H1: upload failure leaves finished window done, exit 0, with publish.status recording the failure
-            def fail_upload(m, u, h, b, t=60):
-                if "preupload" in u:
-                    return (500, {}, b'{"err":"down"}')
-                if "create" in u:
-                    return (200, {}, b"{}")
-                if m == "GET":
-                    return (200, {}, b'{"private":true}')
-                return (200, {}, b"{}")
-
-            clk_h1 = FakeClock()
-            sim_h1 = SimColab(
-                clock=clk_h1, sessions_rows=[], usage=usage_text(rate=1.4, n=1),
-                polls=lambda n, env: rec(rc=0, progress=1),
-                remote_files={
-                    "/content/demo_job_work/result.json": b'{"ok":true}\n',
-                    "/content/demo_job_work/out.txt": b"ok\n",
-                    "/content/demo_job_out/vm_card.json": b'{"ok":true}\n',
-                },
-            )
-            with mock.patch.dict(os.environ, {"HF_TOKEN": "hf_tok_h1"}):
-                r_h1 = launch_window(
-                    spec, root / "out_h1", colab=sim_h1, publish_transport=fail_upload,
-                    clock=clk_h1.now, sleep=clk_h1.sleep, state_dir=root / "pub_state",
-                )
-            self.assertEqual((r_h1["status"], r_h1["exit_code"]), ("done", 0))
-            self.assertEqual(r_h1["publish"]["status"], "upload_failed")
-            self.assertIsNone(r_h1["repo_url"])
-
-            # local_cpu + enabled=true skips publish; failed job + enabled=true records skipped_not_done
-            cpu_pub_spec = root / "cpu_pub.toml"
-            cpu_pub_spec.write_text(
-                spec.read_text(encoding="utf-8").replace('card = "T4"', 'card = "CPU"').replace('shape = "standard"\n', ""),
-                encoding="utf-8",
-            )
-            if os.name == "posix":
-                r_cpu_pub = launch_window(cpu_pub_spec, root / "cpu_pub_out", local_cpu=True)
-                self.assertEqual((r_cpu_pub["status"], r_cpu_pub["publish"]["status"]), ("done", "skipped_local_cpu"))
-            clk_fail = FakeClock()
-            sim_fail = SimColab(clock=clk_fail, sessions_rows=[], usage=usage_text(rate=1.4, n=1), polls=lambda n, env: rec(rc=2, progress=1))
-            r_not_done = launch_window(spec, root / "fail_pub_out", colab=sim_fail, clock=clk_fail.now, sleep=clk_fail.sleep, state_dir=root / "pub_state")
-            self.assertEqual((r_not_done["status"], r_not_done["publish"]["status"]), ("failed", "skipped_not_done"))
-
-            # Identity scan blocks leaked email / homepath before public flip
-            bad_out = root / "bad_pub"
-            (bad_out / "collected").mkdir(parents=True)
-            (bad_out / "collected" / "weights.bin").write_bytes(b"\x00/home/alice/secret\n")
-            wspec = WindowSpec.from_file(spec)
-            tr2 = _MemoryHfTransport()
-            bad_res = publish_window_outputs(
-                spec=wspec, out_dir=bad_out, outcome=res, transport=tr2, environ={"HF_TOKEN": "hf_abc"},
-            )
-            self.assertEqual(bad_res["status"], "scan_failed")
-            self.assertEqual(tr2.calls, [])
-            self.assertTrue(any(f["reason"] == "homepath_posix" for f in scan_publish_files({"x": b"/home/alice/a"})))
-
-            # Sealed + data_class = public or publish.enabled = true is refused up front
-            spec_sealed_pub = root / "sealed_pub.toml"
-            spec_sealed_pub.write_text(
-                'schema_version = 1\n'
-                '[project]\nrepo = "o/r"\nstudy = "s"\njob = "j"\ndata_class = "public"\n'
-                '[compute]\ncard = "CPU"\ncap = 1.0\nwall_s = 60\n'
-                '[inputs]\nroot = "."\nfiles = []\n'
-                '[inputs.sealed]\npreregistration_path = "p.txt"\n'
-                f'preregistration_sha256 = "{hashlib.sha256(b"x").hexdigest()}"\n'
-                'allowed_cards = ["CPU"]\nallowed_host = "colab.google.com"\n'
-                '[job]\nrun = ["true"]\n',
-                encoding="utf-8",
-            )
-            with self.assertRaises(Refused) as ctx_sp:
-                WindowSpec.from_file(spec_sealed_pub)
-            self.assertEqual(ctx_sp.exception.code, "SEALED_DATA_REFUSED")
-
-            spec_sealed_en = root / "sealed_en.toml"
-            spec_sealed_en.write_text(
-                spec_sealed_pub.read_text(encoding="utf-8").replace('data_class = "public"\n', "")
-                + '\n[publish]\nenabled = true\nrepo_id = "org/s"\n',
-                encoding="utf-8",
-            )
-            with self.assertRaises(Refused) as ctx_se:
-                WindowSpec.from_file(spec_sealed_en)
-            self.assertEqual(ctx_se.exception.code, "SEALED_DATA_REFUSED")
-
     def test_queue_failure_isolation_board_and_four_way_counts(self):
         if os.name != "posix":
             self.skipTest("queue --local-cpu execution requires POSIX bash/nohup")
@@ -520,7 +226,7 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             s1 = root / "j1.toml"
             s1.write_text(
                 'schema_version = 1\n'
-                '[project]\nrepo = "org/q"\nstudy = "q-study"\njob = "j1"\nline = "l1"\ndata_class = "synthetic"\n'
+                '[project]\nrepo = "org/q"\nstudy = "q-study"\njob = "j1"\nline = "l1"\n'
                 '[compute]\ncard = "CPU"\npoll_s = 0.1\nwall_s = 30\ncap = 1.0\n'
                 '[inputs]\nroot = "."\nfiles = ["ok.py"]\n'
                 '[job]\nrun = ["python3 ok.py"]\n[outputs]\ncollect = ["result.json"]\n',
@@ -561,17 +267,20 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(qres["counts"], {"done": 2, "failed-ours": 1, "failed-Google": 0, "refused-capacity": 0})
             self.assertEqual([j["status"] for j in qres["jobs"]], ["done", "failed", "done"])
 
-            # Board CLI & formatted output
-            b = build_board(state_dir=root / "q_state", out_root=root / "q_runs")
+            # Board scans outcome.json under --out-root and computes per-line spend + four-way counts
+            b = build_board(out_root=root / "q_runs")
             txt = format_board(b)
             self.assertIn("LINES\n", txt)
             self.assertIn("Recovery window after failure", txt)
+            self.assertEqual(b["lines"]["l1"]["window_count"], 3)
+            self.assertEqual(b["lines"]["l1"]["counts"], {"done": 2, "failed-ours": 1, "failed-Google": 0, "refused-capacity": 0})
+            self.assertAlmostEqual(b["lines"]["l1"]["spent_ccu"], b["totals"]["spend_ccu"], places=6)
             self.assertEqual(b["totals"]["counts"]["done"], 2)
             self.assertEqual(b["totals"]["counts"]["failed-ours"], 1)
 
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc_board = main(["board", "--state-dir", str(root / "q_state"), "--out-root", str(root / "q_runs")])
+                rc_board = main(["board", "--out-root", str(root / "q_runs")])
             self.assertEqual(rc_board, 0)
             self.assertIn("TOTALS  windows=3", out.getvalue())
 
@@ -581,104 +290,51 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(classify_window_outcome({"status": "unreachable", "opened": True}), "failed-Google")
             self.assertFalse(lg.evaluate_wall_guard(elapsed_s=1.0, wall_s=10.0, grace_s=0.0)["tripped"])
 
-    def test_publish_queue_and_cli_edge_paths(self):
-        import urllib.error
-        from colab_runner.manifest import WindowSpec
-        from colab_runner.publish import default_hf_transport
-        from colab_runner.queue import build_board
-
+    def test_board_outcome_scan_and_queue_edge_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # 1) Token lookup fallbacks
-            fake_home = root / "home"
-            (fake_home / ".cache" / "huggingface").mkdir(parents=True)
-            (fake_home / ".cache" / "huggingface" / "token").write_text("hf_cache_tok\n", encoding="utf-8")
-            self.assertEqual(resolve_hf_token(environ={}, home=fake_home), "hf_cache_tok")
-            self.assertIsNone(resolve_hf_token(environ={}, home=root / "empty_home"))
-
-            # 2) default_hf_transport success + HTTPError
-            resp_mock = mock.MagicMock()
-            resp_mock.__enter__.return_value = resp_mock
-            resp_mock.status = 200
-            resp_mock.headers = {"Content-Type": "application/json"}
-            resp_mock.read.return_value = b'{"ok":true}'
-            with mock.patch("colab_runner.publish.urllib.request.urlopen", return_value=resp_mock):
-                st, hdrs, body = default_hf_transport("GET", "https://huggingface.co/api/whoami", {}, None)
-            self.assertEqual((st, hdrs["content-type"], body), (200, "application/json", b'{"ok":true}'))
-            http_err = urllib.error.HTTPError("https://huggingface.co/x", 404, "not found", {}, io.BytesIO(b"nope"))
-            try:
-                with mock.patch("colab_runner.publish.urllib.request.urlopen", side_effect=http_err):
-                    st_e, _, body_e = default_hf_transport("GET", "https://huggingface.co/x", {}, None)
-                self.assertEqual((st_e, body_e), (404, b"nope"))
-            finally:
-                http_err.close()
-
-            # 3) Publish LFS, model repo_type, deny_terms, token_missing, flip_unverified (L1), and error responses
             spec = _write_spec(root, card="T4", shape="standard", cap=2.5, max_rate=1.6, wall_s=180)
-            spec.write_text(
-                spec.read_text(encoding="utf-8").replace("[project]", '[project]\ndata_class = "public"\nline = "model-eval"')
-                + '\n[publish]\nenabled = true\nrepo_type = "model"\nrepo_id = "org/demo-model"\n',
+            base_text = spec.read_text(encoding="utf-8")
+
+            # 1) Multi-line outcome.json scanning under --out-root (including nested subdirs & quarantine skip)
+            scan_root = root / "scan_root"
+            for rel, rec_data in (
+                ("batch_a/w1", {"window_id": "id-1", "line": "l1", "project": {"job": "j1", "purpose": "p1"}, "card": "T4", "status": "done", "spend_ccu": 1.25, "session_stopped_confirmed": True}),
+                ("batch_a/w2", {"window_id": "id-2", "line": "l1", "project": {"job": "j2", "purpose": "p2"}, "card": "T4", "status": "unreachable", "opened": True, "spend_ccu": 0.5, "session_stopped_confirmed": True}),
+                ("batch_b/w3", {"window_id": "id-3", "line": "l2", "project": {"job": "j3", "purpose": "p3"}, "card": "T4", "status": "open_failed", "opened": False, "refusal": {"code": "POOL_CEILING_REACHED", "message": "full"}, "spend_ccu": 0.0, "session_stopped_confirmed": True}),
+                ("batch_b/w3.quarantine/ignored", {"window_id": "id-q", "line": "l2", "status": "done", "spend_ccu": 99.0}),
+            ):
+                d = scan_root / rel
+                d.mkdir(parents=True)
+                (d / "outcome.json").write_text(json.dumps(rec_data), encoding="utf-8")
+            (scan_root / "pending_win").mkdir(parents=True)
+            (scan_root / "pending_win" / "window_meta.json").write_text(
+                json.dumps({"window_id": "id-p", "line": "l3", "project": {"job": "jp", "purpose": "pending"}, "card": "T4"}),
                 encoding="utf-8",
             )
-            wspec = WindowSpec.from_file(spec)
-            pub_dir = root / "pub_lfs"
-            (pub_dir / "collected").mkdir(parents=True)
-            (pub_dir / "collected" / "weights.bin").write_bytes(b"\x00BINARY_DATA")
-            (pub_dir / "collected" / "README.md").write_text("ignored collected readme", encoding="utf-8")
-            base_out = {"project": {"purpose": "LFS test", "line": "model-eval"}, "card": "T4", "spend_ccu": 0.1, "elapsed_s": 10}
-            tr_lfs = _MemoryHfTransport()
-            r_lfs = publish_window_outputs(
-                spec=wspec, out_dir=pub_dir, outcome=base_out, transport=tr_lfs, environ={"HF_TOKEN": "hf_x"},
-            )
-            self.assertEqual(r_lfs["status"], "published")
-            self.assertEqual(r_lfs["repo_url"], "https://huggingface.co/org/demo-model")
-            self.assertEqual(publish_window_outputs(spec=wspec, out_dir=pub_dir, outcome=base_out, environ={})["status"], "token_missing")
+            board = build_board(out_root=scan_root)
+            self.assertEqual(board["lines"]["l1"], {"line": "l1", "spent_ccu": 1.75, "window_count": 2, "counts": {"done": 1, "failed-ours": 0, "failed-Google": 1, "refused-capacity": 0}})
+            self.assertEqual(board["lines"]["l2"], {"line": "l2", "spent_ccu": 0.0, "window_count": 1, "counts": {"done": 0, "failed-ours": 0, "failed-Google": 0, "refused-capacity": 1}})
+            self.assertNotIn("l3", board["lines"])
+            self.assertEqual(board["totals"]["windows"], 4)
+            self.assertEqual(board["totals"]["spend_ccu"], 1.75)
 
-            # L1: PUT /settings 200 followed by GET verification failure -> flip_unverified with repo_url
-            def unverified_flip(m, u, h, b, t=60):
-                if m == "GET" and u.endswith("/org/demo-model"):
-                    call_n = unverified_flip.gets = getattr(unverified_flip, "gets", 0) + 1
-                    return (200, {}, b'{"private":true}') if call_n == 1 else (500, {}, b'{"err":"verify down"}')
-                if "preupload" in u:
-                    return (200, {}, b'{"files":[{"path":"README.md","uploadMode":"regular"},{"path":"weights.bin","uploadMode":"regular"}]}')
-                return (200, {}, b'{"commitOid":"abc"}')
+            out_b, err_b = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out_b), contextlib.redirect_stderr(err_b):
+                self.assertEqual(main(["board", "--out-root", str(scan_root), "--json"]), 0)
+            self.assertIn('"spent_ccu": 1.75', out_b.getvalue())
 
-            r_unv = publish_window_outputs(
-                spec=wspec, out_dir=pub_dir, outcome=base_out, transport=unverified_flip, environ={"HF_TOKEN": "hf_x"},
-            )
-            self.assertEqual(r_unv["status"], "flip_unverified")
-            self.assertEqual(r_unv["repo_url"], "https://huggingface.co/org/demo-model")
-            self.assertTrue(r_unv["flipped_public_at"])
-
-            self.assertEqual(scan_publish_files({"a.bin": b"\x00secret_tok", "b.txt": b"secret_tok"}, extra_deny=["secret_tok"])[0]["reason"], "deny_term")
-            for fail_step in (
-                lambda m, u, h, b, t=60: (500, {}, b'{"err":"create"}') if "create" in u else (200, {}, b"{}"),
-                lambda m, u, h, b, t=60: (200, {}, b'{"private":false}') if m == "GET" else (200, {}, b"{}"),
-                lambda m, u, h, b, t=60: (500, {}, b"{}") if "preupload" in u else ((200, {}, b'{"private":true}') if m == "GET" else (200, {}, b"{}")),
-                lambda m, u, h, b, t=60: (500, {}, b"{}") if "commit" in u else ((200, {}, b'{"private":true}') if m == "GET" else (200, {}, b'{"files":[]}')),
-                lambda m, u, h, b, t=60: (500, {}, b"{}") if "settings" in u else ((200, {}, b'{"private":true}') if m == "GET" else (200, {}, b'{"files":[]}')),
-            ):
-                r_err = publish_window_outputs(
-                    spec=wspec, out_dir=pub_dir, outcome=base_out, transport=fail_step, environ={"HF_TOKEN": "hf_x"},
-                )
-                self.assertIn(r_err["status"], ("upload_failed", "flip_failed"))
-
-            # 4) Queue validation errors, dry-run via CLI, card mix enforced by cards.py, pool ceiling, halt on unconfirmed stop
+            # 2) Queue validation errors, dry-run via CLI, card mix enforced by cards.py, pool ceiling, halt on unconfirmed stop
             with self.assertRaises(Refused):
                 QueueSpec.from_file(root / "missing_q.toml")
             spec_g4 = root / "g4.toml"
             spec_g4.write_text(
-                spec.read_text(encoding="utf-8")
-                .replace('card = "T4"', 'card = "G4"')
-                .replace('study = "demo-study"', 'study = "same-study"')
-                .replace("enabled = true", "enabled = false"),
+                base_text.replace('card = "T4"', 'card = "G4"').replace('study = "demo-study"', 'study = "same-study"'),
                 encoding="utf-8",
             )
             spec_t4 = root / "t4.toml"
             spec_t4.write_text(
-                spec.read_text(encoding="utf-8")
-                .replace('study = "demo-study"', 'study = "same-study"')
-                .replace("enabled = true", "enabled = false"),
+                base_text.replace('study = "demo-study"', 'study = "same-study"'),
                 encoding="utf-8",
             )
             clk_mix = FakeClock()
@@ -724,17 +380,6 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             )
             self.assertEqual(q_full["jobs"][0]["outcome_bucket"], "refused-capacity")
 
-            # Ledger-only board + idempotent spend update
-            led = LineLedger(root / "qs_full" / "line_ledger.json")
-            led.record_outcome("lf", {"window_id": "wid-1", "project": {"job": "j", "purpose": "p"}, "card": "T4", "status": "done", "spend_ccu": 1.25}, out_dir=root / "none")
-            led.record_outcome("lf", {"window_id": "wid-1", "project": {"job": "j", "purpose": "p"}, "card": "T4", "status": "done", "spend_ccu": 1.5}, out_dir=root / "none")
-            b_led = build_board(state_dir=root / "qs_full")
-            self.assertEqual(b_led["lines"]["lf"]["spent_ccu"], 1.5)
-            out_b, err_b = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out_b), contextlib.redirect_stderr(err_b):
-                self.assertEqual(main(["board", "--state-dir", str(root / "qs_full"), "--json"]), 0)
-            self.assertIn('"spent_ccu": 1.5', out_b.getvalue())
-
             # Unconfirmed stop halts queue cleanly
             clk_w = FakeClock()
             q_wait = _write_queue_spec(
@@ -761,11 +406,6 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             with mock.patch.object(launcher_mod, "launch_window", side_effect=RuntimeError("boom")):
                 q_err = run_queue(q_err_spec, local_cpu=True)
             self.assertEqual((q_err["jobs"][0]["status"], q_err["jobs"][0]["outcome_bucket"]), ("error", "failed-ours"))
-            bad_led = root / "bad_led.json"
-            bad_led.write_text("{corrupt", encoding="utf-8")
-            self.assertEqual(LineLedger(bad_led).line_summary("x")["window_count"], 0)
-            bad_led.write_text("[1, 2]", encoding="utf-8")
-            self.assertEqual(LineLedger(bad_led).line_summary("x")["window_count"], 0)
 
 
 if __name__ == "__main__":

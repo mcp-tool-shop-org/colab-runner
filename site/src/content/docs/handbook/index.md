@@ -14,9 +14,7 @@ It does four things:
    a status file and a log the runner follows.
 2. **Watches it inside a cap.** Stops a running window only for cap (`own rate x elapsed`), wall, or a dead/stalled job,
    logging flaky account reads or mid-run rate drift without aborting healthy work.
-3. **Scrubs and optionally publishes.** Scrubs every log and downloaded file (quarantining binaries with token hits), and
-   when `[publish]` is opted in with `enabled = true` and an explicit `repo_id`, uploads finished non-dev/non-canary/non-smoke
-   outputs private-first to Hugging Face after an identity scan.
+3. **Scrubs every output.** Scrubs every log and downloaded file in place, and quarantines any binary file containing a token.
 4. **Always tries to stop and record.** Stops sessions on every exit, records spend by `line` (a short label grouping
    related runs) and `purpose`, runs unattended multi-job queues (`queue run`), and summarizes progress in `board`.
 

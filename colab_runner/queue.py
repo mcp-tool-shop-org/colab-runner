@@ -1,4 +1,4 @@
-"""Continuous work engine: per-line spend ledger (`LineLedger`), unattended multi-job queue, and board."""
+"""Continuous work engine: unattended multi-job queue, four-way outcome buckets, and outcome-scanning board."""
 
 from __future__ import annotations
 
@@ -47,105 +47,6 @@ def classify_window_outcome(outcome: Mapping[str, Any]) -> str:
     ):
         return "failed-Google"
     return "failed-ours"
-
-
-class LineLedger:
-    """File-backed spend and four-way outcome count ledger keyed by `line` of work."""
-
-    def __init__(self, path: Path | str):
-        self.path = Path(path)
-
-    def _load(self) -> dict[str, Any]:
-        if not self.path.is_file():
-            return {"schema_version": 1, "lines": {}}
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {"schema_version": 1, "lines": {}}
-        if not isinstance(raw, dict) or not isinstance(raw.get("lines"), dict):
-            return {"schema_version": 1, "lines": {}}
-        return {"schema_version": 1, "lines": dict(raw["lines"])}
-
-    def _save(self, data: Mapping[str, Any]) -> None:
-        write_json_atomic(self.path, dict(data))
-
-    def record_outcome(
-        self,
-        line: str,
-        outcome: Mapping[str, Any],
-        *,
-        out_dir: Optional[Path] = None,
-    ) -> dict[str, Any]:
-        """Idempotently record or update one window outcome under `line` (keyed by `window_id`)."""
-        key = str(line or "").strip() or "default"
-        data = self._load()
-        entry = dict(data["lines"].get(key) or {"windows": []})
-        windows = [dict(w) for w in entry.get("windows", []) if isinstance(w, dict)]
-        wid = str(outcome.get("window_id") or "")
-        proj = outcome.get("project") or {}
-        rec = {
-            "window_id": wid,
-            "out_dir": str(out_dir) if out_dir is not None else outcome.get("out_dir"),
-            "job": proj.get("job"),
-            "study": proj.get("study"),
-            "purpose": outcome.get("purpose") or proj.get("purpose") or proj.get("description") or "",
-            "card": outcome.get("card"),
-            "shape": outcome.get("shape"),
-            "status": outcome.get("status"),
-            "outcome_bucket": outcome.get("outcome_bucket") or classify_window_outcome(outcome),
-            "spend_ccu": round(float(outcome.get("spend_ccu") or 0.0), 6),
-            "session_stopped_confirmed": bool(outcome.get("session_stopped_confirmed")),
-            "repo_url": outcome.get("repo_url"),
-            "flipped_public_at": outcome.get("flipped_public_at"),
-            "closed_at": outcome.get("closed_at") or _utc_now(),
-        }
-        replaced = False
-        for i, existing in enumerate(windows):
-            if wid and existing.get("window_id") == wid:
-                windows[i] = rec
-                replaced = True
-                break
-        if not replaced:
-            windows.append(rec)
-        entry["windows"] = windows
-        entry["updated_at"] = _utc_now()
-        data["lines"][key] = entry
-        self._save(data)
-        return self.line_summary(key)
-
-    @staticmethod
-    def _summarize_entry(line: str, entry: Mapping[str, Any]) -> dict[str, Any]:
-        windows = [w for w in entry.get("windows", []) if isinstance(w, dict)]
-        spent = round(sum(float(w.get("spend_ccu") or 0.0) for w in windows), 6)
-        counts = {b: 0 for b in OUTCOME_BUCKETS}
-        for w in windows:
-            bucket = str(w.get("outcome_bucket") or "failed-ours")
-            counts[bucket if bucket in counts else "failed-ours"] += 1
-        return {
-            "line": line,
-            "spent_ccu": spent,
-            "updated_at": entry.get("updated_at"),
-            "window_count": len(windows),
-            "counts": counts,
-            "windows": windows,
-        }
-
-    def line_summary(self, line: str) -> dict[str, Any]:
-        data = self._load()
-        entry = data["lines"].get(line) or {"windows": []}
-        return self._summarize_entry(line, entry)
-
-    def all_summaries(self) -> dict[str, Any]:
-        data = self._load()
-        lines = {name: self._summarize_entry(name, ent) for name, ent in sorted(data["lines"].items())}
-        totals = {b: sum(info["counts"][b] for info in lines.values()) for b in OUTCOME_BUCKETS}
-        return {
-            "path": str(self.path),
-            "lines": lines,
-            "total_spent_ccu": round(sum(info["spent_ccu"] for info in lines.values()), 6),
-            "total_windows": sum(info["window_count"] for info in lines.values()),
-            "counts": totals,
-        }
 
 
 @dataclass(frozen=True)
@@ -285,7 +186,6 @@ def run_queue(
     dry: bool = False,
     state_dir: Optional[Path | str] = None,
     colab: Optional[Colab] = None,
-    publish_transport: Optional[Any] = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = lambda s: None,
@@ -318,8 +218,6 @@ def run_queue(
             "outcome_bucket": None,
             "spend_ccu": 0.0,
             "session_stopped_confirmed": None,
-            "repo_url": None,
-            "flipped_public_at": None,
             "error": None,
         }
         for j in q.jobs
@@ -365,7 +263,6 @@ def run_queue(
                 purpose=job.purpose,
                 line=job.line,
                 colab=client,
-                publish_transport=publish_transport,
                 clock=clock,
                 sleep=sleep,
                 log=log,
@@ -403,8 +300,6 @@ def run_queue(
                 rec["outcome_bucket"] = outcome.get("outcome_bucket") or classify_window_outcome(outcome)
                 rec["spend_ccu"] = float(outcome.get("spend_ccu") or 0.0)
                 rec["session_stopped_confirmed"] = bool(outcome.get("session_stopped_confirmed"))
-                rec["repo_url"] = outcome.get("repo_url")
-                rec["flipped_public_at"] = outcome.get("flipped_public_at")
                 if not outcome.get("session_stopped_confirmed") and outcome.get("refusal"):
                     err_msg = err_msg or outcome["refusal"].get("message")
         else:
@@ -464,29 +359,31 @@ def run_queue(
 
 def build_board(
     *,
-    state_dir: Optional[Path | str] = None,
     out_root: Optional[Path | str] = None,
     out_dirs: Sequence[Path | str] = (),
     queue_state: Optional[Path | str] = None,
 ) -> dict[str, Any]:
-    """Assemble an at-a-glance view of lines, ran/running windows, queued next items, and totals."""
-    from colab_runner.launcher import _load_opt_json, _state_paths, status_window
-
-    s_dir, _ = _state_paths(state_dir, None, live=True)
-    ledger_path = (s_dir / "line_ledger.json") if s_dir is not None else None
-    ledger_data = LineLedger(ledger_path).all_summaries() if (ledger_path and ledger_path.is_file()) else {
-        "path": str(ledger_path) if ledger_path else None, "lines": {}, "total_spent_ccu": 0.0, "total_windows": 0,
-        "counts": {b: 0 for b in OUTCOME_BUCKETS},
-    }
+    """Assemble an at-a-glance view of lines, ran/running windows, queued next items, and totals from `outcome.json`."""
+    from colab_runner.launcher import _load_opt_json, status_window
 
     q_path = Path(queue_state) if queue_state else (Path(out_root) / "queue_state.json" if out_root else None)
     q_data = _load_opt_json(q_path) if q_path else None
 
     cand_dirs: list[Path] = [Path(d) for d in out_dirs]
     if out_root and Path(out_root).is_dir():
-        for child in sorted(Path(out_root).iterdir()):
-            if child.is_dir() and any((child / f).is_file() for f in ("outcome.json", "window_meta.json", "dry_run_plan.json")):
+        root_p = Path(out_root)
+        if any((root_p / f).is_file() for f in ("outcome.json", "window_meta.json", "dry_run_plan.json")):
+            cand_dirs.append(root_p)
+        for out_file in sorted(root_p.rglob("outcome.json")):
+            if any(part.endswith(".quarantine") or part == "_local_vm_content" for part in out_file.parts):
+                continue
+            cand_dirs.append(out_file.parent)
+        for child in sorted(root_p.iterdir()):
+            if child.is_dir() and any((child / f).is_file() for f in ("window_meta.json", "dry_run_plan.json")):
                 cand_dirs.append(child)
+    for j in (q_data or {}).get("jobs", []):
+        if j.get("out_dir"):
+            cand_dirs.append(Path(str(j["out_dir"])))
 
     seen_dirs: set[Path] = set()
     windows: list[dict[str, Any]] = []
@@ -512,9 +409,34 @@ def build_board(
             "spend_ccu": float(st.get("spend_ccu") or 0.0),
             "session_stopped_confirmed": st.get("session_stopped_confirmed"),
             "collected_outputs": list(out_obj.get("collected_outputs") or []),
-            "repo_url": out_obj.get("repo_url"),
-            "flipped_public_at": out_obj.get("flipped_public_at"),
         })
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    seen_wids: set[str] = set()
+    for w in windows:
+        wid = str(w.get("window_id") or "")
+        if wid and wid in seen_wids:
+            continue
+        if wid:
+            seen_wids.add(wid)
+        if w.get("outcome_bucket") is None:
+            continue
+        line_name = str(w.get("line") or "").strip() or "default"
+        grouped.setdefault(line_name, []).append(w)
+
+    lines: dict[str, dict[str, Any]] = {}
+    for line_name in sorted(grouped):
+        lwins = grouped[line_name]
+        lcounts = {b: 0 for b in OUTCOME_BUCKETS}
+        for w in lwins:
+            b = str(w.get("outcome_bucket") or "failed-ours")
+            lcounts[b if b in lcounts else "failed-ours"] += 1
+        lines[line_name] = {
+            "line": line_name,
+            "spent_ccu": round(sum(float(w.get("spend_ccu") or 0.0) for w in lwins), 6),
+            "window_count": len(lwins),
+            "counts": lcounts,
+        }
 
     next_jobs = [
         j for j in (q_data or {}).get("jobs", [])
@@ -531,7 +453,7 @@ def build_board(
         "counts": counts,
         "all_stopped_confirmed": all(w.get("session_stopped_confirmed") is True for w in windows) if windows else True,
     }
-    return {"lines": ledger_data["lines"], "windows": windows, "next": next_jobs, "totals": totals}
+    return {"lines": lines, "windows": windows, "next": next_jobs, "totals": totals}
 
 
 def format_board(board: Mapping[str, Any]) -> str:
@@ -553,7 +475,7 @@ def format_board(board: Mapping[str, Any]) -> str:
     if not wins:
         lines_out.append("  (none)")
     for w in wins:
-        produced = w.get("repo_url") or ",".join(w.get("collected_outputs") or []) or "-"
+        produced = ",".join(w.get("collected_outputs") or []) or "-"
         lines_out.append(
             "  %s  line=%s  card=%s  status=%s(%s)  spend=%.6f  stopped=%s  produced=%s  purpose=%s"
             % (w.get("job") or w.get("out_dir"), w.get("line"), w.get("card"), w.get("status"),
@@ -582,7 +504,6 @@ def format_board(board: Mapping[str, Any]) -> str:
 
 
 __all__ = [
-    "LineLedger",
     "OUTCOME_BUCKETS",
     "QueueJobSpec",
     "QueueSpec",

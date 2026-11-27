@@ -51,19 +51,6 @@ class StagedInputRecord:
     sha256: str
 
 
-DATA_CLASSES = ("public", "synthetic", "private", "sealed")
-PUBLISH_REPO_ID_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
-
-
-@dataclass(frozen=True)
-class PublishSpec:
-    """Opt-in Hugging Face destination declaration for window outputs."""
-
-    enabled: bool
-    repo_id: Optional[str] = None
-    repo_type: str = "dataset"
-
-
 @dataclass(frozen=True)
 class SealedPolicySpec:
     """Manifest declaration binding sealed or outside-repo inputs to a read-only pre-registration and destination."""
@@ -115,8 +102,6 @@ class WindowSpec:
     spec_path: Optional[Path] = None
     purpose: str = ""
     line: str = ""
-    data_class: str = "private"
-    publish: Optional[PublishSpec] = None
 
     def vram_floor_for(self, card_spec: CardSpec) -> int:
         """Return the VRAM floor in MiB for `card_spec`, preferring per-card overrides then matching catalog floor."""
@@ -227,21 +212,6 @@ class WindowSpec:
         inputs_root = (base_dir / raw_root) if not Path(raw_root).is_absolute() else Path(raw_root)
         deny_globs = tuple(_string_list(inp.get("deny_globs", []), "inputs.deny_globs"))
         sealed = _parse_sealed_policy(inp.get("sealed"), base_dir=base_dir)
-        raw_dc = proj.get("data_class")
-        if raw_dc is None:
-            data_class = "sealed" if sealed is not None else "private"
-        else:
-            if not isinstance(raw_dc, str) or raw_dc.strip().lower() not in DATA_CLASSES:
-                raise Refused("SPEC_INVALID", "project.data_class must be one of %s" % ", ".join(DATA_CLASSES))
-            data_class = raw_dc.strip().lower()
-        publish = _parse_publish_spec(data.get("publish"))
-        if sealed is not None and (data_class in ("public", "synthetic") or (publish is not None and publish.enabled)):
-            raise Refused(
-                "SEALED_DATA_REFUSED",
-                "sealed inputs cannot use public/synthetic data_class or publish.enabled = true",
-            )
-        if raw_dc is not None and data_class == "private" and publish is not None and publish.enabled:
-            raise Refused("SPEC_INVALID", "publish.enabled = true cannot be combined with project.data_class = 'private'")
         input_files = _parse_input_files(inp.get("files", []))
 
         setup_cmds = tuple(_string_list(job_tbl.get("setup", []), "job.setup"))
@@ -294,31 +264,7 @@ class WindowSpec:
             spec_path=spec_path,
             purpose=purpose,
             line=line,
-            data_class=data_class,
-            publish=publish,
         )
-
-
-def _parse_publish_spec(raw: Any) -> Optional[PublishSpec]:
-    if raw is None:
-        return None
-    if not isinstance(raw, Mapping):
-        raise Refused("SPEC_INVALID", "publish must be a table/object")
-    enabled = raw.get("enabled", False)
-    if not isinstance(enabled, bool):
-        raise Refused("SPEC_INVALID", "publish.enabled must be a boolean")
-    raw_type = raw.get("repo_type", "dataset")
-    if not isinstance(raw_type, str) or raw_type.strip().lower() not in ("dataset", "model"):
-        raise Refused("SPEC_INVALID", "publish.repo_type must be 'dataset' or 'model'")
-    raw_repo_id = raw.get("repo_id")
-    repo_id: Optional[str] = None
-    if raw_repo_id is not None:
-        if not isinstance(raw_repo_id, str) or not PUBLISH_REPO_ID_RE.fullmatch(raw_repo_id.strip()):
-            raise Refused("SPEC_INVALID", "publish.repo_id must be 'owner/name' using [A-Za-z0-9._-]+")
-        repo_id = raw_repo_id.strip()
-    if enabled and not repo_id:
-        raise Refused("SPEC_INVALID", "publish.enabled = true requires an explicit publish.repo_id = 'owner/name'")
-    return PublishSpec(enabled=enabled, repo_id=repo_id, repo_type=raw_type.strip().lower())
 
 
 def _require_table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -837,10 +783,8 @@ def render_vm_script(
 
 
 __all__ = [
-    "DATA_CLASSES",
     "DEFAULT_SEALED_HOST",
     "InputFileSpec",
-    "PublishSpec",
     "SEALED_PATH_PATTERNS",
     "SealedPolicySpec",
     "StagedInputRecord",

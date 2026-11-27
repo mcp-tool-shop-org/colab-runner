@@ -9,8 +9,7 @@ sidebar:
 
 Most projects no longer need per-window `launch.sh` scripts. Write one declarative `colab-window.toml` (`WindowSpec`) with:
 
-- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`, optional `purpose`, `line` (a short label that groups related runs so `board` can total their spend and outcomes together), `data_class` (`public`, `synthetic`, `private`, `sealed`).
-- `[publish]`: opt-in only — requires `enabled = true` and an explicit `repo_id` (`owner/name`, no default org), optional `repo_type` (`dataset` or `model`). Dev, canary, and smoke lines refuse to publish even when enabled, and publish failures never change a window's `status` or `exit_code`.
+- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`, optional `purpose`, `line` (a short label that groups related runs so `board` can total their spend and outcomes together).
 - `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`, `V5E1`, `V6E1`), explicit `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate` (rate above max checked at open; mid-run drift logged, not killed), `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`, `min_vram_mib_by_card`.
 - `[inputs]`: `root`, explicit `files`, optional `deny_globs` (for project-specific patterns such as `staging*` or holdout directory names), and `[inputs.sealed]` (`preregistration_path`, `preregistration_sha256`, `allowed_cards`, `allowed_host`). Whole-path `inputs.root` components, outside-repo roots, and `inputs.files` entries are checked against sealed/deny patterns; verified sealed launches also require `--allow-sealed` on the CLI.
 - `[job]`: `setup`, `run`, optional `cpu_dry_run`, `env`.
