@@ -47,6 +47,7 @@ from colab_runner.colab_cli import (
     Colab,
     default_quarantine_dir,
     scrub as _cli_scrub,
+    scrub_tokens as _cli_scrub_tokens,
     scrub_local,
 )
 from colab_runner.errors import GuardFailed, Refused, cap_trip_record, error_record
@@ -347,7 +348,7 @@ class Runner:
     @staticmethod
     def _clean(res: CliResult) -> CliResult:
         """A CLI result with its out and err scrubbed (the real wrapper scrubs too; this covers any stand-in)."""
-        return CliResult(res.rc, scrub(res.out), scrub(res.err))
+        return CliResult(res.rc, _cli_scrub_tokens(res.out), _cli_scrub_tokens(res.err))
 
     def stop_bound_s(self) -> float:
         """Worst-case seconds for `stop_session()` (all stop attempts, kill waits, and pauses)."""

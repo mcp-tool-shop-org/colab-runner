@@ -431,17 +431,17 @@ def _state_paths(
     if not raw_state and live:
         s_dir: Optional[Path] = _default_user_state_dir()
     else:
-        s_dir = Path(raw_state) if raw_state else None
-    l_file = Path(study_ledger) if study_ledger else (s_dir / "study_ledger.json" if s_dir is not None else None)
+        s_dir = Path(raw_state).expanduser() if raw_state else None
+    l_file = Path(study_ledger).expanduser() if study_ledger else (s_dir / "study_ledger.json" if s_dir is not None else None)
     return s_dir, l_file
 
 
 def _default_open_lock_path(open_lock: Optional[Path | str]) -> Path:
     if open_lock:
-        return Path(open_lock)
+        return Path(open_lock).expanduser()  # records store home paths as ~
     env_lock = os.environ.get("COLAB_RUNNER_OPEN_LOCK", "").strip()
     if env_lock:
-        return Path(env_lock)
+        return Path(env_lock).expanduser()
     return _default_user_state_dir() / "open.lock"
 
 
