@@ -1059,6 +1059,24 @@ class BareQuarantineTest(unittest.TestCase):
         scrub_local(p)
         self.assertEqual(list(self.temp.iterdir()), [])
 
+    def test_cli_results_keep_local_paths_the_runner_parses(self):
+        # CLI output is parsed (e.g. CR_TAR_PART lines with local paths in --local-cpu), so it is
+        # token-scrubbed only; home paths are scrubbed where text is logged or written to JSON.
+        from colab_runner.colab_cli import scrub, scrub_tokens
+
+        line = "CR_TAR_PART /home/someone/proj/runs/w1/_local_vm_content/out/model.tar.part0000 10 abc"
+        self.assertEqual(scrub_tokens(line), line)
+        self.assertNotIn("/home/someone", scrub(line))
+
+    def test_scrubbed_state_paths_read_back_as_the_real_home(self):
+        # window_meta.json stores home paths as ~; reading them back must never create a literal "~" dir.
+        from colab_runner.launcher import _default_open_lock_path, _state_paths
+
+        s_dir, l_file = _state_paths("~/.local/state/colab-runner", None, live=True)
+        self.assertEqual(s_dir, Path.home() / ".local" / "state" / "colab-runner")
+        self.assertEqual(l_file, s_dir / "study_ledger.json")
+        self.assertEqual(_default_open_lock_path("~/x/open.lock"), Path.home() / "x" / "open.lock")
+
     def test_cli_scrub_strips_home_paths_from_tracebacks_and_keeps_urls_and_content(self):
         from unittest import mock
 

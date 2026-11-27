@@ -271,7 +271,13 @@ def scrub_home_paths(text: Optional[str]) -> str:
 
 
 def scrub(text: Optional[str]) -> str:
+    """Tokens and home paths: for text written to logs, JSON records and the terminal."""
     return scrub_home_paths(lg.scrub_colab_tokens(text or ""))
+
+
+def scrub_tokens(text: Optional[str]) -> str:
+    """Tokens only: for CLI output the runner still parses, whose local paths must stay intact."""
+    return lg.scrub_colab_tokens(text or "")
 
 
 @dataclass
@@ -398,7 +404,7 @@ class BackgroundCall:
         folder = Path(self._tmp.name)
         out, err = _read(folder / "out.txt"), _read(folder / "err.txt")
         self._tmp.cleanup()
-        self.result = CliResult(int(rc), scrub(out), scrub(err))
+        self.result = CliResult(int(rc), scrub_tokens(out), scrub_tokens(err))
 
 
 class Colab:
@@ -428,17 +434,17 @@ class Colab:
                 text=True, encoding="utf-8", errors="replace", env=self.env, **_own_group(),
             )
         except OSError as exc:
-            return CliResult(127, "", scrub(str(exc)))
+            return CliResult(127, "", scrub_tokens(str(exc)))
         try:
             out, err = proc.communicate(timeout=max(0.0, float(timeout)))
         except subprocess.TimeoutExpired:
             kill_group(proc)
-            return CliResult(TIMEOUT_RC, scrub(_drain(proc)), "timeout after %ss" % timeout)
+            return CliResult(TIMEOUT_RC, scrub_tokens(_drain(proc)), "timeout after %ss" % timeout)
         except BaseException:
             kill_group(proc)
             _drain(proc)
             raise
-        return CliResult(proc.returncode, scrub(out), scrub(err))
+        return CliResult(proc.returncode, scrub_tokens(out), scrub_tokens(err))
 
     def exec_cell(
         self, session: str, source: str, env: Mapping[str, str] | None = None, timeout: float = 60.0
@@ -470,7 +476,7 @@ class Colab:
                 error = exc
         if proc is None:  # the files are closed now, so the folder can go (Windows keeps open files)
             tmp.cleanup()
-            return BackgroundCall(None, None, 0.0, CliResult(127, "", scrub(str(error))))
+            return BackgroundCall(None, None, 0.0, CliResult(127, "", scrub_tokens(str(error))))
         return BackgroundCall(proc, tmp, time.monotonic() + max(0.0, float(timeout)))
 
     def download(self, session: str, remote: str, local: str, timeout: float = 120.0) -> CliResult:
@@ -767,5 +773,5 @@ __all__ = [
     "BEARER_TOKEN_MIN", "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult",
     "KILL_WAIT_S", "QuarantineEscape", "TIMEOUT_RC", "bare_quarantine_dir", "binary_token_hit", "cli_from_env",
     "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout", "kill_group",
-    "parse_sessions_output", "scrub", "scrub_home_paths", "scrub_local", "token_shaped", "write_cell",
+    "parse_sessions_output", "scrub", "scrub_home_paths", "scrub_tokens", "scrub_local", "token_shaped", "write_cell",
 ]
