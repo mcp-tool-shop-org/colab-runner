@@ -17,31 +17,46 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 4,
+      "added": 1,
+      "changed": 9,
       "moved": 0,
-      "parts": 3,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "colab_runner/**/*.py is now read by tests/test_errors.py.",
+        "subjects": [
+          "colab_runner/**/*.py",
+          "tests/test_errors.py"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "docs/reference.md is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "docs/reference.md"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-26; 4 files changed content.",
+        "sentence": "1 file added and 9 changed content, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "1f0f5677c4132ab3fbdc047dfc285f4c7afdfa09",
-      "generatedAt": "2026-11-26T22:46:51.684Z"
+      "commit": "a887fd29fb2dcfba21a8feddf583400985cda5e9",
+      "generatedAt": "2026-11-26T23:10:07.985Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "a887fd29fb2dcfba21a8feddf583400985cda5e9",
+  "commit": "73b6b84e450f8c1b4a38b0ceb19c5af71979bc34",
   "defaultBranch": "main",
   "derived": "4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
@@ -152,15 +167,15 @@
   "duplicatesLead": null,
   "duplicatesNote": [],
   "edges": [],
-  "engine": "1.23.0",
+  "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-26T23:10:07.985Z",
+  "generatedAt": "2026-11-27T00:19:54.875Z",
   "limits": [
     "6 writes and 11 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "20 writes and 26 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
-    "24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.",
+    "25 files belong to no part: docs/reference.md, examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml and 22 more.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -183,6 +198,7 @@
   "testedBy": {
     "colab_runner": 18
   },
+  "testedCodeParts": 1,
   "unnamedWrites": 6,
   "unread": [],
   "unreadFiles": 0,
