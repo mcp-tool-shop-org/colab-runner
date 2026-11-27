@@ -35,18 +35,18 @@ pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.2.0"
 
 ## 快速入门
 
-编写一个规范（完整的示例在 [examples/merchant_league_seats](examples/merchant_league_seats/README.md) 中）：
+在您的项目的 Git 仓库中进行操作：仓库外的文件将被视为受保护的数据，并且会被拒绝访问。编写一份规范（完整的规范位于 [examples/merchant_league_seats](examples/merchant_league_seats/README.md)）：
 
 ```toml
 schema_version = 1
 
 [project]
-repo = "you/your-repo"
-study = "first-try"
+repo = "you/your-repo"   # required: your repo, for the records
+study = "first-try"      # required: a name for this line of work
 job = "train_01"
 
 [compute]
-card = "L4"        # GPU type: T4, L4, G4 or A100
+card = "L4"        # CPU, T4, L4, G4 or A100
 shape = "standard"
 max_rate = 2.5     # expected compute units per hour
 cap = 5.0          # never spend more than this
@@ -60,7 +60,7 @@ files = [
 ]
 
 [job]
-setup = ["pip install -r requirements.txt"]
+setup = ["python3 -m pip install -r requirements.txt"]
 run = ["python3 train.py"]
 cpu_dry_run = ["python3 train.py --smoke"]
 
@@ -68,7 +68,8 @@ cpu_dry_run = ["python3 train.py --smoke"]
 collect = ["model", "metrics.json"]
 ```
 
-然后检查它、预演它，并运行它：
+`--local-cpu` 在您的机器上运行设置和作业命令，因此它需要调用（此处为 pip：
+`sudo apt install python3-pip`，在新的 Ubuntu 或 WSL 系统上）。然后检查、演练并运行它：
 
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
@@ -94,16 +95,16 @@ python -m colab_runner status --out-dir runs/w1
 
 ## 安全性和威胁模型
 
-**它会触及哪些内容。**
-- Colab 会话：它会上传单元格文件，启动并终止它启动的任务，下载请求的文件，并停止会话。它绝不会向属于 colab-runner 的另一个运行实例的进程发送信号（`CR_NOT_OURS`）。
-- 输出目录（`--out-dir`）及其在机器上的隔离目录 `<out-dir>.quarantine/`。一个不带隔离目录的 `Colab.download` 将在系统临时目录的 `colab-runner-quarantine-*` 文件夹下使用一个新的目录。
-- 通过 `--env` 传递到单元格文件中的 VM 的环境变量。
+**它会影响哪些内容。**
+- 您指定的 Colab 会话：它会上传单元格文件，启动并停止它启动的作业，下载它被要求的文件，并停止会话。它绝不会向属于另一个 colab-runner (`CR_NOT_OURS`) 运行的进程发送信号。
+- 您的机器上的输出目录 (`--out-dir`) 及其相邻的隔离目录 `<out-dir>.quarantine/`。一个不带隔离目录的简单 `Colab.download` 将在系统临时目录下的一个新 `colab-runner-quarantine-*` 文件夹中使用。
+- 您使用 `--env` 指定的环境变量，它会将这些变量传递到单元格文件内的虚拟机中。
 
 **它不会触及哪些内容。** 不会触及输出目录、隔离目录和临时隔离目录之外的任何文件。不会触及任何其他 Colab 会话。不会触及任何帐户设置、凭据或账单：它通过 `colab` 命令行读取帐户的费率和余额，并且绝不会更改它们。
 
 **网络。** 仅通过 `colab` 命令行与 Google Colab 进行连接。colab-runner 不会打开任何自己的连接。
 
-**机密信息。** 作为 `--env NAME` 传递的机密信息不会出现在任何命令行中。每条输出行、错误行、回溯和下载的文本文件都会被清除令牌；包含令牌的二进制文件将以未更改的形式隔离，并且下载将被拒绝（如上所述）。colab-runner 绝不会删除隔离目录：调用方必须删除它，并且绝不能将其发送到其他地方。
+**密钥。** 作为 `--env NAME` 传递的密钥不会出现在任何命令行中。每一行输出、每一行错误、每一个回溯和每一个下载的文本文件都会被清除令牌；包含令牌的二进制文件将被隔离，并且保持不变，并且下载将被拒绝（如上所述）。colab-runner 绝不会删除隔离目录：您必须删除它，并且绝不能将其分发。
 
 **权限。** 它以运行它的用户的身份运行，并使用该用户已拥有的 `colab` 登录信息。它不需要任何权限提升。
 

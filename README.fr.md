@@ -35,18 +35,18 @@ Vous avez besoin de Linux ou de WSL, de Python 3.11 ou d’une version ultérieu
 
 ## Démarrage rapide
 
-Écrivez une spécification (une spécification complète se trouve dans [examples/merchant_league_seats](examples/merchant_league_seats/README.md)) :
+Travaillez dans le dépôt Git de votre projet : les fichiers situés en dehors sont considérés comme des données protégées et sont refusés. Rédigez une spécification (une spécification complète se trouve dans [examples/merchant_league_seats](examples/merchant_league_seats/README.md)) :
 
 ```toml
 schema_version = 1
 
 [project]
-repo = "you/your-repo"
-study = "first-try"
+repo = "you/your-repo"   # required: your repo, for the records
+study = "first-try"      # required: a name for this line of work
 job = "train_01"
 
 [compute]
-card = "L4"        # GPU type: T4, L4, G4 or A100
+card = "L4"        # CPU, T4, L4, G4 or A100
 shape = "standard"
 max_rate = 2.5     # expected compute units per hour
 cap = 5.0          # never spend more than this
@@ -60,7 +60,7 @@ files = [
 ]
 
 [job]
-setup = ["pip install -r requirements.txt"]
+setup = ["python3 -m pip install -r requirements.txt"]
 run = ["python3 train.py"]
 cpu_dry_run = ["python3 train.py --smoke"]
 
@@ -68,7 +68,8 @@ cpu_dry_run = ["python3 train.py --smoke"]
 collect = ["model", "metrics.json"]
 ```
 
-Vérifiez-la ensuite, effectuez une simulation, puis exécutez-la :
+`--local-cpu` exécute les commandes de configuration et de tâche sur votre machine, il a donc besoin de tout ce qu’elles requièrent (ici, pip :
+`sudo apt install python3-pip` sur un système Ubuntu ou WSL propre). Ensuite, vérifiez, testez et exécutez :
 
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
@@ -94,16 +95,16 @@ Chaque refus et chaque erreur affiche un code, un message et un indice. `python 
 
 ## Sécurité et modèle de menace
 
-**Ce qu’il affecte.**
-- La session Colab : il télécharge les fichiers des cellules, démarre et arrête la tâche qu’il a lancée, télécharge les fichiers demandés et arrête la session. Il n’envoie jamais de signal à un processus qui appartient à une autre exécution de colab-runner (`CR_NOT_OURS`).
-- Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé `<out-dir>.quarantine/` sur le système. Un appel direct à `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` dans le répertoire temporaire du système.
-- Les variables d’environnement que la tâche utilise avec `--env`, qu’elle transmet à la machine virtuelle à l’intérieur du fichier de cellule.
+**Ce que cela affecte.**
+- La session Colab que vous nommez : elle télécharge les fichiers de cellules, démarre et arrête la tâche qu’elle a lancée, télécharge les fichiers demandés et arrête la session. Elle n’envoie jamais de signal à un processus qui appartient à une autre exécution de colab-runner (`CR_NOT_OURS`).
+- Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé (`<out-dir>.quarantine/`) sur votre machine. Un répertoire `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` sous le répertoire temporaire du système.
+- Les variables d’environnement que vous nommez avec `--env`, qu’elle transmet à la machine virtuelle à l’intérieur du fichier de cellule.
 
 **Ce que cela ne touche pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte, aucune information d’identification ou aucune information de facturation : il lit le tarif et le solde du compte via l’outil en ligne de commande `colab` et ne les modifie jamais.
 
 **Réseau.** Uniquement via l’outil en ligne de commande `colab`, vers Google Colab. colab-runner n’ouvre aucune connexion de son propre chef.
 
-**Secrets.** Un secret transmis sous forme de `--env NAME` ne figure dans aucune ligne de commande. Chaque ligne de sortie, chaque ligne d’erreur, chaque trace de pile et chaque fichier texte téléchargé sont purgés des jetons ; un fichier binaire contenant un jeton est mis en quarantaine sans être modifié et le téléchargement est refusé (ci-dessus). colab-runner ne supprime jamais la zone de quarantaine : le processus appelant doit la supprimer et ne doit jamais la transmettre.
+**Secrets.** Un secret transmis sous forme de `--env NAME` n’apparaît sur aucune ligne de commande. Chaque ligne de sortie, chaque ligne d’erreur, chaque trace de pile et chaque fichier texte téléchargé sont purgés de leurs jetons ; un fichier binaire contenant un jeton est mis en quarantaine sans modification et le téléchargement est refusé (ci-dessus). colab-runner ne supprime jamais la quarantaine : vous devez la supprimer et ne jamais la distribuer.
 
 **Autorisations.** Il s’exécute en tant qu’utilisateur qui l’exécute, avec la connexion `colab` que cet utilisateur a déjà. Il n’a besoin d’aucune élévation de privilèges.
 

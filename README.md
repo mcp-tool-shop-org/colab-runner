@@ -42,18 +42,18 @@ has no other dependencies.
 
 ## Quick start
 
-Write a spec (a full one is in [examples/merchant_league_seats](examples/merchant_league_seats/README.md)):
+Work inside your project's git repository: files outside it count as protected data and are refused. Write a spec (a full one is in [examples/merchant_league_seats](examples/merchant_league_seats/README.md)):
 
 ```toml
 schema_version = 1
 
 [project]
-repo = "you/your-repo"
-study = "first-try"
+repo = "you/your-repo"   # required: your repo, for the records
+study = "first-try"      # required: a name for this line of work
 job = "train_01"
 
 [compute]
-card = "L4"        # GPU type: T4, L4, G4 or A100
+card = "L4"        # CPU, T4, L4, G4 or A100
 shape = "standard"
 max_rate = 2.5     # expected compute units per hour
 cap = 5.0          # never spend more than this
@@ -67,7 +67,7 @@ files = [
 ]
 
 [job]
-setup = ["pip install -r requirements.txt"]
+setup = ["python3 -m pip install -r requirements.txt"]
 run = ["python3 train.py"]
 cpu_dry_run = ["python3 train.py --smoke"]
 
@@ -75,7 +75,8 @@ cpu_dry_run = ["python3 train.py --smoke"]
 collect = ["model", "metrics.json"]
 ```
 
-Then check it, rehearse it, and run it:
+`--local-cpu` runs the setup and job commands on your machine, so it needs whatever they call (here pip:
+`sudo apt install python3-pip` on a fresh Ubuntu or WSL). Then check it, rehearse it, and run it:
 
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
@@ -105,11 +106,11 @@ downloads are scrubbed, and pricing are all in [docs/reference.md](docs/referenc
 ## Security and threat model
 
 **What it touches.**
-- The Colab session the lane names: it uploads cell files, starts and kills the job it started, downloads the files
+- The Colab session you name: it uploads cell files, starts and kills the job it started, downloads the files
   it was asked for, and stops the session. It never sends a signal to a process that belongs to another run of colab-runner (`CR_NOT_OURS`).
-- The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on the rig. A bare `Colab.download`
+- The out dir (`--out-dir`) and its sibling quarantine `<out-dir>.quarantine/` on your machine. A bare `Colab.download`
   with no quarantine dir uses a new `colab-runner-quarantine-*` folder under the system temp dir.
-- The environment variables the lane names with `--env`, which it passes to the VM inside the cell file.
+- The environment variables you name with `--env`, which it passes to the VM inside the cell file.
 
 **What it does not touch.** No files outside the out dir, its quarantine and the temp quarantine. No other Colab
 session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab`
@@ -119,7 +120,7 @@ command line and never changes them.
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
 and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the
-download is refused (above). colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
+download is refused (above). colab-runner never deletes the quarantine: you must delete it, and never ship it.
 
 **Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
 elevation.
