@@ -404,9 +404,11 @@ def stop_command(argv: list[str]) -> int:
         except OSError:
             marker_mtime = None
         client = cli_from_env()
-        ok = Runner(client, session, out_dir, log=_log_for(args.level)).stop_session()
-        if ok and (pending or {}).get("reason") == "tpu_open_timeout_unknown":
-            ok = verify_pending_stop(out_dir, client, session, pending, saved_open)
+        verify_fn = (
+            (lambda: verify_pending_stop(out_dir, client, session, pending, saved_open))
+            if (pending or {}).get("reason") == "tpu_open_timeout_unknown" else None
+        )
+        ok = Runner(client, session, out_dir, log=_log_for(args.level)).stop_session(verify=verify_fn)
     except Refused as exc:
         return _refused(exc)
     except (Exception, KeyboardInterrupt) as exc:

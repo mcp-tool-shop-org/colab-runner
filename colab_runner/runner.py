@@ -1008,24 +1008,32 @@ class Runner:
             signal.signal(sig, handler)
 
     # -- stop, with the markers written only after it is confirmed -----------------------------------------------
-    def stop_session(self, attempts: Optional[int] = None, timeout_s: Optional[float] = None) -> bool:
+    def stop_session(
+        self, attempts: Optional[int] = None, timeout_s: Optional[float] = None,
+        *, verify: Optional[Callable[[], bool]] = None,
+    ) -> bool:
         """`colab stop -s <this runner's session>`, retried; no other session is ever stopped. `stop_confirmed.json`
-        is written, and `session_open.json` removed, only after a stop returned rc 0. A stop that fails leaves
-        `stop_pending.json` (so nothing treats the session as stopped) and returns False for a later retry."""
+        is written, and `session_open.json` removed, only after a stop returned rc 0 (and `verify`, if given, passed).
+        A stop that fails leaves `stop_pending.json` (merging prior fields) and returns False for a later retry."""
         attempts = self.stop_attempts if attempts is None else attempts
         timeout_s = self.stop_timeout_s if timeout_s is None else timeout_s
+        pend_path = self.out_dir / "stop_pending.json"
         for i in range(1, attempts + 1):
             last = self._clean(self.colab.stop(self.session, timeout_s))
             if last.ok:
+                if verify is not None and not verify():
+                    return False
                 write_json_atomic(self.out_dir / "stop_confirmed.json", {"session": self.session, "attempt": i})
                 for name in ("stop_pending.json", "session_open.json"):
                     (self.out_dir / name).unlink(missing_ok=True)
                 self.log("stop confirmed: session %s (attempt %d)" % (self.session, i))
                 return True
-            write_json_atomic(
-                self.out_dir / "stop_pending.json",
-                {"session": self.session, "attempts": i, "last_rc": last.rc, "last_err": (last.err or "")[-300:]},
-            )
+            try:
+                loaded = json.loads(pend_path.read_text(encoding="utf-8")) if pend_path.is_file() else {}
+            except (OSError, ValueError):
+                loaded = {}
+            prev = loaded if isinstance(loaded, dict) else {}
+            write_json_atomic(pend_path, {**prev, "session": self.session, "attempts": i, "last_rc": last.rc, "last_err": (last.err or "")[-300:]})
             self.log("stop attempt %d failed rc=%s: %s" % (i, last.rc, (last.err or "")[-300:]))
             if i < attempts:
                 self.sleep(_stop_pause(i))

@@ -1260,14 +1260,19 @@ def _read_pre_open_usage(
 def _is_tpu_timeout(card_spec: CardSpec, res: CliResult) -> bool:
     txt = ((res.err or "") + "\n" + (res.out or "")).lower()
     return card_spec.cli_flag == "--tpu" and not res.ok and (
-        res.rc == TIMEOUT_RC or any(t in txt for t in ("readtimeout", "read timed out", "timeouterror", "connecttimeout", "timed out"))
+        res.rc == TIMEOUT_RC or any(
+            t in txt for t in ("readtimeout", "read timed out", "timeouterror", "connecttimeout", "timed out", "gateway timeout", "504")
+        )
     )
 
 
 def verify_pending_stop(
     out_dir: Path, colab: Colab, session: str, pending: dict[str, Any], saved_open: Optional[dict[str, Any]],
 ) -> bool:
-    sess = colab.sessions()
+    try:
+        sess = colab.sessions()
+    except Exception:
+        sess = CliResult(1, "", "sessions failed")
     want = pool_key_for_card(resolve_card(str(pending.get("card") or "V5E1")), pending.get("shape"))
     rows = parse_sessions_output(sess.out) if sess.ok else []
     if sess.ok and not any(r.get("session") == session or (r.get("session") == "?" and pool_key_for_session_row(r) == want) for r in rows):
@@ -1289,9 +1294,7 @@ def _finalize_close(
         outcome["closed_at"] = _utc_now()
         try:
             sess = colab.sessions()
-            outcome["session_gone_confirmed"] = bool(sess.ok) and not any(
-                r.get("session") == session for r in parse_sessions_output(sess.out)
-            )
+            outcome["session_gone_confirmed"] = bool(sess.ok) and not any(r.get("session") == session for r in parse_sessions_output(sess.out))
         except Exception:
             pass
     return bool(outcome["session_stopped_confirmed"]), stopped_at
@@ -1425,9 +1428,7 @@ def reconcile_stopped_outcome(
 
     try:
         sess = colab.sessions()
-        outcome["session_gone_confirmed"] = bool(sess.ok) and not any(
-            r.get("session") == session for r in parse_sessions_output(sess.out)
-        )
+        outcome["session_gone_confirmed"] = bool(sess.ok) and not any(r.get("session") == session for r in parse_sessions_output(sess.out))
     except Exception:
         pass
     outcome["outcome_bucket"] = classify_window_outcome(outcome)
@@ -1682,16 +1683,22 @@ def launch_window(
                 ledger.release_reservation(spec.study, window_id=window_id)
             ledger.record_window(spec.study, outcome)
 
+    def _stop_unknown_tpu() -> tuple[bool, float]:
+        write_json_atomic(out_path / "stop_pending.json", {"session": eff_session, "reason": "tpu_open_timeout_unknown", "card": card_spec.name, "shape": clean_shape})
+        outcome.update({"opened": "unknown", "session_stopped_confirmed": False, "session_gone_confirmed": False})
+        try:
+            client.stop(eff_session)
+        except BaseException:
+            pass
+        log(scrub("TPU open timed out (server state unknown): run `colab sessions`, then `colab stop -s <id>` or `colab_runner stop --out-dir %s` (delete stop_pending.json by hand only after checking `colab sessions`)" % out_path))
+        return False, clock()
+
     def _close_open_trip(sig_state: dict[str, Any], *, status: str, cap_trip=None, refusal=None) -> dict[str, Any]:
         sig_state["cleaning"] = True
-        if tpu_open_uncertain:
-            client.stop(eff_session)
-            stopped_ok, stopped_at = False, clock()
-            write_json_atomic(out_path / "stop_pending.json", {"session": eff_session, "reason": "tpu_open_timeout_unknown", "card": card_spec.name, "shape": clean_shape})
-            outcome.update({"opened": "unknown", "session_stopped_confirmed": False, "session_gone_confirmed": False})
-            log(scrub("TPU open timed out (server state unknown): run `colab sessions`, then `colab stop -s <id>` or `colab_runner stop --out-dir %s`" % out_path))
-        else:
-            stopped_ok, stopped_at = _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock)
+        stopped_ok, stopped_at = (
+            _stop_unknown_tpu() if tpu_open_uncertain
+            else _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock)
+        )
         _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                     bal_end=_read_end_balance(client))
         outcome.update({"status": status, "exit_code": 2, "cap_trip": cap_trip, "refusal": refusal})
@@ -1900,12 +1907,15 @@ def launch_window(
         except BaseException as exc:
             if marker_written:
                 sig_state["cleaning"] = True
-                try:
-                    stopped_ok, stopped_at = _finalize_close(
-                        client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
-                    )
-                except BaseException:
-                    stopped_ok, stopped_at = False, clock()
+                if t_open_monotonic is not None and not outcome["opened"] and card_spec.cli_flag == "--tpu":
+                    stopped_ok, stopped_at = _stop_unknown_tpu()
+                else:
+                    try:
+                        stopped_ok, stopped_at = _finalize_close(
+                            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                        )
+                    except BaseException:
+                        stopped_ok, stopped_at = False, clock()
                 elapsed_exc = (stopped_at - t_open_monotonic) if t_open_monotonic is not None else 0.0
                 if t_open_monotonic is not None:
                     _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_exc,
