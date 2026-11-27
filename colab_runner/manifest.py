@@ -600,12 +600,14 @@ def _verify_sealed_gate(
 
     sealed_entries: list[tuple[InputFileSpec, Path]] = []
     for item, resolved in resolved_items:
+        in_repo = spec_repo_root is not None and resolved.is_relative_to(spec_repo_root)
+        repo_pat = _segments_match_sealed(resolved.relative_to(spec_repo_root).parts, deny_globs=spec.deny_globs) if in_repo else None
         pat_src = _segments_match_sealed(PurePosixPath(item.src).parts, deny_globs=spec.deny_globs)
         pat_dst = _segments_match_sealed(PurePosixPath(item.dst).parts, deny_globs=spec.deny_globs)
-        if root_outside_repo or root_sealed_pat or pat_src or pat_dst:
+        if not in_repo or repo_pat or pat_src or pat_dst:
             sealed_entries.append((item, resolved))
 
-    needs_gate = bool(sealed_entries or root_outside_repo or root_sealed_pat or spec.sealed is not None)
+    needs_gate = bool(sealed_entries or (not resolved_items and (root_outside_repo or root_sealed_pat)) or spec.sealed is not None)
     if not needs_gate:
         return None
     if spec.sealed is None:
@@ -694,6 +696,28 @@ def _check_no_links(root: Path, rel: str) -> Path:
     return cur
 
 
+def _iter_input_files(resolved: Path, item: InputFileSpec, root: Path) -> list[tuple[Path, str, str]]:
+    if resolved.is_file():
+        return [(resolved, item.src, item.dst)]
+    if not resolved.is_dir():
+        raise Refused("INPUT_FILE_MISSING", "input file does not exist as a regular file: %s" % (root / item.src))
+    out: list[tuple[Path, str, str]] = []
+    for dp, dns, fns in os.walk(resolved, followlinks=False):
+        dp_path = Path(dp)
+        for name in sorted(dns) + sorted(fns):
+            p = dp_path / name
+            if _is_link(p):
+                raise Refused("INPUT_SYMLINK_REFUSED", "input path %r traverses a symlink or junction at %s" % (item.src, p))
+        for fn in sorted(fns):
+            fp = dp_path / fn
+            if fp.is_file():
+                rel = fp.relative_to(resolved).as_posix()
+                out.append((fp, f"{item.src}/{rel}", f"{item.dst}/{rel}"))
+    if not out:
+        raise Refused("INPUT_FILE_MISSING", "input directory contains no regular files: %s" % (root / item.src))
+    return sorted(out, key=lambda x: x[1])
+
+
 def stage_inputs(
     spec: WindowSpec,
     bundle_path: Path,
@@ -742,28 +766,18 @@ def stage_inputs(
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(bundle_path, mode="w:gz", format=tarfile.PAX_FORMAT) as tf:
         for item, resolved in resolved_items:
-            if not resolved.is_file():
-                raise Refused("INPUT_FILE_MISSING", "input file does not exist as a regular file: %s" % (root / item.src))
-
-            data = resolved.read_bytes()
-            digest = hashlib.sha256(data).hexdigest()
-            info = tarfile.TarInfo(name=item.dst)
-            info.size = len(data)
-            info.mode = 0o755 if item.dst.endswith(".sh") else 0o644
-            info.mtime = 0
-            info.uid = 0
-            info.gid = 0
-            info.uname = ""
-            info.gname = ""
-            tf.addfile(info, io.BytesIO(data))
-            staged.append(StagedInputRecord(src=item.src, dst=item.dst, bytes=len(data), sha256=digest))
-            if sealed_record is not None and str(resolved) in sealed_resolved_set:
-                sealed_record["files"].append({
-                    "src": item.src,
-                    "dst": item.dst,
-                    "resolved_path": str(resolved),
-                    "sha256": digest,
-                })
+            in_sealed = sealed_record is not None and str(resolved) in sealed_resolved_set
+            for fp, src_rel, dst_rel in _iter_input_files(resolved, item, root):
+                data = fp.read_bytes()
+                digest = hashlib.sha256(data).hexdigest()
+                info = tarfile.TarInfo(name=dst_rel)
+                info.size, info.mode = len(data), (0o755 if dst_rel.endswith(".sh") else 0o644)
+                info.mtime = info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                tf.addfile(info, io.BytesIO(data))
+                staged.append(StagedInputRecord(src=src_rel, dst=dst_rel, bytes=len(data), sha256=digest))
+                if in_sealed:
+                    sealed_record["files"].append({"src": src_rel, "dst": dst_rel, "resolved_path": str(fp), "sha256": digest})
     return staged, sealed_record
 
 
@@ -772,6 +786,8 @@ def render_vm_script(
     card_spec: CardSpec,
     *,
     bundle_filename: str,
+    bundle_sha256: str = "",
+    bundle_parts: int = 1,
 ) -> str:
     """Render the self-contained bash script uploaded into `/content` for a window run."""
     lines = [
@@ -785,9 +801,19 @@ def render_vm_script(
         f'echo "[setup] job={spec.job} card={card_spec.name} omp=$OMP_NUM_THREADS" >> "$CR_OUT_DIR/setup.log"',
     ]
     if spec.input_files:
-        quoted_bundle = shlex.quote(bundle_filename)
+        qb = shlex.quote(bundle_filename)
+        if bundle_parts > 1:
+            parts = " ".join(f'"${{CR_CONTENT%/}}/{qb}.part{i:04d}"' for i in range(bundle_parts))
+            lines.extend([f'cat {parts} > "${{CR_CONTENT%/}}/{qb}" 2>> "$CR_OUT_DIR/setup.log"', f"rm -f {parts}"])
+        if bundle_sha256:
+            lines.append(
+                f'python3 -c \'import hashlib,sys;p,e=sys.argv[1],sys.argv[2];h=hashlib.sha256();'
+                f'fh=open(p,"rb");[h.update(c) for c in iter(lambda:fh.read(1<<20),b"")];fh.close();'
+                f'g=h.hexdigest();sys.exit(0 if g==e else (print("bundle sha256 mismatch:",g,e) or 1))\' '
+                f'"${{CR_CONTENT%/}}/{qb}" {shlex.quote(bundle_sha256)} >> "$CR_OUT_DIR/setup.log" 2>&1'
+            )
         lines.extend([
-            f'tar -xzf "${{CR_CONTENT%/}}/{quoted_bundle}" -C "$CR_WORK_DIR" >> "$CR_OUT_DIR/setup.log" 2>&1',
+            f'tar -xzf "${{CR_CONTENT%/}}/{qb}" -C "$CR_WORK_DIR" >> "$CR_OUT_DIR/setup.log" 2>&1',
             f'echo "[setup] unpacked {len(spec.input_files)} input files into $CR_WORK_DIR" >> "$CR_OUT_DIR/setup.log"',
         ])
     if card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu":

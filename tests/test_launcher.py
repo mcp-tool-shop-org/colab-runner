@@ -6,6 +6,7 @@ import io
 import json
 import os
 import signal
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -2141,6 +2142,40 @@ class ChunkedDownloadTest(unittest.TestCase):
                 clk_c = FakeClock()
                 out_c = launch_window(spec_cap, root / ("c_" + tag), state_dir=root / "st", colab=SimColab(delay_new_s=delay, clock=clk_c), clock=clk_c.now, sleep=clk_c.sleep)
                 self.assertEqual((out_c["status"], out_c["cap_trip"]["code"]), ("cap", "CAP_GUARD_TRIPPED"))
+
+    def test_chunked_bundle_upload_local_cpu_live_and_sha_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            spec = _write_spec(root, card="G4", shape="standard", cap=15.0, max_rate=12.0, collect=("out.txt",))
+            (root / "blob.bin").write_bytes(os.urandom(1400))
+            spec.write_text(spec.read_text(encoding="utf-8").replace('files = ["worker.py"]', 'files = ["worker.py", "blob.bin"]'), encoding="utf-8")
+            with mock.patch("colab_runner.launcher.DEFAULT_UPLOAD_CHUNK_BYTES", 512):
+                dry = launch_window(spec, root / "dry", dry=True)
+                self.assertGreater(dry["budget"]["open_phase_bound_s"], 280.0)
+                clk = FakeClock()
+                sim = SimColab(
+                    clock=clk,
+                    polls=lambda n, env: (clk.advance(1.0) or rec(rc=0)),
+                    remote_files={"/content/demo_job_work/out.txt": "hello\n"},
+                )
+                live = launch_window(spec, root / "live", colab=sim, state_dir=root / "st", clock=clk.now, sleep=clk.sleep)
+                self.assertEqual(live["status"], "done")
+                part_remotes = [r for _, _, r in sim.uploads if ".part" in r]
+                self.assertGreaterEqual(len(part_remotes), 2)
+                self.assertTrue((root / "live" / "collected" / "out.txt").is_file())
+                if os.name == "posix":
+                    lcpu = launch_window(spec, root / "lcpu", local_cpu=True)
+                    self.assertEqual(lcpu["status"], "done")
+                    self.assertEqual((root / "lcpu" / "collected" / "out.txt").read_text(encoding="utf-8"), "hello worker\n")
+                    from colab_runner.manifest import WindowSpec, render_vm_script
+                    bad_vm = root / "bad_vm"
+                    bad_vm.mkdir()
+                    (bad_vm / "demo_job_inputs.tar.gz.part0000").write_bytes(b"corrupt")
+                    (bad_vm / "demo_job_inputs.tar.gz.part0001").write_bytes(b"data")
+                    sh = render_vm_script(WindowSpec.from_file(spec), resolve_card("CPU"), bundle_filename="demo_job_inputs.tar.gz", bundle_sha256="0" * 64, bundle_parts=2)
+                    proc = subprocess.run(["bash", "-c", sh], env={**os.environ, "CR_CONTENT": str(bad_vm), "CR_JOB": "demo_job", "CR_OUT_DIR": str(bad_vm / "o"), "CR_DRY_RUN": "1"}, capture_output=True, text=True, check=False)
+                    self.assertNotEqual(proc.returncode, 0)
+                    self.assertIn("bundle sha256 mismatch", (bad_vm / "o" / "setup.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

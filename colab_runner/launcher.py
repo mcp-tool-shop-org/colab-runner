@@ -66,6 +66,7 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DEFAULT_CLEANUP_FLOOR_S = 600.0
 OPEN_LOCK_STALE_MTIME_S = 10.0
 DEFAULT_TAR_TIMEOUT_S = 60.0
+DEFAULT_UPLOAD_CHUNK_BYTES = 32 * 1024 * 1024
 DEFAULT_DOWNLOAD_CHUNK_BYTES = 256 * 1024 * 1024
 _STREAM_BUF_BYTES = 1024 * 1024
 _PART_SHA_RE = re.compile(r"[0-9a-f]{64}")
@@ -314,9 +315,10 @@ def open_phase_bound_s(
     usage_timeout_s: float = 60.0,
     rate_poll_interval_s: float = 5.0,
     upload_timeout_s: float = 120.0,
+    upload_count: int = 2,
 ) -> float:
     """Worst-case seconds after `colab new` succeeds until `Runner.run` starts polling."""
-    uploads_bound = 2 * (float(upload_timeout_s) + 2.0 * KILL_WAIT_S)
+    uploads_bound = max(1, int(upload_count)) * (float(upload_timeout_s) + 2.0 * KILL_WAIT_S)
     if local_cpu or card_spec.card_class == "cpu":
         return uploads_bound
     shape_pauses = sum(2.0 * i for i in range(1, max(1, int(shape_attempts))))
@@ -1448,6 +1450,24 @@ def reconcile_stopped_outcome(
     return outcome
 
 
+def _prepare_bundle_uploads(bundle_path: Path, chunk_bytes: Optional[int] = None) -> tuple[str, list[Path]]:
+    limit = max(1, int(DEFAULT_UPLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes))
+    h = hashlib.sha256()
+    with bundle_path.open("rb") as fh:
+        for blk in iter(lambda: fh.read(_STREAM_BUF_BYTES), b""):
+            h.update(blk)
+    digest = h.hexdigest()
+    if bundle_path.stat().st_size <= limit:
+        return digest, [bundle_path]
+    parts: list[Path] = []
+    with bundle_path.open("rb") as fh:
+        while blk := fh.read(limit):
+            p = bundle_path.with_name(f"{bundle_path.name}.part{len(parts):04d}")
+            p.write_bytes(blk)
+            parts.append(p)
+    return digest, parts
+
+
 def launch_window(
     spec_path: Path | str,
     out_dir: Path | str,
@@ -1518,15 +1538,6 @@ def launch_window(
     eff_session = session or default_session_name(spec, card_spec.name)
     window_id = "%s-%s" % (_slug(spec.job), uuid.uuid4().hex[:8])
 
-    open_bound_s = open_phase_bound_s(
-        card_spec,
-        local_cpu=local_cpu,
-        shape_attempts=shape_check_attempts,
-        post_open_polls=post_open_polls,
-        rate_poll_interval_s=rate_poll_interval_s,
-    )
-    budget = compute_launch_budget(guard, open_bound_s, outputs_bound_s=outputs_bound_s)
-
     # Validate & stage inputs BEFORE creating persistent out_dir files on refusal
     with tempfile.TemporaryDirectory(prefix="cr-stage-") as stage_tmp:
         tmp_bundle = Path(stage_tmp) / ("%s_inputs.tar.gz" % spec.job)
@@ -1548,7 +1559,17 @@ def launch_window(
         staged_dir.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(tmp_bundle, bundle_path)
 
-    script_text = render_vm_script(spec, card_spec, bundle_filename=bundle_name)
+    bundle_sha, bundle_upload_files = _prepare_bundle_uploads(bundle_path)
+    open_bound_s = open_phase_bound_s(
+        card_spec, local_cpu=local_cpu, shape_attempts=shape_check_attempts,
+        post_open_polls=post_open_polls, rate_poll_interval_s=rate_poll_interval_s,
+        upload_count=len(bundle_upload_files) + 1,
+    )
+    budget = compute_launch_budget(guard, open_bound_s, outputs_bound_s=outputs_bound_s)
+    script_text = render_vm_script(
+        spec, card_spec, bundle_filename=bundle_name,
+        bundle_sha256=bundle_sha, bundle_parts=len(bundle_upload_files),
+    )
     script_path.write_text(script_text, encoding="utf-8", newline="\n")
 
     if dry:
@@ -1593,7 +1614,6 @@ def launch_window(
         client = cli_from_env()
     vm_content = str(client.content_dir.resolve()) if isinstance(client, LocalColab) else "/content"
     vm_content_base = vm_content.rstrip("/\\") or "/"
-    remote_bundle = "%s/%s" % (vm_content_base, bundle_name)
     remote_script = "%s/%s" % (vm_content_base, script_name)
 
     outcome = _base_outcome(
@@ -1847,11 +1867,9 @@ def launch_window(
                 finally:
                     lock_held = False
 
-            # Open lock released: upload bundle and driver script flat into vm_content, bounded by remaining cap/wall.
-            for local_f, remote_f in (
-                (bundle_path, remote_bundle),
-                (script_path, remote_script),
-            ):
+            # Open lock released: upload bundle parts and driver script flat into vm_content, bounded by cap/wall.
+            uploads = [(lp, f"{vm_content_base}/{lp.name}") for lp in bundle_upload_files] + [(script_path, remote_script)]
+            for local_f, remote_f in uploads:
                 up_t_lim, tripped_out = _next_call_timeout(120.0, sig_state)
                 if tripped_out is not None:
                     return tripped_out
