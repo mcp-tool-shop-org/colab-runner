@@ -35,18 +35,18 @@ Necesita Linux o WSL, Python 3.11 o posterior, y la herramienta de línea de com
 
 ## Inicio rápido
 
-Escriba una especificación (un ejemplo completo se encuentra en [examples/merchant_league_seats](examples/merchant_league_seats/README.md)):
+Trabaje dentro del repositorio git de su proyecto: los archivos que estén fuera de él se consideran datos protegidos y se rechazarán. Escriba una especificación (una especificación completa se encuentra en [examples/merchant_league_seats](examples/merchant_league_seats/README.md)):
 
 ```toml
 schema_version = 1
 
 [project]
-repo = "you/your-repo"
-study = "first-try"
+repo = "you/your-repo"   # required: your repo, for the records
+study = "first-try"      # required: a name for this line of work
 job = "train_01"
 
 [compute]
-card = "L4"        # GPU type: T4, L4, G4 or A100
+card = "L4"        # CPU, T4, L4, G4 or A100
 shape = "standard"
 max_rate = 2.5     # expected compute units per hour
 cap = 5.0          # never spend more than this
@@ -60,7 +60,7 @@ files = [
 ]
 
 [job]
-setup = ["pip install -r requirements.txt"]
+setup = ["python3 -m pip install -r requirements.txt"]
 run = ["python3 train.py"]
 cpu_dry_run = ["python3 train.py --smoke"]
 
@@ -68,7 +68,8 @@ cpu_dry_run = ["python3 train.py --smoke"]
 collect = ["model", "metrics.json"]
 ```
 
-Luego, verifíquela, ensáyela y ejecútela:
+`--local-cpu` ejecuta los comandos de configuración y de trabajo en su máquina, por lo que necesita todo lo que estos comandos requieran (aquí, pip:
+`sudo apt install python3-pip` en un Ubuntu o WSL nuevo). Luego, verifíquelo, pruébelo y ejecútelo:
 
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
@@ -95,15 +96,15 @@ Cada rechazo y error imprime un código, un mensaje y una sugerencia. `python -m
 ## Seguridad y modelo de amenazas
 
 **Qué afecta.**
-- La sesión de Colab: carga los archivos de las celdas, inicia y finaliza el trabajo que comenzó, descarga los archivos que se le solicitaron y detiene la sesión. Nunca envía una señal a un proceso que pertenezca a otra ejecución de colab-runner (`CR_NOT_OURS`).
-- El directorio de salida (`--out-dir`) y su directorio de cuarentena hermano `<out-dir>.quarantine/` en el sistema. Una llamada directa a `Colab.download` sin directorio de cuarentena utiliza una nueva carpeta `colab-runner-quarantine-*` dentro del directorio temporal del sistema.
-- Las variables de entorno que utiliza la sesión con `--env`, y que se pasan a la máquina virtual dentro del archivo de la celda.
+- La sesión de Colab que especifique: carga los archivos de las celdas, inicia y detiene el trabajo que inició, descarga los archivos que se le solicitaron y detiene la sesión. Nunca envía una señal a un proceso que pertenezca a otra ejecución de colab-runner (`CR_NOT_OURS`).
+- El directorio de salida (`--out-dir`) y su directorio de cuarentena hermano `<out-dir>.quarantine/` en su máquina. Un directorio `Colab.download` sin directorio de cuarentena utiliza una nueva carpeta `colab-runner-quarantine-*` dentro del directorio temporal del sistema.
+- Las variables de entorno que especifique con `--env`, que se pasan a la máquina virtual dentro del archivo de la celda.
 
 **Qué no toca.** Ningún archivo fuera del directorio "out", su cuarentena y la cuarentena temporal. Ninguna otra sesión de Colab. Ninguna configuración de cuenta, credenciales o facturación: lee la tarifa y el saldo de la cuenta a través de la herramienta de línea de comandos `colab` y nunca los cambia.
 
 **Red.** Solo a través de la herramienta de línea de comandos `colab`, a Google Colab. colab-runner no abre ninguna conexión por sí solo.
 
-**Secretos.** Un secreto que se pasa como `--env NAME` no aparece en ninguna línea de comandos. Cada línea de salida, cada línea de error, cada rastreo de pila y cada archivo de texto descargado se eliminan de los tokens; un archivo binario que contiene un token se pone en cuarentena sin cambios y la descarga se rechaza (anteriormente). colab-runner nunca elimina la cuarentena: el programa que lo llama debe eliminarla y nunca debe enviarla.
+**Secretos.** Un secreto que se pasa como `--env NAME` no aparecerá en ninguna línea de comando. Cada línea de salida, cada línea de error, cada rastreo de pila y cada archivo de texto descargado se eliminan para eliminar los tokens; un archivo binario que contenga un token se pone en cuarentena sin cambios y la descarga se rechaza (arriba). colab-runner nunca elimina la cuarentena: usted debe eliminarla y nunca enviarla.
 
 **Permisos.** Se ejecuta como el usuario que lo ejecuta, con la sesión `colab` en la que ese usuario ya ha iniciado sesión. No necesita elevación de privilegios.
 

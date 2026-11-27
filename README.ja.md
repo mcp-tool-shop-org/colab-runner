@@ -35,18 +35,18 @@ LinuxまたはWSL、Python 3.11以降、およびGoogleの `colab` コマンド�
 
 ## クイックスタート
 
-仕様を記述します（完全な例は[examples/merchant_league_seats](examples/merchant_league_seats/README.md)にあります）。
+プロジェクトの Git リポジトリ内で作業してください。リポジトリ外のファイルは保護されたデータと見なされ、アクセスが拒否されます。仕様を記述してください（完全な仕様は [examples/merchant_league_seats](examples/merchant_league_seats/README.md) にあります）。
 
 ```toml
 schema_version = 1
 
 [project]
-repo = "you/your-repo"
-study = "first-try"
+repo = "you/your-repo"   # required: your repo, for the records
+study = "first-try"      # required: a name for this line of work
 job = "train_01"
 
 [compute]
-card = "L4"        # GPU type: T4, L4, G4 or A100
+card = "L4"        # CPU, T4, L4, G4 or A100
 shape = "standard"
 max_rate = 2.5     # expected compute units per hour
 cap = 5.0          # never spend more than this
@@ -60,7 +60,7 @@ files = [
 ]
 
 [job]
-setup = ["pip install -r requirements.txt"]
+setup = ["python3 -m pip install -r requirements.txt"]
 run = ["python3 train.py"]
 cpu_dry_run = ["python3 train.py --smoke"]
 
@@ -68,7 +68,7 @@ cpu_dry_run = ["python3 train.py --smoke"]
 collect = ["model", "metrics.json"]
 ```
 
-次に、それをチェックし、リハーサルを行い、実行します。
+`--local-cpu` は、お客様のコンピューターでセットアップコマンドとジョブコマンドを実行するため、必要なものがすべて揃っている必要があります（ここでは pip: `sudo apt install python3-pip` を、新しい Ubuntu または WSL にインストールします）。次に、それを確認し、テストし、実行します。
 
 ```bash
 python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
@@ -94,16 +94,16 @@ python -m colab_runner status --out-dir runs/w1
 
 ## セキュリティと脅威モデル
 
-**対象となるもの。**
-- Colabセッションは、レーン名を使用します。セルファイルをアップロードし、開始したジョブを開始および停止し、要求されたファイルをダウンロードし、セッションを停止します。別のcolab-runnerの実行に属するプロセスに信号を送信することはありません（`CR_NOT_OURS`）。
-- 外部ディレクトリ（`--out-dir`）とその隣接する隔離ディレクトリ（`<out-dir>.quarantine/`）は、マシン上にあります。隔離ディレクトリがない単純な `Colab.download` は、システムの一時ディレクトリの下に新しい `colab-runner-quarantine-*` フォルダを使用します。
-- レーンが `--env` を使用して環境変数を設定し、それをセルファイル内のVMに渡します。
+**影響を受けるもの。**
+- 指定した Colab セッション：セルのファイルをアップロードし、開始したジョブを開始および終了し、要求されたファイルをダウンロードし、セッションを停止します。colab-runner (`CR_NOT_OURS`) の別の実行に属するプロセスには、決してシグナルを送信しません。
+- お客様のコンピューターにある出力ディレクトリ（`--out-dir`）とその兄弟である隔離ディレクトリ（`<out-dir>.quarantine/`）。隔離ディレクトリがない単純な `Colab.download` は、システムの一時ディレクトリの下にある新しい `colab-runner-quarantine-*` フォルダを使用します。
+- `--env` で指定する環境変数。これは、セルのファイル内の VM に渡されます。
 
 **対象としないもの。** 外部ディレクトリ、隔離ディレクトリ、および一時隔離ディレクトリの外部のファイル。他のColabセッション。アカウント設定、認証情報、または請求：アカウントの料金と残高を `colab` コマンドラインから読み取り、変更することはありません。
 
 **ネットワーク。** Google Colabへの唯一の接続は、`colab` コマンドラインを介して行われます。colab-runnerは、独自の接続を開きません。
 
-**機密情報。** `--env NAME` として渡された機密情報は、どのコマンドラインにも表示されません。すべての出力行、エラー行、トレースバック、およびダウンロードされたテキストファイルからトークンが削除されます。トークンを含むバイナリファイルは、変更せずに隔離され、ダウンロードは拒否されます（上記）。colab-runnerは、隔離ディレクトリを削除することはありません。呼び出し元のレーンがそれを削除する必要があり、決して送信してはなりません。
+**機密情報。** `--env NAME` として渡された機密情報は、コマンドラインに表示されません。すべての出力行、エラー行、トレースバック、およびダウンロードされたテキストファイルからトークンが削除されます。トークンを含むバイナリファイルは、変更せずに隔離され、ダウンロードは拒否されます（上記）。colab-runner は隔離ディレクトリを削除することはありません。お客様が削除する必要があり、決して配布しないでください。
 
 **権限。** ユーザーが実行し、そのユーザーがすでに持っている `colab` にサインインして実行されます。昇格は必要ありません。
 
