@@ -47,7 +47,7 @@ from colab_runner.colab_cli import (
     scrub_local,
     write_cell,
 )
-from colab_runner.errors import Refused, cap_trip_record, error_record
+from colab_runner.errors import GuardFailed, Refused, cap_trip_record, error_record
 from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
 from colab_runner.queue import classify_window_outcome
 from colab_runner.runner import (
@@ -56,6 +56,7 @@ from colab_runner.runner import (
     _CELL_TRANSIENT_ENV,
     RunInterrupted,
     Runner,
+    _guard_call,
     require_number,
     vm_lib_source,
     write_json_atomic,
@@ -94,7 +95,7 @@ class _CrPartWriter:
         os.makedirs(parent, exist_ok=True)
         for fn in os.listdir(parent):
             tail = fn[len(prefix):] if fn.startswith(prefix) else ""
-            if _cr_re.fullmatch(r"\\.part\\d{4}", tail) or fn == prefix + ".tmp":
+            if _cr_re.fullmatch(r"\\.part\\d{4}", tail):
                 stale = os.path.join(parent, fn)
                 if not os.path.islink(stale) and os.path.isfile(stale):
                     try:
@@ -147,10 +148,7 @@ def _cr_tar_output():
     if not rel:
         print("CR_TAR_MISSING", flush=True)
         return
-    try:
-        chunk_bytes = max(1, int(os.environ.get("CR_TAR_CHUNK_BYTES", "268435456")))
-    except ValueError:
-        chunk_bytes = 268435456
+    chunk_bytes = max(1, int(os.environ.get("CR_TAR_CHUNK_BYTES", "268435456")))
     work_dir = os.path.join(CR_CONTENT, CR_JOB + "_work")
     src = None
     for base in (work_dir, CR_OUT):
@@ -274,19 +272,6 @@ def build_job_env(
         "CR_NVIDIA_SMI": "",
     })
     return env
-
-
-def _download_chunk_bytes() -> int:
-    raw = os.environ.get("CR_DOWNLOAD_CHUNK_BYTES", "").strip()
-    if not raw:
-        return DEFAULT_DOWNLOAD_CHUNK_BYTES
-    try:
-        val = int(raw)
-    except ValueError:
-        raise Refused("SETTING_INVALID", "CR_DOWNLOAD_CHUNK_BYTES must be a positive integer") from None
-    if val < 1:
-        raise Refused("SETTING_INVALID", "CR_DOWNLOAD_CHUNK_BYTES must be a positive integer")
-    return val
 
 
 def _tar_timeout_s(download_parts: int) -> float:
@@ -1086,11 +1071,12 @@ def _download_declared_outputs(
     next_exec_timeout: Optional[Callable[[], Optional[float]]] = None,
     output_errors: Optional[dict[str, str]] = None,
     download_parts: int = 1,
-    chunk_bytes: int = DEFAULT_DOWNLOAD_CHUNK_BYTES,
+    chunk_bytes: Optional[int] = None,
     transferred_out: Optional[list[str]] = None,
 ) -> tuple[list[str], bool]:
     transferred = transferred_out if transferred_out is not None else []
     completed = True
+    eff_chunk = DEFAULT_DOWNLOAD_CHUNK_BYTES if chunk_bytes is None else chunk_bytes
     base = content.rstrip("/\\") or "/"
     work_prefix = "%s/%s_work" % (base, job)
     out_prefix = "%s/%s_out" % (base, job)
@@ -1124,7 +1110,7 @@ def _download_declared_outputs(
                 break
             tar_res = runner._clean(runner.colab.exec_cell(
                 runner.session, vm_lib_source() + "\n" + _TAR_OUTPUT_CELL_SRC,
-                runner._env({"CR_TAR_REL": rel, "CR_TAR_CHUNK_BYTES": str(int(chunk_bytes))}), exec_t,
+                runner._env({"CR_TAR_REL": rel, "CR_TAR_CHUNK_BYTES": str(int(eff_chunk))}), exec_t,
             ))
             if not (tar_res.ok and "CR_TAR_READY" in tar_res.out):
                 continue
@@ -1493,7 +1479,6 @@ def launch_window(
     _refuse_native_windows()
     out_path = _check_empty_out_dir(Path(out_dir))
     spec = WindowSpec.from_file(spec_path)
-    chunk_bytes = _download_chunk_bytes()
     (
         card_spec, clean_shape, eff_max_rate, eff_cap, eff_wall_s, eff_margin, eff_cleanup, eff_resident,
     ) = _apply_overrides(
@@ -1658,8 +1643,8 @@ def launch_window(
 
     def _open_time_left() -> tuple[float, str]:
         elapsed = max(0.0, clock() - t_open_monotonic) if t_open_monotonic is not None else 0.0
-        wall_left = lg.evaluate_wall_guard(elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["remaining_s"]
-        cap_left = guard.seconds_left(elapsed)
+        wall_left = _guard_call(lg.evaluate_wall_guard, elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["remaining_s"]
+        cap_left = _guard_call(guard.seconds_left, elapsed)
         return (cap_left, "cap") if cap_left < wall_left else (wall_left, "wall")
 
     def _record_window_outcome(stopped_ok: bool) -> None:
@@ -1671,41 +1656,33 @@ def launch_window(
                 ledger.release_reservation(spec.study, window_id=window_id)
             ledger.record_window(spec.study, outcome)
 
+    def _close_open_trip(sig_state: dict[str, Any], *, status: str, cap_trip=None, refusal=None) -> dict[str, Any]:
+        sig_state["cleaning"] = True
+        stopped_ok, stopped_at = _finalize_close(
+            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+        )
+        _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
+                    bal_end=_read_end_balance(client))
+        outcome.update({"status": status, "exit_code": 2, "cap_trip": cap_trip, "refusal": refusal})
+        write_json_atomic(out_path / "outcome.json", outcome)
+        _record_window_outcome(stopped_ok)
+        return outcome
+
     def _trip_open_bound(sig_state: dict[str, Any]) -> Optional[dict[str, Any]]:
         if t_open_monotonic is None:
             return None
         elapsed = max(0.0, clock() - t_open_monotonic)
-        if lg.evaluate_wall_guard(elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["tripped"]:
-            sig_state["cleaning"] = True
-            stopped_ok, stopped_at = _finalize_close(
-                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+        if _guard_call(lg.evaluate_wall_guard, elapsed_s=elapsed, wall_s=eff_wall_s, grace_s=0.0)["tripped"]:
+            return _close_open_trip(
+                sig_state, status="wall",
+                refusal=error_record("CAP_CEILING_REACHED", "wall %.0fs reached during open phase" % eff_wall_s),
             )
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
-                        bal_end=_read_end_balance(client))
-            outcome["status"] = "wall"
-            outcome["exit_code"] = 2
-            outcome["refusal"] = error_record("CAP_CEILING_REACHED", "wall %.0fs reached during open phase" % eff_wall_s)
-            write_json_atomic(out_path / "outcome.json", outcome)
-            _record_window_outcome(stopped_ok)
-            return outcome
-        trip = guard.check(elapsed)
-        if trip or guard.seconds_left(elapsed) <= 1e-3:
-            sig_state["cleaning"] = True
-            stopped_ok, stopped_at = _finalize_close(
-                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+        trip = _guard_call(guard.check, elapsed)
+        if trip or _guard_call(guard.seconds_left, elapsed) <= 1e-3:
+            return _close_open_trip(
+                sig_state, status="cap",
+                cap_trip=cap_trip_record(scrub(trip)) if trip else error_record("CAP_CEILING_REACHED", "the cap was reached during open phase"),
             )
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
-                        bal_end=_read_end_balance(client))
-            outcome["status"] = "cap"
-            outcome["exit_code"] = 2
-            outcome["cap_trip"] = (
-                cap_trip_record(scrub(trip))
-                if trip
-                else error_record("CAP_CEILING_REACHED", "the cap was reached during open phase")
-            )
-            write_json_atomic(out_path / "outcome.json", outcome)
-            _record_window_outcome(stopped_ok)
-            return outcome
         return None
 
     def _next_call_timeout(default_s: float, sig_state: dict[str, Any]) -> tuple[Optional[float], Optional[dict[str, Any]]]:
@@ -1719,18 +1696,10 @@ def launch_window(
             tripped = _trip_open_bound(sig_state)
             if tripped is not None:
                 return None, tripped
-            sig_state["cleaning"] = True
-            stopped_ok, stopped_at = _finalize_close(
-                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+            return None, _close_open_trip(
+                sig_state, status="cap",
+                cap_trip=error_record("CAP_CEILING_REACHED", "the cap was reached during open phase"),
             )
-            _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
-                        bal_end=_read_end_balance(client))
-            outcome["status"] = "cap"
-            outcome["exit_code"] = 2
-            outcome["cap_trip"] = error_record("CAP_CEILING_REACHED", "the cap was reached during open phase")
-            write_json_atomic(out_path / "outcome.json", outcome)
-            _record_window_outcome(stopped_ok)
-            return None, outcome
         return min(float(default_s), left), None
 
     with _open_phase_signals() as sig_state:
@@ -1933,7 +1902,9 @@ def launch_window(
                 outcome["status"] = "interrupted" if is_int else "error"
                 outcome["exit_code"] = 2
                 if not is_int and outcome["refusal"] is None:
-                    outcome["refusal"] = error_record("UNEXPECTED_ERROR", scrub("%s: %s" % (type(exc).__name__, exc)))
+                    code = exc.code if isinstance(exc, GuardFailed) else "UNEXPECTED_ERROR"
+                    msg = exc.message if isinstance(exc, GuardFailed) else ("%s: %s" % (type(exc).__name__, exc))
+                    outcome["refusal"] = error_record(code, scrub(msg))
                 write_json_atomic(out_path / "outcome.json", outcome)
                 _record_window_outcome(stopped_ok)
             if isinstance(exc, _OpenInterrupted):
@@ -1995,7 +1966,6 @@ def launch_window(
                     next_exec_timeout=_next_cleanup_exec_timeout,
                     output_errors=output_errors,
                     download_parts=spec.download_parts,
-                    chunk_bytes=chunk_bytes,
                     transferred_out=collected,
                 )
                 ok = dl_ok and all(rel in collected for rel in spec.collect_outputs)
@@ -2011,7 +1981,6 @@ def launch_window(
                     next_exec_timeout=_next_cleanup_exec_timeout,
                     output_errors=output_errors,
                     download_parts=spec.download_parts,
-                    chunk_bytes=chunk_bytes,
                     transferred_out=salvaged,
                 )
                 ok = dl_ok
@@ -2099,10 +2068,8 @@ def launch_window(
                 is_int = isinstance(run_error, (RunInterrupted, KeyboardInterrupt))
                 outcome["status"] = "interrupted" if is_int else "error"
                 if outcome["refusal"] is None and not is_int:
-                    if isinstance(run_error, BinaryDownloadRefused):
-                        outcome["refusal"] = error_record("BINARY_DOWNLOAD_TOKEN", scrub(run_error.message))
-                    elif isinstance(run_error, QuarantineEscape):
-                        outcome["refusal"] = error_record("QUARANTINE_ESCAPE", scrub(run_error.message))
+                    if isinstance(run_error, (BinaryDownloadRefused, QuarantineEscape, GuardFailed)):
+                        outcome["refusal"] = error_record(run_error.code, scrub(run_error.message))
                     else:
                         outcome["refusal"] = error_record(
                             "UNEXPECTED_ERROR", scrub("%s: %s" % (type(run_error).__name__, run_error))

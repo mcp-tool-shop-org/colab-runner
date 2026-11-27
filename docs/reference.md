@@ -208,7 +208,7 @@ A `line` is a short label that groups related runs (for example `feature-eval` o
   single card per study (`CARD_MIX_REFUSED`), isolates per-job failures (stopping & recording before advancing to the next
   job, halting only if a session stop cannot be confirmed), and writes `queue_state.json` plus `QUEUE_END`.
 
-## Chunked output download (`outputs.download_parts`, `CR_DOWNLOAD_CHUNK_BYTES`)
+## Chunked output download (`outputs.download_parts`)
 
 Declared `outputs.collect` and `outputs.salvage` paths support streaming directory tars and multi-part downloads
 bounded by `cleanup_bound_s`:
@@ -216,7 +216,7 @@ bounded by `cleanup_bound_s`:
 - **Direct file download first + streaming directory `.tar.partNNNN` slices:** direct single-file downloads always run
   first (any failed partial transfer is unlinked before fallback). Missing or directory outputs fall back to a VM tar
   cell whose timeout scales with `outputs.download_parts`, streaming directory files into `.tar.part0000`... slices of
-  at most `CR_DOWNLOAD_CHUNK_BYTES` bytes (default `268435456` = 256 MiB). Archives with more parts than
+  at most `256 MiB` (`268435456` bytes). Archives with more parts than
   `outputs.download_parts` are refused upfront with `OUTPUT_PARTS_EXCEEDED`; otherwise parts stage beside
   `collected/` or `salvage/`, verify per-part SHA-256 digests, reassemble, and pass through `filter="data"` extraction
   and binary-safe local token scrubbing (`OUTPUT_TAR_CORRUPT` discards the parts on a mismatch or corrupt header;

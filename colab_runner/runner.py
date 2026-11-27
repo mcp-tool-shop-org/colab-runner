@@ -48,7 +48,7 @@ from colab_runner.colab_cli import (
     default_quarantine_dir,
     scrub_local,
 )
-from colab_runner.errors import Refused, cap_trip_record, error_record
+from colab_runner.errors import GuardFailed, Refused, cap_trip_record, error_record
 from colab_runner.window_lib import launch_guards as lg
 
 VM_DIR = Path(__file__).parent / "vm"
@@ -127,6 +127,15 @@ def parse_poll(stdout: str) -> Optional[tuple[dict, list[str]]]:
         elif ln.startswith("CR_LOG "):
             lines.append(ln[len("CR_LOG "):])
     return (rec, lines) if isinstance(rec, dict) else None
+
+
+def _guard_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    try:
+        return fn(*args, **kwargs)
+    except (Refused, RunInterrupted, KeyboardInterrupt, GuardFailed):
+        raise
+    except Exception as exc:
+        raise GuardFailed(exc) from exc
 
 
 def write_json_atomic(path: Path, obj) -> None:
@@ -358,9 +367,9 @@ class Runner:
     def _time_left(self) -> tuple[float, str]:
         """Seconds left before the nearer of the wall and the cap's ceiling, and which one it is."""
         elapsed = self.clock() - self._t0
-        left = lg.evaluate_wall_guard(elapsed_s=elapsed, wall_s=self._wall_s, grace_s=0.0)["remaining_s"]
+        left = _guard_call(lg.evaluate_wall_guard, elapsed_s=elapsed, wall_s=self._wall_s, grace_s=0.0)["remaining_s"]
         if self._guard is not None:
-            cap_left = self._guard.seconds_left(elapsed)
+            cap_left = _guard_call(self._guard.seconds_left, elapsed)
             if cap_left < left:
                 return cap_left, "cap"
         return left, "wall"
@@ -615,7 +624,7 @@ class Runner:
             except BaseException as exc:  # any crash, KeyboardInterrupt included: stop first, then let it go on
                 self._end_as("interrupted" if isinstance(exc, KeyboardInterrupt) else "error",
                              "%s: %s" % (type(exc).__name__, exc))
-                if isinstance(exc, (BinaryDownloadRefused, QuarantineEscape)):
+                if isinstance(exc, (BinaryDownloadRefused, QuarantineEscape, GuardFailed)):
                     self._res.refusal = error_record(exc.code, scrub(exc.message))
                 crash = exc
             finally:
@@ -750,7 +759,7 @@ class Runner:
         while True:
             if self._resident is not None:
                 self._resident.poll()  # reaps it, or kills it at its deadline
-            if lg.evaluate_wall_guard(elapsed_s=self.clock() - self._t0, wall_s=wall_s, grace_s=0.0)["tripped"]:
+            if _guard_call(lg.evaluate_wall_guard, elapsed_s=self.clock() - self._t0, wall_s=wall_s, grace_s=0.0)["tripped"]:
                 return self._end_as("wall", "wall %.0fs reached" % wall_s)
             if guard is not None:
                 u, usage_skipped = None, False
@@ -758,9 +767,9 @@ class Runner:
                     u, usage_skipped = self._read_usage()
                     if u is not None:
                         usage_t = self.clock()
-                        fold(u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
+                        _guard_call(fold, u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
                 left_now, nearer = self._time_left()
-                trip = guard.check(self.clock() - self._t0)
+                trip = _guard_call(guard.check, self.clock() - self._t0)
                 if trip:
                     usage_cut = usage_skipped or (u is not None and not u.ok and left_now < MIN_CALL_S)
                     reason = nearer if usage_cut else "cap"
