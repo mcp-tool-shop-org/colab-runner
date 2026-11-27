@@ -92,6 +92,8 @@ class QueueSpec:
             raise Refused("SPEC_INVALID", "could not parse queue %s (%s)" % (qp, exc)) from None
         if not isinstance(data, dict) or data.get("schema_version", 1) != 1:
             raise Refused("SPEC_INVALID", "queue manifest must have schema_version = 1")
+        if "publish" in data:
+            raise Refused("SPEC_INVALID", "[publish] was removed; delete it; publish with `hf upload`")
         _reject_unknown_keys(
             data,
             frozenset({"schema_version", "queue", "out_root", "state_dir", "line", "jobs"}),

@@ -19,7 +19,7 @@ exit codes: 0 ok, 1 refusal or usage error, 2 runtime error, 3 done but the sess
 
 ### `launch` and `status`
 
-- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec (refusing unknown keys/tables with `SPEC_INVALID`), card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs (streaming tars and chunked `.partNNNN` transfers with SHA-256 verification), confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) in `outcome.json` and `QUEUE_END`.
+- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec (refusing unknown keys/tables with `SPEC_INVALID`), card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs (streaming directory `.tar.partNNNN` transfers with per-part SHA-256 verification), confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) in `outcome.json` and `QUEUE_END`.
 - `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json` (reporting `orphaned` if `launcher_pid` died while `session_open.json` exists), `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
 
 ### `run`
@@ -210,6 +210,11 @@ again.
 | `SEALED_DESTINATION_REFUSED` | no | launch only to a card and host allowed by both [inputs.sealed] and the pre-registration text |
 | `ALLOW_SEALED_REQUIRED` | no | pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs |
 | `OUTPUT_PATH_INVALID` | no | list outputs.collect and outputs.salvage as relative paths without '..' |
+| `OUTPUT_SCRUB_FAILED` | no | check local destination permissions or unreadable files; directory output scrub failed |
+| `OUTPUT_TAR_CORRUPT` | no | inspect the job's directory output on the VM: its archive or chunked parts failed size/sha256 verification or extraction |
+| `OUTPUT_TAR_UNSAFE` | no | remove symlinks, absolute paths, or '..' entries from the job's directory output |
+| `OUTPUT_PARTS_EXCEEDED` | no | raise outputs.download_parts in the window spec (and --cap if needed) to cover the archive's part count |
+| `OUTPUT_DOWNLOAD_FAILED` | yes | check session connectivity or local disk space, or raise cleanup_bound_s / --cap; downloading an output failed |
 | `SESSIONS_READ_FAILED` | yes | check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a window |
 | `CARD_UNKNOWN` | no | choose a known Colab card from the catalog (CPU, T4, L4, G4, A100) |
 | `CARD_UNAVAILABLE` | no | choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan |
@@ -234,7 +239,7 @@ again.
 | Name | Where | What |
 | --- | --- | --- |
 | `COLAB_RUNNER_CLI` | local | The `colab` command line to call, split with POSIX quoting (default `colab`). |
-| `CR_DOWNLOAD_CHUNK_BYTES` | local | Chunk threshold in bytes (default `268435456`, 256 MiB) for splitting oversized output files/tars into `.partNNNN` slices. |
+| `CR_DOWNLOAD_CHUNK_BYTES` | local | Chunk threshold in bytes (default `268435456`, 256 MiB) for splitting directory `.tar.partNNNN` slices. |
 | `CR_RUN_ID` | VM | The run's own id. Reserved: a caller may not set it. |
 | `CR_OUT_DIR` | VM | The job's out dir (default `<content>/<job>_out`). |
 | `CR_PROGRESS_GLOB` | VM | Files whose first integer counts as progress (default `<out>/progress/*`). |

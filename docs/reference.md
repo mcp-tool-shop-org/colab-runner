@@ -210,15 +210,20 @@ A `line` is a short label that groups related runs (for example `feature-eval` o
 
 ## Chunked output download (`outputs.download_parts`, `CR_DOWNLOAD_CHUNK_BYTES`)
 
-Declared `outputs.collect` and `outputs.salvage` paths support streaming tars and multi-part downloads bounded by
-`cleanup_bound_s`:
+Declared `outputs.collect` and `outputs.salvage` paths support streaming directory tars and multi-part downloads
+bounded by `cleanup_bound_s`:
 
-- **Streaming VM archive + chunk splitting:** directory outputs stream through `tar` (`CR_DOWNLOAD_CHUNK_BYTES`, default
-  `268435456` = 256 MiB) instead of buffering large files in memory, and any directory tar or single file exceeding the
-  chunk limit is split on the VM into `.partNNNN` slices with per-part and whole-payload SHA-256 verification and
-  reassembly before local binary-safe token scrubbing (`OUTPUT_TAR_CORRUPT` on any mismatch or corrupt manifest).
-- **Cleanup reserve scaling:** set `outputs.download_parts` (positive integer, default `1`; values above `3` scale each
-  output's `cleanup_outputs_bound_s` reserve linearly) so multi-part downloads stay inside `--cap`.
+- **Direct file download first + streaming directory `.tar.partNNNN` slices:** direct single-file downloads always run
+  first (any failed partial transfer is unlinked before fallback). Missing or directory outputs fall back to a VM tar
+  cell whose timeout scales with `outputs.download_parts`, streaming directory files into `.tar.part0000`... slices of
+  at most `CR_DOWNLOAD_CHUNK_BYTES` bytes (default `268435456` = 256 MiB). Archives with more parts than
+  `outputs.download_parts` are refused upfront with `OUTPUT_PARTS_EXCEEDED`; otherwise parts stage beside
+  `collected/` or `salvage/`, verify per-part SHA-256 digests, reassemble, and pass through `filter="data"` extraction
+  and binary-safe local token scrubbing (`OUTPUT_TAR_CORRUPT` discards the parts on a mismatch or corrupt header;
+  `OUTPUT_DOWNLOAD_FAILED` records a failed transfer or local I/O error; only extracted binary token hits are
+  quarantined to `<out-dir>.quarantine`).
+- **Cleanup reserve scaling:** set `outputs.download_parts` (positive integer, default `1`) so both the tar cell
+  timeout and part download slots in `cleanup_outputs_bound_s` scale cleanly inside `--cap`.
 
 ## Publishing your outputs
 

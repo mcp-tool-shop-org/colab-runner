@@ -142,6 +142,8 @@ class WindowSpec:
         schema_version = data.get("schema_version", 1)
         if schema_version != 1:
             raise Refused("SPEC_INVALID", "schema_version must be 1 (got %r)" % (schema_version,))
+        if "publish" in data:
+            raise Refused("SPEC_INVALID", "[publish] was removed; delete it; publish with `hf upload`")
         _reject_unknown_keys(
             data,
             frozenset({"schema_version", "project", "compute", "inputs", "job", "outputs"}),
@@ -149,6 +151,8 @@ class WindowSpec:
         )
 
         proj = _require_table(data, "project")
+        if "data_class" in proj:
+            raise Refused("SPEC_INVALID", "project.data_class was removed; delete it; publish with `hf upload`")
         _reject_unknown_keys(proj, frozenset({"repo", "study", "job", "description", "purpose", "line"}), "[project]")
         comp = _require_table(data, "compute")
         _reject_unknown_keys(

@@ -298,6 +298,11 @@ class ContinuousWorkEngineTest(unittest.TestCase):
                 with self.assertRaises(Refused) as ctx_u:
                     QueueSpec.from_file(_write_queue_spec(root, bad_toml))
                 self.assertEqual(ctx_u.exception.code, "SPEC_INVALID")
+            with self.assertRaises(Refused) as ctx_qp:
+                QueueSpec.from_file(_write_queue_spec(
+                    root, 'out_root = "qr"\n[publish]\nrepo = "o/r"\n[[jobs]]\nid = "j1"\nspec = "t4_ok.toml"\npurpose = "p"\n',
+                ))
+            self.assertIn("hf upload", ctx_qp.exception.message)
 
             # Queue without state_dir defaults to launch's per-user state dir (and respects COLAB_RUNNER_STATE_DIR)
             qp_default = _write_queue_spec(

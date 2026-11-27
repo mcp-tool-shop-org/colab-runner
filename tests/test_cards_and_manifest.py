@@ -776,6 +776,12 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
                 with self.assertRaises(Refused) as ctx_u:
                     WindowSpec.from_mapping(bad_u, base_dir=root)
                 self.assertEqual(ctx_u.exception.code, "SPEC_INVALID")
+            for stale_mut in unknown_cases[:2]:
+                bad_stale = _minimal_spec_dict()
+                stale_mut(bad_stale)
+                with self.assertRaises(Refused) as ctx_s:
+                    WindowSpec.from_mapping(bad_stale, base_dir=root)
+                self.assertIn("hf upload", ctx_s.exception.message)
 
             for bad_parts in (0, -2, True, 1.5, "2"):
                 bad_dp = _minimal_spec_dict()
