@@ -100,8 +100,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 2,
-        "lines": 341,
+        "commits": 3,
+        "lines": 347,
         "path": ".polyglot-pins.json"
       },
       {
@@ -115,43 +115,43 @@
         "path": "LICENSE"
       },
       {
-        "commits": 5,
-        "lines": 490,
+        "commits": 7,
+        "lines": 528,
         "path": "README.es.md"
       },
       {
-        "commits": 5,
-        "lines": 440,
+        "commits": 7,
+        "lines": 474,
         "path": "README.fr.md"
       },
       {
-        "commits": 5,
-        "lines": 440,
+        "commits": 7,
+        "lines": 479,
         "path": "README.hi.md"
       },
       {
-        "commits": 5,
-        "lines": 456,
+        "commits": 7,
+        "lines": 494,
         "path": "README.it.md"
       },
       {
-        "commits": 5,
-        "lines": 404,
+        "commits": 7,
+        "lines": 444,
         "path": "README.ja.md"
       },
       {
-        "commits": 11,
-        "lines": 704,
+        "commits": 13,
+        "lines": 735,
         "path": "README.md"
       },
       {
-        "commits": 5,
-        "lines": 464,
+        "commits": 7,
+        "lines": 502,
         "path": "README.pt-BR.md"
       },
       {
-        "commits": 5,
-        "lines": 402,
+        "commits": 7,
+        "lines": 441,
         "path": "README.zh.md"
       },
       {
@@ -160,8 +160,8 @@
         "path": "SCORECARD.md"
       },
       {
-        "commits": 1,
-        "lines": 50,
+        "commits": 2,
+        "lines": 60,
         "path": "SECURITY.md"
       },
       {
@@ -171,7 +171,7 @@
       },
       {
         "commits": 11,
-        "lines": 241,
+        "lines": 240,
         "path": "atlas/README.md"
       },
       {
@@ -181,17 +181,17 @@
       },
       {
         "commits": 11,
-        "lines": 646,
+        "lines": 650,
         "path": "atlas/page.json"
       },
       {
         "commits": 11,
-        "lines": 1819,
+        "lines": 1934,
         "path": "atlas/statistics.json"
       },
       {
         "commits": 11,
-        "lines": 7807,
+        "lines": 7831,
         "path": "atlas/structure.json"
       },
       {
@@ -206,7 +206,7 @@
       },
       {
         "commits": 6,
-        "lines": 653,
+        "lines": 599,
         "path": "colab_runner/__main__.py"
       },
       {
@@ -221,27 +221,27 @@
       },
       {
         "commits": 5,
-        "lines": 250,
+        "lines": 252,
         "path": "colab_runner/errors.py"
       },
       {
         "commits": 3,
-        "lines": 2353,
+        "lines": 2400,
         "path": "colab_runner/launcher.py"
       },
       {
         "commits": 3,
-        "lines": 857,
+        "lines": 858,
         "path": "colab_runner/manifest.py"
       },
       {
         "commits": 1,
-        "lines": 376,
+        "lines": 385,
         "path": "colab_runner/publish.py"
       },
       {
         "commits": 1,
-        "lines": 697,
+        "lines": 593,
         "path": "colab_runner/queue.py"
       },
       {
@@ -281,7 +281,7 @@
       },
       {
         "commits": 2,
-        "lines": 36,
+        "lines": 37,
         "path": "colab_runner/window_lib/PROVENANCE.md"
       },
       {
@@ -296,17 +296,17 @@
       },
       {
         "commits": 2,
-        "lines": 2163,
+        "lines": 2174,
         "path": "colab_runner/window_lib/launch_guards.py"
       },
       {
-        "commits": 1,
-        "lines": 177,
+        "commits": 2,
+        "lines": 354,
         "path": "colab_runner/window_lib/remote_runner.py"
       },
       {
         "commits": 2,
-        "lines": 235,
+        "lines": 254,
         "path": "docs/reference.md"
       },
       {
@@ -316,7 +316,7 @@
       },
       {
         "commits": 3,
-        "lines": 61,
+        "lines": 60,
         "path": "examples/merchant_league_seats/colab-window.toml"
       },
       {
@@ -340,8 +340,8 @@
         "path": "examples/merchant_league_seats/wrapper.md"
       },
       {
-        "commits": 9,
-        "lines": 59,
+        "commits": 10,
+        "lines": 61,
         "path": "pyproject.toml"
       },
       {
@@ -386,27 +386,27 @@
       },
       {
         "commits": 4,
-        "lines": 75,
+        "lines": 85,
         "path": "site/src/content/docs/handbook/getting-started.md"
       },
       {
         "commits": 4,
-        "lines": 73,
+        "lines": 82,
         "path": "site/src/content/docs/handbook/index.md"
       },
       {
         "commits": 4,
-        "lines": 128,
+        "lines": 142,
         "path": "site/src/content/docs/handbook/lanes.md"
       },
       {
         "commits": 4,
-        "lines": 258,
+        "lines": 264,
         "path": "site/src/content/docs/handbook/reference.md"
       },
       {
         "commits": 4,
-        "lines": 87,
+        "lines": 99,
         "path": "site/src/content/docs/handbook/security.md"
       },
       {
@@ -461,7 +461,7 @@
       },
       {
         "commits": 1,
-        "lines": 588,
+        "lines": 772,
         "path": "tests/test_continuous.py"
       },
       {
@@ -481,7 +481,7 @@
       },
       {
         "commits": 3,
-        "lines": 1957,
+        "lines": 1988,
         "path": "tests/test_launcher.py"
       },
       {
@@ -521,7 +521,7 @@
       },
       {
         "commits": 4,
-        "lines": 1104,
+        "lines": 1116,
         "path": "tests/test_tokens.py"
       },
       {
@@ -536,7 +536,7 @@
       },
       {
         "commits": 3,
-        "lines": 97,
+        "lines": 98,
         "path": "tests/test_window_lib.py"
       },
       {
@@ -560,17 +560,17 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-27T01:21:21.909Z",
+  "generatedAt": "2026-11-27T01:53:06.488Z",
   "generatedFrom": {
-    "commit": "59ca9c007c44f174e63f2ca3d39e5e72542045b3"
+    "commit": "0d00e065a4dfb7694fde878dde96dd4d24f4df9b"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "README.md",
-      "either": 11,
+      "either": 13,
       "shared": 7,
-      "strength": 0.636364
+      "strength": 0.538462
     },
     {
       "a": "CHANGELOG.md",
@@ -622,32 +622,228 @@
       "strength": 0.777778
     },
     {
+      "a": "README.es.md",
+      "b": "README.fr.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.hi.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.it.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.ja.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.pt-BR.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.es.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.hi.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.it.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.ja.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.pt-BR.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.fr.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.it.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.ja.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.pt-BR.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.hi.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.ja.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.pt-BR.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.it.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.pt-BR.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.ja.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
+    },
+    {
+      "a": "README.md",
+      "b": "README.pt-BR.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
+      "a": "README.md",
+      "b": "README.zh.md",
+      "either": 11,
+      "shared": 6,
+      "strength": 0.545455
+    },
+    {
       "a": "README.md",
       "b": "atlas/README.md",
-      "either": 10,
+      "either": 12,
       "shared": 6,
-      "strength": 0.6
+      "strength": 0.5
     },
     {
       "a": "README.md",
       "b": "atlas/page.json",
-      "either": 10,
+      "either": 12,
       "shared": 6,
-      "strength": 0.6
+      "strength": 0.5
     },
     {
       "a": "README.md",
       "b": "atlas/statistics.json",
-      "either": 10,
+      "either": 12,
       "shared": 6,
-      "strength": 0.6
+      "strength": 0.5
     },
     {
       "a": "README.md",
       "b": "atlas/structure.json",
-      "either": 10,
+      "either": 12,
       "shared": 6,
-      "strength": 0.6
+      "strength": 0.5
+    },
+    {
+      "a": "README.pt-BR.md",
+      "b": "README.zh.md",
+      "either": 6,
+      "shared": 6,
+      "strength": 1
     },
     {
       "a": "atlas/README.md",
@@ -700,7 +896,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 23.5,
+    "appliedChangesetLimit": 23.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -709,16 +905,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-26T19:44:57-05:00",
-    "inScopeFiles": 94,
+    "headDate": "2026-11-26T20:34:07-05:00",
+    "inScopeFiles": 93,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 12,
+    "qualifyingCommits": 14,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-31T00:44:57.000Z",
+    "since": "2026-05-31T01:34:07.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

@@ -346,8 +346,6 @@ def launch_command(argv: list[str]) -> int:
             _out(res["budget_summary"])
         return EXIT_OK
 
-    if res.get("repo_url") and args.level >= NORMAL:
-        _out("PUBLISHED repo_url=%s flipped_public_at=%s" % (res["repo_url"], res.get("flipped_public_at")))
     refusal = res.get("refusal")
     cap_trip = res.get("cap_trip")
     code = (" code=%s" % refusal["code"]) if refusal else ""
@@ -425,7 +423,7 @@ def queue_command(argv: list[str]) -> int:
     p = ScrubbingParser(prog="colab_runner queue", description="Validate or run an unattended job queue.")
     p.add_argument("action", choices=("validate", "run"))
     p.add_argument("--queue", required=True, help="queue manifest (.toml or .json)")
-    p.add_argument("--state-dir", help="state directory holding line_ledger.json and open.lock")
+    p.add_argument("--state-dir", help="state directory holding study_ledger.json, card_refusals.json, and open.lock")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry", action="store_true")
     mode.add_argument("--local-cpu", action="store_true")
@@ -462,7 +460,6 @@ def queue_command(argv: list[str]) -> int:
 def board_command(argv: list[str]) -> int:
     """Display an at-a-glance board of lines, windows, queued items, and totals."""
     p = ScrubbingParser(prog="colab_runner board", description="Inspect lines, windows, queued jobs, and spend.")
-    p.add_argument("--state-dir", help="state directory holding line_ledger.json")
     p.add_argument("--out-root", help="directory holding queue_state.json and window subdirs")
     p.add_argument("--out-dir", action="append", default=[], help="explicit window out-dir to include")
     p.add_argument("--queue-state", help="path to queue_state.json")
@@ -471,7 +468,7 @@ def board_command(argv: list[str]) -> int:
     args = p.parse_args(argv)
     try:
         data = build_board(
-            state_dir=args.state_dir, out_root=args.out_root, out_dirs=args.out_dir, queue_state=args.queue_state,
+            out_root=args.out_root, out_dirs=args.out_dir, queue_state=args.queue_state,
         )
     except Refused as exc:
         return _refused(exc)

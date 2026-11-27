@@ -197,32 +197,25 @@ or inside WSL.
 
 A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) so `board` can total their spend and outcomes together.
 
-- **Purpose, line, and data class in `[project]`:** optional `purpose` (falls back to `description`, and is
-  required non-empty for every queued job), `line` (falls back to `study`), and `data_class` (`"public"`, `"synthetic"`,
-  `"private"`, or `"sealed"`, defaulting to `"sealed"` when `[inputs.sealed]` is declared and `"private"` otherwise).
-  Sealed manifests with `data_class` set to `"public"` or `"synthetic"`, or with `[publish] enabled = true`, are refused
-  (`SEALED_DATA_REFUSED`).
-- **Spend tracking (`line_ledger.json`):** windows record spend idempotently by `window_id` and classify into `done`,
-  `failed-ours`, `failed-Google`, or `refused-capacity` (`outcome_bucket`). The per-window `--cap` and `--wall-s` are the
-  only limits.
+- **Purpose and line in `[project]`:** optional `purpose` (falls back to `description`, and is required non-empty for
+  every queued job) and `line` (falls back to `study`). The runner distinguishes only sealed (`[inputs.sealed]` plus
+  `--allow-sealed`) versus unsealed inputs; per-window `--cap` and `--wall-s` are the only limits.
 - **Unattended queues (`queue validate` / `queue run`):** declare `[[jobs]]` in a TOML/JSON queue manifest with per-job
   `spec`, `purpose`, `line`, `cap`, `max_rate`, and `wall_s`. `queue validate` verifies every spec. `queue run` respects
   account/card pool ceilings through `launch_window` (`POOL_CEILING_REACHED` classifies as `refused-capacity`), enforces
   single card per study (`CARD_MIX_REFUSED`), isolates per-job failures (stopping & recording before advancing to the next
   job, halting only if a session stop cannot be confirmed), and writes `queue_state.json`.
-- **At-a-glance `board`:** `python -m colab_runner board [--out-root D | --out-dir D ...] [--state-dir S] [--json]`
-  shows line totals, ran/running windows (purpose, card, status, spend, artifacts, HF link), upcoming queued jobs, and
-  totals with four-way counts.
+- **At-a-glance `board`:** `python -m colab_runner board [--out-root D | --out-dir D ...] [--queue-state P] [--json]`
+  scans `outcome.json` under `--out-root` (or `--out-dir`) to show per-line spend and four-way counts (`done`,
+  `failed-ours`, `failed-Google`, `refused-capacity`), ran/running windows, upcoming queued jobs, and totals.
 
-## Opt-in Hugging Face publish (`[publish]`)
+## Publishing your outputs
 
-Publishing runs **only** when `[publish]` sets `enabled = true` and an explicit `repo_id = "owner/name"` (there is no
-default org; `repo_type` defaults to `"dataset"`), and `[inputs.sealed]` is absent. Runs on dev, canary, or smoke lines
-(`colab-runner-dev`, `dev`, `canary`, any `*-dev`, or any line containing `smoke`) refuse to publish even when enabled.
-When enabled on an eligible `done` window, `colab-runner` closes the Colab session first, then creates the Hugging Face
-repo as **private** (stopping as `publish.status = "exists"` without modifying anything on HTTP `409`), uploads `collected/`
-artifacts plus a generated `README.md` card after a pre-upload identity/token scan, flips the repo public (`flip_unverified`
-if the verification `GET` fails), and records `repo_url` and `flipped_public_at` in `outcome.json`. A publish failure
-is recorded in `outcome["publish"]` and never alters the finished window's `status` or `exit_code`.
+Nothing publishes unless a person or a job runs `hf upload`. After a window finishes and its session is stopped, create a private repo and upload `<out-dir>/collected` with the Hugging Face CLI:
+
+```bash
+hf repos create <id> --private
+hf upload <id> <out-dir>/collected
+```
 
 

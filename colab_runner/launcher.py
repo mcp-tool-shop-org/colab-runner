@@ -48,8 +48,7 @@ from colab_runner.colab_cli import (
 )
 from colab_runner.errors import Refused, cap_trip_record, error_record
 from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
-from colab_runner.publish import TransportFn, is_non_publishable_line, publish_window_outputs
-from colab_runner.queue import LineLedger, classify_window_outcome
+from colab_runner.queue import classify_window_outcome
 from colab_runner.runner import (
     DEFAULT_DOWNLOAD_TIMEOUT_S,
     MIN_CALL_S,
@@ -852,11 +851,9 @@ def _base_outcome(
             "description": spec.description,
             "purpose": purpose,
             "line": line,
-            "data_class": spec.data_class,
         },
         "purpose": purpose,
         "line": line,
-        "data_class": spec.data_class,
         "card": card_spec.name,
         "card_class": card_spec.card_class,
         "shape": shape,
@@ -889,9 +886,6 @@ def _base_outcome(
         "missing_outputs": [],
         "output_errors": {},
         "quarantined": [],
-        "publish": None,
-        "repo_url": None,
-        "flipped_public_at": None,
     }
 
 
@@ -1275,23 +1269,19 @@ def reconcile_stopped_outcome(
 
     proj = outcome.get("project") or {}
     study = str(proj.get("study") or "")
-    line_name = str(outcome.get("line") or proj.get("line") or (meta or {}).get("line") or study or "")
     mode_val = str(outcome.get("mode") or (meta or {}).get("mode") or "live")
     s_dir, l_file = _state_paths(
         (meta or {}).get("state_dir"),
         (meta or {}).get("study_ledger"),
         live=(mode_val == "live"),
     )
-    if s_dir is not None and (mode_val == "live" or (meta or {}).get("state_dir") is not None):
+    if s_dir is not None and study and outcome.get("card_class") == "gpu" and mode_val == "live" and l_file is not None:
         lock_p = _default_open_lock_path((meta or {}).get("open_lock"))
         with _open_lock(lock_p):
-            if study and outcome.get("card_class") == "gpu" and mode_val == "live" and l_file is not None:
-                ledger = StudyLedger(l_file)
-                if not outcome.get("opened"):
-                    ledger.release_reservation(study, window_id=str(outcome.get("window_id") or ""))
-                ledger.record_window(study, outcome)
-            if line_name:
-                LineLedger(s_dir / "line_ledger.json").record_outcome(line_name, outcome, out_dir=out_root)
+            ledger = StudyLedger(l_file)
+            if not outcome.get("opened"):
+                ledger.release_reservation(study, window_id=str(outcome.get("window_id") or ""))
+            ledger.record_window(study, outcome)
     return outcome
 
 
@@ -1318,7 +1308,6 @@ def launch_window(
     open_lock: Optional[Path | str] = None,
     purpose: Optional[str] = None,
     line: Optional[str] = None,
-    publish_transport: Optional[TransportFn] = None,
     post_open_polls: int = 6,
     rate_poll_interval_s: float = 5.0,
     shape_check_attempts: int = 3,
@@ -1411,11 +1400,10 @@ def launch_window(
             "session": eff_session,
             "project": {
                 "repo": spec.repo, "study": spec.study, "job": spec.job, "description": spec.description,
-                "purpose": eff_purpose, "line": eff_line, "data_class": spec.data_class,
+                "purpose": eff_purpose, "line": eff_line,
             },
             "purpose": eff_purpose,
             "line": eff_line,
-            "data_class": spec.data_class,
             "card": card_spec.name,
             "card_class": card_spec.card_class,
             "shape": clean_shape,
@@ -1459,7 +1447,6 @@ def launch_window(
         "project": outcome["project"],
         "purpose": eff_purpose,
         "line": eff_line,
-        "data_class": spec.data_class,
         "card": card_spec.name,
         "card_class": card_spec.card_class,
         "shape": clean_shape,
@@ -1499,19 +1486,14 @@ def launch_window(
         cap_left = guard.seconds_left(elapsed)
         return (cap_left, "cap") if cap_left < wall_left else (wall_left, "wall")
 
-    line_ledger = LineLedger(s_dir / "line_ledger.json") if (s_dir is not None and (live_mode or state_dir is not None)) else None
-
     def _record_window_outcome(stopped_ok: bool) -> None:
         outcome["outcome_bucket"] = classify_window_outcome(outcome)
-        if not live_mode and state_dir is None:
+        if not live_mode or ledger is None or card_spec.card_class != "gpu":
             return
         with _with_state_lock():
-            if ledger is not None and card_spec.card_class == "gpu" and live_mode:
-                if not outcome["opened"] and stopped_ok:
-                    ledger.release_reservation(spec.study, window_id=window_id)
-                ledger.record_window(spec.study, outcome)
-            if line_ledger is not None:
-                line_ledger.record_outcome(eff_line, outcome, out_dir=out_path)
+            if not outcome["opened"] and stopped_ok:
+                ledger.release_reservation(spec.study, window_id=window_id)
+            ledger.record_window(spec.study, outcome)
 
     def _trip_open_bound(sig_state: dict[str, Any]) -> Optional[dict[str, Any]]:
         if t_open_monotonic is None:
@@ -1948,36 +1930,6 @@ def launch_window(
                 outcome["exit_code"] = 0 if stopped_ok else 3
             else:
                 outcome["exit_code"] = 2
-
-            if spec.sealed is None and spec.publish is not None and spec.publish.enabled:
-                if is_non_publishable_line(eff_line):
-                    log("publish refused for line %r: dev, canary, and smoke lines never publish" % eff_line)
-                    outcome["publish"] = {
-                        "status": "refused_line",
-                        "repo_id": spec.publish.repo_id,
-                        "repo_type": spec.publish.repo_type,
-                        "line": eff_line,
-                        "repo_url": None,
-                        "flipped_public_at": None,
-                        "error": "dev, canary, and smoke lines never publish",
-                    }
-                elif outcome["status"] == "done" and (live_mode or publish_transport is not None):
-                    pub_rec = publish_window_outputs(
-                        spec=spec, out_dir=out_path, outcome=outcome, transport=publish_transport, log=log,
-                    )
-                    outcome["publish"] = pub_rec
-                    if pub_rec.get("status") in ("published", "flip_unverified"):
-                        outcome["repo_url"] = pub_rec.get("repo_url")
-                        outcome["flipped_public_at"] = pub_rec.get("flipped_public_at")
-                    else:
-                        log("publish did not complete (%s): %s"
-                            % (pub_rec.get("status"), pub_rec.get("error") or pub_rec.get("findings")))
-                elif outcome["status"] == "done" and local_cpu:
-                    outcome["publish"] = {"status": "skipped_local_cpu", "repo_id": spec.publish.repo_id}
-                else:
-                    outcome["publish"] = {"status": "skipped_not_done", "repo_id": spec.publish.repo_id}
-            else:
-                outcome["publish"] = None
 
             outcome["outcome_bucket"] = classify_window_outcome(outcome)
             write_json_atomic(out_path / "outcome.json", outcome)

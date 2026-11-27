@@ -18,7 +18,7 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 22,
+      "changed": 20,
       "moved": 0,
       "parts": 3,
       "removed": 1
@@ -26,13 +26,13 @@
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-27; 1 file removed and 22 changed content.",
+        "sentence": "Nothing structural changed since 2026-11-27; 1 file removed and 20 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "878330acb01eb90b7771b01aff0a2e3b8de685bc",
-      "generatedAt": "2026-11-27T00:42:14.445Z"
+      "commit": "59ca9c007c44f174e63f2ca3d39e5e72542045b3",
+      "generatedAt": "2026-11-27T01:21:21.909Z"
     },
     "unchanged": true
   },
@@ -41,9 +41,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "59ca9c007c44f174e63f2ca3d39e5e72542045b3",
+  "commit": "0d00e065a4dfb7694fde878dde96dd4d24f4df9b",
   "defaultBranch": "main",
-  "derived": "4 parts, mostly Python (41 files), JavaScript (3), CSS (2), TypeScript (2), Astro (1) and shell (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
+  "derived": "4 parts, mostly Python (40 files), JavaScript (3), CSS (2), TypeScript (2), Astro (1) and shell (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.",
   "doors": [
     {
       "checks": [
@@ -61,7 +61,7 @@
         {
           "boundary": "colab_runner",
           "depth": 0,
-          "files": 18
+          "files": 17
         },
         {
           "boundary": "root",
@@ -154,9 +154,9 @@
   "edges": [],
   "engine": "1.26.0",
   "generated": [],
-  "generatedAt": "2026-11-27T01:21:21.909Z",
+  "generatedAt": "2026-11-27T01:53:06.488Z",
   "limits": [
-    "6 writes and 14 reads use paths built at run time and are not named here.",
+    "6 writes and 11 reads use paths built at run time and are not named here.",
     "1 write goes to places this repository does not track, so it is not listed as generated.",
     "15 writes and 21 reads go to a path their caller passes, not to this repository.",
     "1 write goes to a temporary directory or a path its caller passes, not to this repository.",
