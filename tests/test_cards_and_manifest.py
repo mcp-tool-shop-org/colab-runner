@@ -842,12 +842,27 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
 
 class TpuOpenFixTest(unittest.TestCase):
     def test_tpu_new_session_passes_extended_http_timeout_and_fallback(self):
-        from colab_runner.colab_cli import Colab
+        from colab_runner.colab_cli import Colab, _resolve_colab_python
+
+        self.assertIsNone(_resolve_colab_python(["a", "b"], {}))
+        self.assertIsNone(_resolve_colab_python(["definitely-no-such-binary-xyz"], {"PATH": ""}))
 
         with tempfile.TemporaryDirectory() as tmp:
             fake_bin = Path(tmp) / "colab"
             fake_bin.write_text("#!/usr/bin/env python3\nprint('ok')\n", encoding="utf-8")
             fake_bin.chmod(0o755)
+            empty_bin = Path(tmp) / "empty-colab"
+            empty_bin.write_text("", encoding="utf-8")
+            empty_bin.chmod(0o755)
+            txt_bin = Path(tmp) / "txt-colab"
+            txt_bin.write_text("echo no shebang\n", encoding="utf-8")
+            txt_bin.chmod(0o755)
+            direct_bin = Path(tmp) / "direct-colab"
+            direct_bin.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+            direct_bin.chmod(0o755)
+            self.assertIsNone(_resolve_colab_python([str(empty_bin)], {}))
+            self.assertIsNone(_resolve_colab_python([str(txt_bin)], {}))
+            self.assertEqual(_resolve_colab_python([str(direct_bin)], {}), sys.executable)
 
             seen_sh: list[tuple[list[str], float]] = []
             c_sh = Colab(argv=(str(fake_bin),), env={"PATH": f"{tmp}:{os.environ.get('PATH', '')}"})
@@ -857,13 +872,18 @@ class TpuOpenFixTest(unittest.TestCase):
                 side_effect=lambda full_argv, timeout: (seen_sh.append((list(full_argv), timeout)), CliResult(0, "", ""))[1],
             ):
                 res = c_sh.new_session("tpu-s1", card="v5e1", cli_flag="--tpu", timeout=300.0)
+                un_res = c_sh.unassign_orphans(["ep-1"])
             self.assertTrue(res.ok)
-            self.assertEqual(len(seen_sh), 1)
+            self.assertTrue(un_res.ok)
+            self.assertEqual(len(seen_sh), 2)
             full_argv, t_val = seen_sh[0]
             self.assertEqual(t_val, 300.0)
             self.assertEqual(Path(full_argv[0]).name.startswith("python"), True)
             self.assertEqual(full_argv[1], "-c")
             self.assertEqual(full_argv[3:], ["tpu-s1", "v5e1", "295.0"])
+            self.assertEqual(seen_sh[1][0][-1], "ep-1")
+            no_bin = Colab(argv=("no-such-colab",), env={"PATH": tmp})
+            self.assertEqual(no_bin.unassign_orphans(["ep-1"]).rc, 1)
 
             seen_multi: list[tuple[list[str], float]] = []
             c_multi = Colab(argv=(sys.executable, "fake_colab.py"))
