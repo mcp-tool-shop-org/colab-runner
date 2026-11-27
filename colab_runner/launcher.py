@@ -22,21 +22,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from colab_runner.cards import (
-    CARD_CHECK_FAIL_RC,
-    TOTAL_SESSION_CEILING,
-    CardSpec,
-    StudyLedger,
-    pool_key_for_card,
-    pool_key_for_session_row,
-    shape_row_label,
-    validate_card_and_shape,
+    CARD_CHECK_FAIL_RC, TOTAL_SESSION_CEILING, CardSpec, StudyLedger, pool_key_for_card,
+    pool_key_for_session_row, resolve_card, shape_row_label, validate_card_and_shape,
 )
 from colab_runner.colab_cli import (
-    KILL_WAIT_S,
-    BackgroundCall,
-    BinaryDownloadRefused,
-    CliResult,
-    Colab,
+    KILL_WAIT_S, TIMEOUT_RC, TPU_OPEN_TIMEOUT_S, BackgroundCall, BinaryDownloadRefused, CliResult, Colab,
     QuarantineEscape,
     cli_from_env,
     default_quarantine_dir,
@@ -1267,30 +1257,44 @@ def _read_pre_open_usage(
     return pre_rate, pre_assign, bal
 
 
+def _is_tpu_timeout(card_spec: CardSpec, res: CliResult) -> bool:
+    txt = ((res.err or "") + "\n" + (res.out or "")).lower()
+    return card_spec.cli_flag == "--tpu" and not res.ok and (
+        res.rc == TIMEOUT_RC or any(
+            t in txt for t in ("readtimeout", "read timed out", "timeouterror", "connecttimeout", "timed out", "gateway timeout", "504")
+        )
+    )
+
+
+def verify_pending_stop(
+    out_dir: Path, colab: Colab, session: str, pending: dict[str, Any], saved_open: Optional[dict[str, Any]],
+) -> bool:
+    try:
+        sess = colab.sessions()
+    except Exception:
+        sess = CliResult(1, "", "sessions failed")
+    want = pool_key_for_card(resolve_card(str(pending.get("card") or "V5E1")), pending.get("shape"))
+    rows = parse_sessions_output(sess.out) if sess.ok else []
+    if sess.ok and not any(r.get("session") == session or (r.get("session") == "?" and pool_key_for_session_row(r) == want) for r in rows):
+        return True
+    (out_dir / "stop_confirmed.json").unlink(missing_ok=True)
+    write_json_atomic(out_dir / "session_open.json", saved_open or {"session": session})
+    write_json_atomic(out_dir / "stop_pending.json", pending)
+    return False
+
+
 def _finalize_close(
-    colab: Colab,
-    session: str,
-    out_dir: Path,
-    outcome: dict[str, Any],
-    runner: Runner,
-    *,
-    already_stopped: Optional[bool],
-    clock: Callable[[], float] = time.monotonic,
+    colab: Colab, session: str, out_dir: Path, outcome: dict[str, Any], runner: Runner,
+    *, already_stopped: Optional[bool], clock: Callable[[], float] = time.monotonic,
 ) -> tuple[bool, float]:
-    if already_stopped is None:
-        stopped = runner.stop_session()
-        stopped_at = clock()
-    else:
-        stopped_at = clock()
-        stopped = bool(already_stopped)
+    stopped = runner.stop_session() if already_stopped is None else bool(already_stopped)
+    stopped_at = clock()
     outcome["session_stopped_confirmed"] = bool(stopped and not (out_dir / "session_open.json").exists())
     if outcome["session_stopped_confirmed"]:
         outcome["closed_at"] = _utc_now()
         try:
             sess = colab.sessions()
-            if sess.ok:
-                rows = parse_sessions_output(sess.out)
-                outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
+            outcome["session_gone_confirmed"] = bool(sess.ok) and not any(r.get("session") == session for r in parse_sessions_output(sess.out))
         except Exception:
             pass
     return bool(outcome["session_stopped_confirmed"]), stopped_at
@@ -1424,9 +1428,7 @@ def reconcile_stopped_outcome(
 
     try:
         sess = colab.sessions()
-        if sess.ok:
-            rows = parse_sessions_output(sess.out)
-            outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
+        outcome["session_gone_confirmed"] = bool(sess.ok) and not any(r.get("session") == session for r in parse_sessions_output(sess.out))
     except Exception:
         pass
     outcome["outcome_bucket"] = classify_window_outcome(outcome)
@@ -1612,6 +1614,8 @@ def launch_window(
         client = LocalColab(out_path / "_local_vm_content")
     else:
         client = cli_from_env()
+    if isinstance(client, Colab) and client.log is None:
+        client.log = log
     vm_content = str(client.content_dir.resolve()) if isinstance(client, LocalColab) else "/content"
     vm_content_base = vm_content.rstrip("/\\") or "/"
     remote_script = "%s/%s" % (vm_content_base, script_name)
@@ -1652,6 +1656,7 @@ def launch_window(
     )
     lock_path = _default_open_lock_path(open_lock)
     t_open_monotonic: Optional[float] = None
+    tpu_open_uncertain = False
     marker_written = False
     lock_held = False
 
@@ -1678,10 +1683,21 @@ def launch_window(
                 ledger.release_reservation(spec.study, window_id=window_id)
             ledger.record_window(spec.study, outcome)
 
+    def _stop_unknown_tpu() -> tuple[bool, float]:
+        write_json_atomic(out_path / "stop_pending.json", {"session": eff_session, "reason": "tpu_open_timeout_unknown", "card": card_spec.name, "shape": clean_shape})
+        outcome.update({"opened": "unknown", "session_stopped_confirmed": False, "session_gone_confirmed": False})
+        try:
+            client.stop(eff_session)
+        except BaseException:
+            pass
+        log(scrub("TPU open timed out (server state unknown): run `colab sessions`, then `colab stop -s <id>` or `colab_runner stop --out-dir %s` (delete stop_pending.json by hand only after checking `colab sessions`)" % out_path))
+        return False, clock()
+
     def _close_open_trip(sig_state: dict[str, Any], *, status: str, cap_trip=None, refusal=None) -> dict[str, Any]:
         sig_state["cleaning"] = True
-        stopped_ok, stopped_at = _finalize_close(
-            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+        stopped_ok, stopped_at = (
+            _stop_unknown_tpu() if tpu_open_uncertain
+            else _finalize_close(client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock)
         )
         _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=stopped_at - t_open_monotonic,
                     bal_end=_read_end_balance(client))
@@ -1751,31 +1767,25 @@ def launch_window(
                     # Count wall and cap spend from immediately BEFORE `colab new` (Colab bills from assignment).
                     t_open_monotonic = clock()
                     outcome["opened_at"] = _utc_now()
-                    new_t_lim, tripped_out = _next_call_timeout(180.0, sig_state)
+                    open_req_s = TPU_OPEN_TIMEOUT_S if card_spec.cli_flag == "--tpu" else 180.0
+                    new_t_lim, tripped_out = _next_call_timeout(open_req_s, sig_state)
                     if tripped_out is not None:
                         return tripped_out
                     new_res = client.new_session(
                         eff_session, card=card_spec.cli_gpu, shape=clean_shape,
                         cli_flag=card_spec.cli_flag, timeout=float(new_t_lim),
                     )
+                    if getattr(client, "last_tpu_shim_used", None) is False:
+                        outcome["tpu_timeout_shim"] = "fallback_default_cli"
                     if not new_res.ok:
-                        if float(new_t_lim) < 180.0:
-                            tripped_out = _trip_open_bound(sig_state)
-                            if tripped_out is not None:
-                                return tripped_out
-                        sig_state["cleaning"] = True
-                        msg = scrub((new_res.err or new_res.out or "rc=%s" % new_res.rc).strip())
-                        stopped_ok, stopped_at = _finalize_close(
-                            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                        tpu_open_uncertain = _is_tpu_timeout(card_spec, new_res)
+                        tripped_out = _trip_open_bound(sig_state) if float(new_t_lim) < open_req_s else None
+                        if tripped_out is not None:
+                            return tripped_out
+                        return _close_open_trip(
+                            sig_state, status="open_failed",
+                            refusal=error_record("SESSION_OPEN_FAILED", "colab new failed: %s" % scrub((new_res.err or new_res.out or "rc=%s" % new_res.rc).strip())),
                         )
-                        _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                    elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
-                        outcome["status"] = "open_failed"
-                        outcome["exit_code"] = 2
-                        outcome["refusal"] = error_record("SESSION_OPEN_FAILED", "colab new failed: %s" % msg)
-                        write_json_atomic(out_path / "outcome.json", outcome)
-                        _record_window_outcome(stopped_ok)
-                        return outcome
 
                     outcome["opened"] = True
 
@@ -1897,12 +1907,15 @@ def launch_window(
         except BaseException as exc:
             if marker_written:
                 sig_state["cleaning"] = True
-                try:
-                    stopped_ok, stopped_at = _finalize_close(
-                        client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
-                    )
-                except BaseException:
-                    stopped_ok, stopped_at = False, clock()
+                if t_open_monotonic is not None and not outcome["opened"] and card_spec.cli_flag == "--tpu":
+                    stopped_ok, stopped_at = _stop_unknown_tpu()
+                else:
+                    try:
+                        stopped_ok, stopped_at = _finalize_close(
+                            client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
+                        )
+                    except BaseException:
+                        stopped_ok, stopped_at = False, clock()
                 elapsed_exc = (stopped_at - t_open_monotonic) if t_open_monotonic is not None else 0.0
                 if t_open_monotonic is not None:
                     _book_spend(outcome, card_spec=card_spec, guard=guard, elapsed_s=elapsed_exc,
@@ -2134,7 +2147,7 @@ def status_window(out_dir: Path | str, *, tail_lines: int = 10) -> dict[str, Any
         tail = [scrub(ln) for ln in raw_lines[-max(0, int(tail_lines)):]]
 
     if outcome is not None:
-        state = "stop_pending" if (sess_open is not None and not outcome.get("session_stopped_confirmed")) else "finished"
+        state = "stop_pending" if ((sess_open is not None or stop_pend is not None) and not outcome.get("session_stopped_confirmed")) else "finished"
     elif dry_plan is not None:
         state = "dry_run"
     elif stop_pend is not None or (sess_open is not None and run_res is not None):
@@ -2178,4 +2191,5 @@ __all__ = [
     "reconcile_stopped_outcome",
     "resolve_kit_env",
     "status_window",
+    "verify_pending_stop",
 ]

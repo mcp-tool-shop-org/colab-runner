@@ -44,7 +44,7 @@ def classify_window_outcome(outcome: Mapping[str, Any]) -> str:
         return "refused-capacity"
     if status in ("unreachable", "shape_mismatch", "card_mismatch") or (
         code in ("SESSION_OPEN_FAILED", "UPLOAD_FAILED", "SESSIONS_READ_FAILED")
-        and any(k in msg for k in ("500", "502", "503", "504", "service", "internal error", "connection", "reset", "timed out"))
+        and any(k in msg for k in ("500", "502", "503", "504", "service", "internal error", "connection", "reset", "timed out", "timeout"))
     ):
         return "failed-Google"
     return "failed-ours"
@@ -218,10 +218,8 @@ def run_queue(
 ) -> dict[str, Any]:
     """Run all jobs in `queue_path` unattended: isolate failures, enforce pool limits via launch, and record spend."""
     from colab_runner.launcher import (
-        _default_open_lock_path,
-        _default_user_state_dir,
-        launch_window,
-        reconcile_stopped_outcome,
+        _default_open_lock_path, _default_user_state_dir, _load_opt_json, launch_window,
+        reconcile_stopped_outcome, verify_pending_stop,
     )
 
     q = QueueSpec.from_file(queue_path)
@@ -345,20 +343,21 @@ def run_queue(
             if rec["outcome_bucket"] is None:
                 rec["outcome_bucket"] = "failed-ours"
 
-        marker = job.out_dir / "session_open.json"
-        if not dry and marker.is_file():
+        marker, pend_path = job.out_dir / "session_open.json", job.out_dir / "stop_pending.json"
+        if not dry and (marker.is_file() or pend_path.is_file()):
             try:
-                sess = json.loads(marker.read_text(encoding="utf-8")).get("session")
+                pending, saved_open = _load_opt_json(pend_path), _load_opt_json(marker)
+                sess = json.loads((marker if marker.is_file() else pend_path).read_text(encoding="utf-8")).get("session")
                 comp_client = client if client is not None else cli_from_env()
-                if sess and Runner(comp_client, sess, job.out_dir, log=log).stop_session():
+                vfn = (lambda d=job.out_dir, c=comp_client, s=sess, p=pending, o=saved_open: verify_pending_stop(d, c, s, p, o)) if sess and (pending or {}).get("reason") == "tpu_open_timeout_unknown" else None
+                if sess and Runner(comp_client, sess, job.out_dir, log=log).stop_session(verify=vfn):
                     reconciled = reconcile_stopped_outcome(job.out_dir, comp_client, sess)
                     if reconciled is not None:
-                        rec["spend_ccu"] = float(reconciled.get("spend_ccu") or rec["spend_ccu"])
-                        rec["session_stopped_confirmed"] = True
+                        rec["spend_ccu"], rec["session_stopped_confirmed"] = float(reconciled.get("spend_ccu") or rec["spend_ccu"]), True
             except Exception as exc:
                 err_msg = err_msg or scrub(str(exc))
 
-        if not dry and marker.is_file():
+        if not dry and (marker.is_file() or pend_path.is_file()):
             rec["session_stopped_confirmed"] = False
             rec["error"] = err_msg or "session stop unconfirmed; halting queue"
             queue_state["halted_reason"] = "STOP_NOT_CONFIRMED on %s" % job.job_id

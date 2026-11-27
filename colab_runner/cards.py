@@ -394,7 +394,7 @@ class StudyLedger:
             "card_class": outcome.get("card_class"),
             "shape": outcome.get("shape"),
             "status": outcome.get("status"),
-            "opened": opened,
+            "opened": "unknown" if outcome.get("opened") == "unknown" else opened,
             "session_stopped_confirmed": stopped_confirmed,
             "opened_at": outcome.get("opened_at"),
             "closed_at": outcome.get("closed_at"),
