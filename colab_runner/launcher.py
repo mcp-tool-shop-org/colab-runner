@@ -33,6 +33,7 @@ from colab_runner.cards import (
 )
 from colab_runner.colab_cli import (
     KILL_WAIT_S,
+    TPU_OPEN_TIMEOUT_S,
     BackgroundCall,
     BinaryDownloadRefused,
     CliResult,
@@ -1730,6 +1731,7 @@ def launch_window(
                 lock_held = True
                 try:
                     rows = _read_sessions_strict(client)
+                    pre_endpoints = {str(r["endpoint"]) for r in rows if r.get("endpoint")}
                     _pool_check(rows, session=eff_session, card_spec=card_spec, shape=clean_shape)
                     pre_rate, pre_assign, bal_start = _read_pre_open_usage(client, card_spec=card_spec, log=log)
                     outcome["account_balance"]["start"] = bal_start
@@ -1751,7 +1753,8 @@ def launch_window(
                     # Count wall and cap spend from immediately BEFORE `colab new` (Colab bills from assignment).
                     t_open_monotonic = clock()
                     outcome["opened_at"] = _utc_now()
-                    new_t_lim, tripped_out = _next_call_timeout(180.0, sig_state)
+                    open_req_s = TPU_OPEN_TIMEOUT_S if card_spec.cli_flag == "--tpu" else 180.0
+                    new_t_lim, tripped_out = _next_call_timeout(open_req_s, sig_state)
                     if tripped_out is not None:
                         return tripped_out
                     new_res = client.new_session(
@@ -1759,7 +1762,7 @@ def launch_window(
                         cli_flag=card_spec.cli_flag, timeout=float(new_t_lim),
                     )
                     if not new_res.ok:
-                        if float(new_t_lim) < 180.0:
+                        if float(new_t_lim) < open_req_s:
                             tripped_out = _trip_open_bound(sig_state)
                             if tripped_out is not None:
                                 return tripped_out
@@ -1768,6 +1771,27 @@ def launch_window(
                         stopped_ok, stopped_at = _finalize_close(
                             client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
                         )
+                        want_key = pool_key_for_card(card_spec, clean_shape)
+                        after_sess = client.sessions()
+                        leaked_eps = [
+                            str(r["endpoint"])
+                            for r in (parse_sessions_output(after_sess.out) if after_sess.ok else [])
+                            if r.get("session") == "?" and r.get("endpoint")
+                            and str(r["endpoint"]) not in pre_endpoints
+                            and pool_key_for_session_row(r) == want_key
+                        ]
+                        if leaked_eps:
+                            outcome["opened"] = True
+                            client.unassign_orphans(leaked_eps, timeout=60.0)
+                            recheck = client.sessions()
+                            still = {str(r.get("endpoint") or "") for r in (parse_sessions_output(recheck.out) if recheck.ok else [])}
+                            if any(ep in still for ep in leaked_eps):
+                                (out_path / "stop_confirmed.json").unlink(missing_ok=True)
+                                write_json_atomic(out_path / "stop_pending.json", {"session": eff_session, "endpoints": leaked_eps})
+                                stopped_ok = False
+                                outcome["session_stopped_confirmed"] = False
+                                outcome["session_gone_confirmed"] = False
+                            stopped_at = clock()
                         _book_spend(outcome, card_spec=card_spec, guard=guard,
                                     elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
                         outcome["status"] = "open_failed"
