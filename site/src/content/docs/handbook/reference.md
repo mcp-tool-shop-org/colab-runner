@@ -19,7 +19,7 @@ exit codes: 0 ok, 1 refusal or usage error, 2 runtime error, 3 done but the sess
 
 ### `launch` and `status`
 
-- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec (refusing unknown keys/tables with `SPEC_INVALID`), card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs (streaming directory `.tar.partNNNN` transfers with per-part SHA-256 verification), confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) in `outcome.json` and `QUEUE_END`.
+- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec (refusing unknown keys/tables with `SPEC_INVALID`), card/shape rules, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs (streaming directory `.tar.partNNNN` transfers with per-part SHA-256 verification), confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) in `outcome.json` and `QUEUE_END`.
 - `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json` (reporting `orphaned` if `launcher_pid` died while `session_open.json` exists), `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
 
 ### `run`
@@ -219,7 +219,6 @@ again.
 | `SESSIONS_READ_FAILED` | yes | check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a window |
 | `CARD_UNKNOWN` | no | choose a known Colab card from the catalog (CPU, T4, L4, G4, A100) |
 | `CARD_UNAVAILABLE` | no | choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan |
-| `CARD_CIRCUIT_OPEN` | no | two allocation or card refusals already tripped this card's circuit breaker today (UTC); wait for the next UTC day or start a new study on an available card |
 | `CARD_MIX_REFUSED` | no | keep one card type for the whole study: do not pool G4 and A100 or switch card mid-study |
 | `SHAPE_REQUIRED` | no | set compute.shape (or --shape) to 'standard' or 'high-mem' for a GPU card |
 | `SHAPE_INVALID` | no | set compute.shape (or --shape) to 'standard' or 'high-mem' |
@@ -229,7 +228,7 @@ again.
 | `OPEN_LOCK_TIMEOUT` | yes | another window held the open lock past the timeout; wait for concurrent opens to finish and retry |
 | `SESSION_ALREADY_OPEN` | no | pass a fresh --session name, or stop the existing session first |
 | `POOL_CEILING_REACHED` | yes | close an active Colab session to free a slot below the plan's pool ceiling, then retry |
-| `SESSION_OPEN_FAILED` | yes | Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state before retrying |
+| `SESSION_OPEN_FAILED` | yes | Colab refused or failed to assign the requested session or card; check availability or quota before retrying |
 | `SHAPE_MISMATCH` | yes | Colab assigned a different machine shape than requested; the session was stopped |
 | `UPLOAD_FAILED` | yes | check session connectivity and file size; colab upload into /content failed and the session was stopped |
 | `CARD_MISMATCH` | yes | Colab assigned a GPU that failed the requested card's name, VRAM, or compute-capability floor; the session was stopped |

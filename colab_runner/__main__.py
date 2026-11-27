@@ -263,7 +263,7 @@ def _launch_parser() -> argparse.ArgumentParser:
                       help="run CPU stub end-to-end against an isolated local VM directory; zero colab calls")
     p.add_argument("--allow-sealed", action="store_true",
                    help="confirm a live launch carrying pre-registered sealed or outside-repo inputs")
-    p.add_argument("--state-dir", help="directory storing per-card UTC circuit-breaker state and study ledger")
+    p.add_argument("--state-dir", help="directory storing study ledger and open lock")
     p.add_argument("--study-ledger", help="path to study card-consistency ledger JSON")
     p.add_argument("--open-lock", help="path to cross-process open lock file")
     p.add_argument("--purpose", help="stated purpose for this window (overrides project.purpose)")
@@ -422,7 +422,7 @@ def queue_command(argv: list[str]) -> int:
     p = ScrubbingParser(prog="colab_runner queue", description="Validate or run an unattended job queue.")
     p.add_argument("action", choices=("validate", "run"))
     p.add_argument("--queue", required=True, help="queue manifest (.toml or .json)")
-    p.add_argument("--state-dir", help="state directory holding study_ledger.json, card_refusals.json, and open.lock")
+    p.add_argument("--state-dir", help="state directory holding study_ledger.json and open.lock")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry", action="store_true")
     mode.add_argument("--local-cpu", action="store_true")

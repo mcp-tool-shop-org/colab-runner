@@ -140,7 +140,7 @@ os.replace(tmp, out / "phase.txt")
 
 **Secrets & binary-safe download scrub.** Pass a secret as `--env NAME`, with NAME set in the caller's environment. `--env NAME=VALUE`
 puts the value in the runner's own command line. Values reach the VM inside the uploaded notebook cell file, never as arguments to the `colab` CLI.
-Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens`. Downloaded files and
+Every CLI output line and error line is scrubbed with the vendored library's `scrub_colab_tokens` and stripped of local home directory paths (`~`). Downloaded files and
 directories (including partial transfers) are classified by content only (a NUL byte or failed strict UTF-8 decode is binary):
 - Text files are scrubbed in place with `scrub_colab_tokens`.
 - Clean binary files are left byte-identical. Unreadable files are removed.

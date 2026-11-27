@@ -46,6 +46,7 @@ from colab_runner.colab_cli import (
     CliResult,
     Colab,
     default_quarantine_dir,
+    scrub as _cli_scrub,
     scrub_local,
 )
 from colab_runner.errors import GuardFailed, Refused, cap_trip_record, error_record
@@ -81,13 +82,13 @@ OWN_KILL_ANSWERS = ("CR_KILLED", "CR_NOT_RUNNING", "CR_NO_JOB")
 
 
 def scrub(text: Optional[str]) -> str:
-    return lg.scrub_colab_tokens(text or "")
+    return _cli_scrub(text)
 
 
 def scrub_obj(obj: Any) -> Any:
-    """Every string in `obj` (dicts and lists included) through the library's token scrub."""
+    """Every string in `obj` (dicts and lists included) through CLI token + home-path scrub."""
     if isinstance(obj, str):
-        return lg.scrub_colab_tokens(obj)
+        return scrub(obj)
     if isinstance(obj, dict):
         return {scrub_obj(k): scrub_obj(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):

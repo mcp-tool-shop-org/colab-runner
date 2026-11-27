@@ -25,12 +25,10 @@ from colab_runner.cards import (
     CARD_CHECK_FAIL_RC,
     TOTAL_SESSION_CEILING,
     CardSpec,
-    CircuitBreaker,
     StudyLedger,
     pool_key_for_card,
     pool_key_for_session_row,
     shape_row_label,
-    utc_day_str,
     validate_card_and_shape,
 )
 from colab_runner.colab_cli import (
@@ -1185,13 +1183,17 @@ def _book_spend(
     outcome["priced_rate"] = priced
     outcome["window_rate_stable"] = stable
     outcome["elapsed_s"] = round(max(0.0, float(elapsed_s)), 3)
-    if card_spec.card_class == "cpu":
-        outcome["spend_basis"] = "cpu_configured_rate_x_elapsed"
-    elif stable is not None:
-        outcome["spend_basis"] = "window_rate_x_elapsed"
+    if not outcome.get("opened"):
+        outcome["spend_basis"] = "not_opened"
+        outcome["spend_ccu"] = 0.0
     else:
-        outcome["spend_basis"] = "max_rate_x_elapsed_no_stable_rate"
-    outcome["spend_ccu"] = round((priced * max(0.0, float(elapsed_s))) / 3600.0, 6)
+        if card_spec.card_class == "cpu":
+            outcome["spend_basis"] = "cpu_configured_rate_x_elapsed"
+        elif stable is not None:
+            outcome["spend_basis"] = "window_rate_x_elapsed"
+        else:
+            outcome["spend_basis"] = "max_rate_x_elapsed_no_stable_rate"
+        outcome["spend_ccu"] = round((priced * max(0.0, float(elapsed_s))) / 3600.0, 6)
     bal_start = outcome["account_balance"].get("start")
     drop = round(bal_start - bal_end, 6) if (bal_start is not None and bal_end is not None) else None
     outcome["account_balance"] = {"start": bal_start, "end": bal_end, "drop": drop, "used_for_pricing": False}
@@ -1339,12 +1341,16 @@ def reconcile_stopped_outcome(
                 reconciled_elapsed = max(float(outcome.get("elapsed_s") or 0.0), (now_dt - opened_dt).total_seconds())
                 priced_rate = float(outcome.get("priced_rate") or outcome.get("max_rate") or (meta or {}).get("max_rate") or 0.0)
                 outcome["elapsed_s"] = round(max(0.0, reconciled_elapsed), 3)
-                outcome["spend_ccu"] = round((priced_rate * max(0.0, reconciled_elapsed)) / 3600.0, 6)
-                basis = str(outcome.get("spend_basis") or "max_rate_x_elapsed")
-                if basis == "not_opened":
-                    outcome["spend_basis"] = "max_rate_x_elapsed_reconciled"
-                elif not basis.endswith("_reconciled"):
-                    outcome["spend_basis"] = basis + "_reconciled"
+                if not outcome.get("opened"):
+                    outcome["spend_ccu"] = 0.0
+                    outcome["spend_basis"] = "not_opened"
+                else:
+                    outcome["spend_ccu"] = round((priced_rate * max(0.0, reconciled_elapsed)) / 3600.0, 6)
+                    basis = str(outcome.get("spend_basis") or "max_rate_x_elapsed")
+                    if basis == "not_opened":
+                        outcome["spend_basis"] = "max_rate_x_elapsed_reconciled"
+                    elif not basis.endswith("_reconciled"):
+                        outcome["spend_basis"] = basis + "_reconciled"
             except (TypeError, ValueError):
                 pass
     else:
@@ -1493,13 +1499,9 @@ def launch_window(
 
     live_mode = not dry and not local_cpu
     s_dir, l_file = _state_paths(state_dir, study_ledger, live=live_mode)
-    breaker = CircuitBreaker(s_dir / "card_refusals.json") if s_dir is not None else None
     ledger = StudyLedger(l_file) if l_file is not None else None
-    utc_day = utc_day_str()
     if ledger is not None and card_spec.card_class == "gpu" and live_mode:
         ledger.check_card(spec.study, card_spec.name)
-    if breaker is not None and live_mode:
-        breaker.check(card_spec.name, utc_day)
 
     probe = runner_cls(Colab(), "probe", out_path)
     own_bound_s = probe.own_cleanup_bound_s(eff_resident)
@@ -1719,8 +1721,6 @@ def launch_window(
                     if warn:
                         log(scrub(warn))
 
-                    if breaker is not None and live_mode:
-                        breaker.check(card_spec.name, utc_day)
                     if ledger is not None and card_spec.card_class == "gpu" and live_mode:
                         ledger.reserve_card(spec.study, card_spec.name, session=eff_session, window_id=window_id)
 
@@ -1745,9 +1745,6 @@ def launch_window(
                                 return tripped_out
                         sig_state["cleaning"] = True
                         msg = scrub((new_res.err or new_res.out or "rc=%s" % new_res.rc).strip())
-                        if breaker is not None:
-                            breaker.record_refusal(card_spec.name, reason="SESSION_OPEN_FAILED: %s" % msg,
-                                                   session=eff_session, day=utc_day)
                         stopped_ok, stopped_at = _finalize_close(
                             client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
                         )
@@ -1787,12 +1784,6 @@ def launch_window(
 
                         if confirmed_shape_mismatch:
                             sig_state["cleaning"] = True
-                            if breaker is not None:
-                                breaker.record_refusal(
-                                    card_spec.name,
-                                    reason="SHAPE_MISMATCH: expected %s got %s" % (expected_shape, observed_shape),
-                                    session=eff_session, day=utc_day,
-                                )
                             stopped_ok, stopped_at = _finalize_close(
                                 client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
                             )
@@ -2055,9 +2046,6 @@ def launch_window(
                     "CARD_MISMATCH",
                     "VM GPU verification failed for %s (%s/vm_card.json)" % (card_spec.name, spec.job),
                 )
-                if breaker is not None:
-                    with _with_state_lock():
-                        breaker.record_refusal(card_spec.name, reason="CARD_MISMATCH", session=eff_session, day=utc_day)
             elif run_result is not None:
                 outcome["status"] = run_result.reason
 

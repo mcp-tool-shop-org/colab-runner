@@ -20,7 +20,7 @@ It does four things:
 
 ## Status
 
-**0.2.0** is the current release. It adds declarative on-demand windows (`launch`, `status`, `outcome.json`), card/shape/circuit-breaker guards, strict input staging with sealed-data checks, and an offline `--local-cpu` simulation mode on top of the detached runner:
+**0.2.0** is the current release. It adds declarative on-demand windows (`launch`, `status`, `outcome.json`), card/shape guards, strict input staging with sealed-data checks, and an offline `--local-cpu` simulation mode on top of the detached runner:
 
 - **0.2.0** adds `colab_runner.cards`, `colab_runner.manifest`, `colab_runner.launcher`, `launch` (`--dry` and `--local-cpu`), `status`, VM GPU card checks, and `outcome.json` spend records.
 - **0.1.4** brought the README, handbook, and landing page up to date.

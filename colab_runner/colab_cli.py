@@ -245,8 +245,33 @@ def is_binary_bytes(data: bytes) -> bool:
     return False
 
 
+_HOME_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9._/-])(?:"
+    r"/(?:mnt/[a-zA-Z]/Users|home|Users)/[A-Za-z0-9._$-]+"
+    r"|[A-Za-z]:(?:\\\\|\\|/)[Uu]sers(?:\\\\|\\|/)[A-Za-z0-9._$-]+"
+    r")(?=(?:\\\\|\\|/)|$|[\s\"'`),;:|│])"
+)
+_HOME_TRAIL_RE = r"(?=(?:\\\\|\\|/)|$|[\s\"'`),;:|│])"
+
+
+def scrub_home_paths(text: Optional[str]) -> str:
+    """Replace local user home directory paths (e.g. from CLI tracebacks) with `~`."""
+    out = text or ""
+    if not out:
+        return out
+    tmp_resolved = str(Path(tempfile.gettempdir()).resolve())
+    for var in ("HOME", "USERPROFILE"):
+        raw = (os.environ.get(var) or "").strip()
+        if not raw or len(Path(raw).parts) < 2 or str(Path(raw).resolve()) == tmp_resolved:
+            continue
+        for cand in {raw.rstrip("/\\"), raw.rstrip("/\\").replace("\\", "/")}:
+            if cand:
+                out = re.sub(r"(?<![A-Za-z0-9._/-])" + re.escape(cand) + _HOME_TRAIL_RE, "~", out)
+    return _HOME_PATH_RE.sub("~", out)
+
+
 def scrub(text: Optional[str]) -> str:
-    return lg.scrub_colab_tokens(text or "")
+    return scrub_home_paths(lg.scrub_colab_tokens(text or ""))
 
 
 @dataclass
@@ -742,5 +767,5 @@ __all__ = [
     "BEARER_TOKEN_MIN", "BYTE_TOKEN_PATTERNS", "BackgroundCall", "BinaryDownloadRefused", "Colab", "CliResult",
     "KILL_WAIT_S", "QuarantineEscape", "TIMEOUT_RC", "bare_quarantine_dir", "binary_token_hit", "cli_from_env",
     "default_quarantine_dir", "env_preamble", "is_binary_bytes", "kernel_timeout", "kill_group",
-    "parse_sessions_output", "scrub", "scrub_local", "token_shaped", "write_cell",
+    "parse_sessions_output", "scrub", "scrub_home_paths", "scrub_local", "token_shaped", "write_cell",
 ]
