@@ -2116,14 +2116,13 @@ class ChunkedDownloadTest(unittest.TestCase):
                 self.assertEqual(res.reason, want_reason)
                 self.assertLess(res.elapsed_s, 100.0)
 
-            clk_r, crash_g = FakeClock(), SpendGuard(max_rate=0.3, cap=2.0, cleanup_bound_s=1000.0)
+            # A usage read that cannot be parsed is logged and never stops the window.
+            clk_r, crash_g, logged = FakeClock(), SpendGuard(max_rate=0.3, cap=2.0, cleanup_bound_s=1000.0), []
             with mock.patch.object(crash_g, "fold_usage", side_effect=RuntimeError("loop fold boom")):
-                with self.assertRaises(GuardFailed):
-                    Runner(FakeColab(clock=clk_r), "s-gf", root / "r_gf", clock=clk_r.now, sleep=clk_r.sleep).run(
-                        script="run.sh", wall_s=900.0, guard=crash_g,
-                    )
-            rr_gf = json.loads((root / "r_gf" / "runner_result.json").read_text(encoding="utf-8"))
-            self.assertEqual((rr_gf["reason"], rr_gf["refusal"]["code"], rr_gf["cap_trip"]), ("error", "GUARD_FAILED", None))
+                res_u = Runner(FakeColab(clock=clk_r), "s-gf", root / "r_gf", clock=clk_r.now, sleep=clk_r.sleep,
+                               log=logged.append).run(script="run.sh", wall_s=900.0, guard=crash_g)
+            self.assertEqual(res_u.reason, "wall")  # it kept running to its own wall, not GUARD_FAILED
+            self.assertTrue(any("usage read not parsed (not a stop)" in m for m in logged))
 
             (root / ".git").mkdir()
             (root / "ok.sh").write_text("echo ok\n", encoding="utf-8")
