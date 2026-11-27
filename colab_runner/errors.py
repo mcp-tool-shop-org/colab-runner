@@ -140,13 +140,10 @@ CODES: dict[str, Code] = {
         "check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a "
         "window", True),
     "PLATFORM_UNSUPPORTED": Code("run colab-runner on Linux or inside WSL", _FIX),
-    # platform catalog, shape rules, study policy and circuit breaker
+    # platform catalog, shape rules, and study policy
     "CARD_UNKNOWN": Code("choose a known Colab card from the catalog (CPU, T4, L4, G4, A100)", _FIX),
     "CARD_UNAVAILABLE": Code(
         "choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan", _FIX),
-    "CARD_CIRCUIT_OPEN": Code(
-        "two allocation or card refusals already tripped this card's circuit breaker today (UTC); wait for the next "
-        "UTC day or start a new study on an available card", _FIX),
     "CARD_MIX_REFUSED": Code(
         "keep one card type for the whole study: do not pool G4 and A100 or switch card mid-study", _FIX),
     "SHAPE_REQUIRED": Code("set compute.shape (or --shape) to 'standard' or 'high-mem' for a GPU card", _FIX),
@@ -164,8 +161,8 @@ CODES: dict[str, Code] = {
     "POOL_CEILING_REACHED": Code(
         "close an active Colab session to free a slot below the plan's pool ceiling, then retry", True),
     "SESSION_OPEN_FAILED": Code(
-        "Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state "
-        "before retrying", True),
+        "Colab refused or failed to assign the requested session or card; check availability or quota before retrying",
+        True),
     "SHAPE_MISMATCH": Code(
         "Colab assigned a different machine shape than requested; the session was stopped", True),
     "UPLOAD_FAILED": Code(

@@ -1,4 +1,4 @@
-"""Platform card catalog, shape validation, per-card circuit breaker, study ledger, and VM GPU assertions.
+"""Platform card catalog, shape validation, study ledger, and VM GPU assertions.
 
 Measured Colab Ultimate plan pool facts (dated 2026-11):
 - Total active sessions across the account: 20.
@@ -26,7 +26,6 @@ from colab_runner.runner import write_json_atomic
 
 PLATFORM_FACTS_UPDATED = "2026-11-26"
 TOTAL_SESSION_CEILING = 20
-DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 2
 CARD_CHECK_FAIL_RC = 42
 
 
@@ -261,12 +260,6 @@ def pool_key_for_session_row(row: Mapping[str, Optional[str]]) -> Optional[str]:
     return None
 
 
-def utc_day_str(now: Optional[datetime] = None) -> str:
-    """UTC calendar day string `YYYY-MM-DD` used to scope per-card circuit-breaker refusals."""
-    dt = now or datetime.now(timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
-
-
 def _load_json_dict(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -275,65 +268,6 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
-
-
-class CircuitBreaker:
-    """Per-card UTC-day refusal ledger that opens the circuit after `threshold` allocation/card failures."""
-
-    def __init__(self, state_file: Path, *, threshold: int = DEFAULT_CIRCUIT_BREAKER_THRESHOLD):
-        self.state_file = Path(state_file)
-        self.threshold = int(threshold)
-
-    def events_for(self, card: str, day: Optional[str] = None) -> list[dict[str, Any]]:
-        target_day = day or utc_day_str()
-        data = _load_json_dict(self.state_file)
-        days = data.get("days", {})
-        day_bucket = days.get(target_day, {}) if isinstance(days, dict) else {}
-        events = day_bucket.get(card.upper(), []) if isinstance(day_bucket, dict) else []
-        return list(events) if isinstance(events, list) else []
-
-    def check(self, card: str, day: Optional[str] = None) -> None:
-        """Raise CARD_CIRCUIT_OPEN if `card` already hit `threshold` allocation/card refusals today (UTC)."""
-        target_day = day or utc_day_str()
-        events = self.events_for(card, target_day)
-        if len(events) >= self.threshold:
-            raise Refused(
-                "CARD_CIRCUIT_OPEN",
-                "circuit breaker open for %s on %s UTC (%d refusals reached threshold %d)"
-                % (card.upper(), target_day, len(events), self.threshold),
-            )
-
-    def record_refusal(
-        self,
-        card: str,
-        *,
-        reason: str,
-        session: str,
-        day: Optional[str] = None,
-        at: Optional[str] = None,
-    ) -> int:
-        """Record an allocation or card mismatch failure for `card` on `day` (UTC) and return the new count."""
-        target_day = day or utc_day_str()
-        data = _load_json_dict(self.state_file)
-        days = data.setdefault("days", {})
-        if not isinstance(days, dict):
-            days = {}
-            data["days"] = days
-        bucket = days.setdefault(target_day, {})
-        if not isinstance(bucket, dict):
-            bucket = {}
-            days[target_day] = bucket
-        events = bucket.setdefault(card.upper(), [])
-        if not isinstance(events, list):
-            events = []
-            bucket[card.upper()] = events
-        events.append({
-            "at": at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "reason": reason,
-            "session": session,
-        })
-        write_json_atomic(self.state_file, data)
-        return len(events)
 
 
 def _window_locks_gpu(w: Any) -> bool:
@@ -542,8 +476,6 @@ __all__ = [
     "CARDS",
     "CARD_CHECK_FAIL_RC",
     "CardSpec",
-    "CircuitBreaker",
-    "DEFAULT_CIRCUIT_BREAKER_THRESHOLD",
     "PLATFORM_FACTS_UPDATED",
     "StudyLedger",
     "TOTAL_SESSION_CEILING",
@@ -551,7 +483,6 @@ __all__ = [
     "pool_key_for_session_row",
     "resolve_card",
     "shape_row_label",
-    "utc_day_str",
     "validate_card_and_shape",
     "vm_card_check_py",
 ]

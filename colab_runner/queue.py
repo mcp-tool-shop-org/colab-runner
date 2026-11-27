@@ -36,7 +36,7 @@ def classify_window_outcome(outcome: Mapping[str, Any]) -> str:
     msg = str(refusal.get("message") or "").lower()
     opened = bool(outcome.get("opened"))
     if not opened and (
-        code in ("POOL_CEILING_REACHED", "CARD_CIRCUIT_OPEN")
+        code == "POOL_CEILING_REACHED"
         or (code == "SESSION_OPEN_FAILED" and any(
             k in msg for k in ("capacity", "unavailable", "503", "412", "exhausted", "quota", "cannot assign", "refused")
         ))

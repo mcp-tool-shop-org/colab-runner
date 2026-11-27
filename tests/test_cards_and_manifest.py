@@ -1,4 +1,4 @@
-"""Tests for platform card catalog, TPU shapes, pool keys, circuit breaker, study reservation, and sealed sandbox."""
+"""Tests for platform card catalog, TPU shapes, pool keys, study reservation, and sealed sandbox."""
 
 import hashlib
 import json
@@ -15,14 +15,12 @@ from unittest import mock
 from colab_runner.cards import (
     CARDS,
     CARD_CHECK_FAIL_RC,
-    CircuitBreaker,
     StudyLedger,
     _load_json_dict,
     pool_key_for_card,
     pool_key_for_session_row,
     resolve_card,
     shape_row_label,
-    utc_day_str,
     validate_card_and_shape,
     vm_card_check_py,
 )
@@ -111,20 +109,6 @@ class CardCatalogTest(unittest.TestCase):
                 with self.assertRaises(Refused) as ctx:
                     validate_card_and_shape(card, sh)
                 self.assertEqual(ctx.exception.code, code)
-
-    def test_circuit_breaker_trips_at_two_and_resets_next_utc_day(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cb = CircuitBreaker(Path(tmp) / "card_refusals.json")
-            cb.check("G4", "2026-11-26")
-            self.assertEqual(cb.record_refusal("G4", reason="503", session="s1", day="2026-11-26"), 1)
-            cb.check("G4", "2026-11-26")
-            self.assertEqual(cb.record_refusal("G4", reason="503", session="s2", day="2026-11-26"), 2)
-            with self.assertRaises(Refused) as ctx:
-                cb.check("G4", "2026-11-26")
-            self.assertEqual(ctx.exception.code, "CARD_CIRCUIT_OPEN")
-            cb.check("L4", "2026-11-26")
-            cb.check("G4", "2026-11-27")
-            self.assertRegex(utc_day_str(), r"^\d{4}-\d{2}-\d{2}$")
 
     def test_study_ledger_reserves_card_and_refuses_card_mixing(self):
         with tempfile.TemporaryDirectory() as tmp:

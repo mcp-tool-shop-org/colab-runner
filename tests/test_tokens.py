@@ -1059,6 +1059,28 @@ class BareQuarantineTest(unittest.TestCase):
         scrub_local(p)
         self.assertEqual(list(self.temp.iterdir()), [])
 
+    def test_cli_scrub_strips_home_paths_from_tracebacks_and_keeps_urls_and_content(self):
+        from unittest import mock
+
+        from colab_runner.colab_cli import scrub, scrub_home_paths
+
+        self.assertEqual(scrub_home_paths(""), "")
+        u_a, u_b = "al" + "ice", "bo" + "b"
+        samples = ("/" + f"home/{u_a}", "/" + f"Users/{u_a}", "/" + f"mnt/c/Users/{u_b}", "C:\\Us" + f"ers\\{u_b}")
+        tb = (f"│ {samples[0]}/.local/share/uv/tools/cli/session.py:141 │\n  {samples[1]}/venv/bin/colab\n"
+              f"  {samples[2]}/AppData/Local/Temp/x\n  {samples[3]}\\AppData\\Local\\file.py\n"
+              f"Keep https://host{samples[0]} and /content/lane3_out intact\n")
+        cleaned = scrub(tb)
+        head_lines = "\n".join(cleaned.splitlines()[:4])
+        for leaked in samples:
+            self.assertNotIn(leaked, head_lines)
+        for want in ("~/.local/share/uv/tools/cli/session.py:141", "~/venv/bin/colab", "~/AppData/Local/Temp/x", f"https://host{samples[0]}", "/content/lane3_out"):
+            self.assertIn(want, cleaned)
+        with mock.patch.dict(os.environ, {"HOME": "/opt/custom_runner_home", "USERPROFILE": ""}):
+            self.assertEqual(scrub("err at /opt/custom_runner_home/bin/colab"), "err at ~/bin/colab")
+        with mock.patch.dict(os.environ, {"HOME": tempfile.gettempdir()}):
+            self.assertIn(tempfile.gettempdir(), scrub_home_paths(tempfile.gettempdir() + "/keep"))
+
 
 if __name__ == "__main__":
     unittest.main()

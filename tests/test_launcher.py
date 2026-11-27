@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from colab_runner.__main__ import main
-from colab_runner.cards import CARD_CHECK_FAIL_RC, CircuitBreaker, resolve_card
+from colab_runner.cards import CARD_CHECK_FAIL_RC, resolve_card
 from colab_runner.colab_cli import KILL_WAIT_S, BinaryDownloadRefused, CliResult, Colab, parse_sessions_output
 from colab_runner.errors import Refused
 from colab_runner.launcher import (
@@ -408,9 +408,7 @@ class FailurePathsTest(unittest.TestCase):
             )
             res_mm = launch_window(spec_empty_salvage, out_dir_mm, colab=sim_mm, clock=sim_mm.clock.now,
                                    sleep=sim_mm.clock.sleep, state_dir=state_dir)
-            self.assertEqual(res_mm["status"], "card_mismatch")
-            self.assertEqual(res_mm["refusal"]["code"], "CARD_MISMATCH")
-            self.assertEqual(len(CircuitBreaker(state_dir / "card_refusals.json").events_for("G4")), 1)
+            self.assertEqual((res_mm["status"], res_mm["refusal"]["code"]), ("card_mismatch", "CARD_MISMATCH"))
 
     def test_failure_3_cap_hits_money_limits_and_mid_run_cap(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -494,22 +492,21 @@ class FailurePathsTest(unittest.TestCase):
             res_nf = launch_window(spec_g4, root / "nf_unstopped", colab=sim_new_fail_unstopped,
                                    clock=sim_new_fail_unstopped.clock.now,
                                    sleep=sim_new_fail_unstopped.clock.sleep, state_dir=state_dir)
-            self.assertEqual(res_nf["refusal"]["code"], "SESSION_OPEN_FAILED")
+            self.assertEqual((res_nf["refusal"]["code"], res_nf["spend_ccu"], res_nf["spend_basis"]), ("SESSION_OPEN_FAILED", 0.0, "not_opened"))
             self.assertGreaterEqual(sim_new_fail_unstopped.stop_calls, 1)
             self.assertFalse(res_nf["session_stopped_confirmed"])
             self.assertTrue((root / "nf_unstopped" / "session_open.json").is_file())
 
-            # 2nd allocation failure opens circuit breaker -> 3rd attempt refused CARD_CIRCUIT_OPEN
-            sim_alloc2 = SimColab(
-                clock=FakeClock(),
-                usage=usage_text(rate=0.0, n=0, balance=100.0),
-                new_results=[CliResult(1, "", "503 Service Unavailable")],
-            )
-            launch_window(spec_g4, root / "nf2", colab=sim_alloc2, clock=sim_alloc2.clock.now,
-                          sleep=sim_alloc2.clock.sleep, state_dir=state_dir)
-            with self.assertRaises(Refused) as ctx:
-                launch_window(spec_g4, root / "nf3", state_dir=state_dir)
-            self.assertEqual(ctx.exception.code, "CARD_CIRCUIT_OPEN")
+            # Repeated 503/capacity failures never trip CARD_CIRCUIT_OPEN, book 0 spend, and scrub home paths
+            h_lin, h_win = "/" + "home/al" + "ice", "C:\\Us" + "ers\\bo" + "b"
+            rich_503 = f"│ {h_lin}/.local/share/uv/tools/colab_cli/session.py:141 │\n{h_win}\\AppData\\503 Service Unavailable"
+            for idx_503 in (2, 3):
+                sim_alloc = SimColab(clock=FakeClock(), usage=usage_text(rate=0.0, n=0, balance=100.0), new_results=[CliResult(1, "", rich_503)])
+                r_503 = launch_window(spec_g4, root / ("nf" + str(idx_503)), colab=sim_alloc, clock=sim_alloc.clock.now, sleep=sim_alloc.clock.sleep, state_dir=state_dir)
+                self.assertEqual((r_503["status"], r_503["spend_ccu"], r_503["spend_basis"]), ("open_failed", 0.0, "not_opened"))
+                self.assertNotIn(h_lin, r_503["refusal"]["message"])
+                self.assertNotIn("bo" + "b", r_503["refusal"]["message"])
+                self.assertIn("~/.local/share/uv", r_503["refusal"]["message"])
 
             # Item 13: real `colab sessions` format lines + 5 CPU rows + A100 40 vs 80 split + ignored session-name substring
             cpu_rows = ["[my-g4-stub-%d] ep%d | Hardware: CPU | Shape: High-RAM | Variant: DEFAULT" % (i, i)
@@ -583,7 +580,6 @@ class FailurePathsTest(unittest.TestCase):
                                     shape_check_attempts=2, state_dir=st_exh, log=logs_exh.append)
             self.assertEqual(res_exh["status"], "done")
             self.assertTrue(any("inconclusive" in ln for ln in logs_exh))
-            self.assertEqual(CircuitBreaker(st_exh / "card_refusals.json").events_for("T4"), [])
 
 
 class SignalsLocksExceptionsAndPostOpenTest(unittest.TestCase):
@@ -793,7 +789,7 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
                 with _acquire_dir_lock(lock_stale, timeout_s=1.0):
                     self.assertTrue((lock_stale / "owner.json").is_file())
 
-            # Confirmed SHAPE_MISMATCH + CircuitBreaker event
+            # Confirmed SHAPE_MISMATCH (no CircuitBreaker file created)
             spec = _write_spec(root, cap=15.0, max_rate=10.5)
             seq = [usage_text(rate=0.0, n=0, balance=100.0), usage_text(rate=10.2, n=1, balance=100.0)]
             c_mm = FakeClock()
@@ -805,9 +801,8 @@ class AdditionalPatchCoverageTest(unittest.TestCase):
             res_mm = launch_window(
                 spec, root / "mm_out", session="sess-mm", colab=sim_mm, clock=c_mm.now, sleep=c_mm.sleep, state_dir=st_mm
             )
-            self.assertEqual(res_mm["status"], "shape_mismatch")
-            self.assertEqual(res_mm["refusal"]["code"], "SHAPE_MISMATCH")
-            self.assertEqual(len(CircuitBreaker(st_mm / "card_refusals.json").events_for("G4")), 1)
+            self.assertEqual((res_mm["status"], res_mm["refusal"]["code"], res_mm["opened"]), ("shape_mismatch", "SHAPE_MISMATCH", True))
+            self.assertNotEqual(res_mm["spend_basis"], "not_opened")
 
             # Open-phase wall trip + cap trip + UPLOAD_FAILED
             c_w = FakeClock()
@@ -981,7 +976,7 @@ class Fix2CapTimingOrphanAndLockTest(unittest.TestCase):
             ledger_p = root / "ledger.json"
             lock_p = root / "lock"
 
-            # Item 1 + Item 9: G4 `colab new` runs 36s then fails; spends >0 from pre-new clock and releases card!
+            # Item 1 + Item 9: G4 `colab new` runs 36s then fails; unopened -> 0 spend and releases card!
             c1 = FakeClock()
             sim_fail = SimColab(
                 clock=c1, delay_new_s=36.0, usage=usage_text(rate=0.0, n=0, balance=100.0),
@@ -991,10 +986,9 @@ class Fix2CapTimingOrphanAndLockTest(unittest.TestCase):
                 spec, root / "g4_fail", colab=sim_fail, clock=c1.now, sleep=c1.sleep,
                 study_ledger=ledger_p, state_dir=root / "st", open_lock=lock_p,
             )
-            self.assertEqual(res_fail["status"], "open_failed")
-            self.assertFalse(res_fail["opened"])
+            self.assertEqual((res_fail["status"], res_fail["opened"], res_fail["spend_ccu"], res_fail["spend_basis"]), ("open_failed", False, 0.0, "not_opened"))
             self.assertIsNotNone(res_fail["opened_at"])
-            self.assertGreater(res_fail["spend_ccu"], 0.0)
+            self.assertGreater(res_fail["elapsed_s"], 30.0)
             self.assertTrue(res_fail["session_stopped_confirmed"])
 
             # Now the SAME study reserves and succeeds on A100!
@@ -1026,9 +1020,7 @@ class Fix2CapTimingOrphanAndLockTest(unittest.TestCase):
             res_us = launch_window(
                 spec, unstopped_dir, colab=sim_us, clock=c3.now, sleep=c3.sleep, state_dir=root / "st2", open_lock=lock_p
             )
-            self.assertFalse(res_us["opened"])
-            self.assertFalse(res_us["session_stopped_confirmed"])
-            self.assertGreater(res_us["spend_ccu"], 0.0)
+            self.assertEqual((res_us["opened"], res_us["session_stopped_confirmed"], res_us["spend_ccu"], res_us["spend_basis"]), (False, False, 0.0, "not_opened"))
             past_open = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() - 600.0, tz=timezone.utc)
             raw_us = json.loads((unstopped_dir / "outcome.json").read_text(encoding="utf-8"))
             raw_us["opened_at"] = past_open.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1036,7 +1028,7 @@ class Fix2CapTimingOrphanAndLockTest(unittest.TestCase):
             with mock.patch("colab_runner.__main__.cli_from_env", return_value=sim_us):
                 self.assertEqual(main(["stop", "--out-dir", str(unstopped_dir), "--quiet"]), 0)
             rec_us = json.loads((unstopped_dir / "outcome.json").read_text(encoding="utf-8"))
-            self.assertTrue(rec_us["spend_basis"].endswith("_reconciled"))
+            self.assertEqual((rec_us["spend_ccu"], rec_us["spend_basis"]), (0.0, "not_opened"))
             self.assertGreater(rec_us["elapsed_s"], 500.0)
 
     def test_item_2_open_phase_timeout_clamping_never_overruns_cleanup_reserve(self):
