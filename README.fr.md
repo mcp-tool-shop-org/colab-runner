@@ -16,13 +16,18 @@ Exécutez un script sur une instance GPU Google Colab payante depuis votre propr
 
 ## Ce que cela fait
 
-- **Un fichier de spécification par tâche.** Entrées, commandes de configuration et d’exécution, sorties, type de GPU, limite de dépenses et limite de temps, le tout dans `colab-window.toml`. Pas de scripts de lancement par tâche.
-- **Une limite de dépenses que vous définissez.** Le coût est calculé en fonction du tarif multiplié par le temps écoulé sur votre machine. Lorsque la limite est atteinte, ou lorsque la limite de temps est dépassée, la tâche est arrêtée et la session est fermée.
-- **Testez avant de payer.** `--dry` vérifie la spécification sans effectuer d’appel à Colab. `--local-cpu` exécute la tâche complète sur votre machine, de la même manière qu’elle serait exécutée sur la VM.
-- **La session est toujours arrêtée.** Toutes les méthodes d’arrêt d’une exécution tentent d’arrêter la session. Si votre machine tombe en panne pendant l’exécution, `stop --out-dir` la fermera ultérieurement.
+- **Un seul fichier de spécification par tâche.** Entrées, commandes de configuration et d’exécution, sorties, type de GPU, limite de dépenses et limite de temps, le tout dans
+`colab-window.toml`. Pas de scripts de lancement spécifiques à chaque tâche.
+- **Une limite de dépenses que vous définissez.** Le coût est calculé en fonction du tarif multiplié par le temps écoulé sur votre machine. Lorsque la limite est atteinte,
+soit la limite de dépenses, soit la limite de temps, la tâche est interrompue et la session est fermée.
+- **Testez avant de payer.** `--dry` vérifie la spécification sans effectuer d’appels à Colab. `--local-cpu` exécute la tâche complète sur votre
+machine, de la même manière qu’elle serait exécutée sur la machine virtuelle.
+- **La session est toujours interrompue.** Toutes les méthodes d’interruption d’une exécution tentent d’interrompre la session. Si votre machine tombe en panne
+pendant l’exécution, `stop --out-dir` la fermera ultérieurement.
 - **Les jetons sont exclus des résultats.** Les journaux et les fichiers téléchargés sont purgés de leurs jetons d’accès avant d’être enregistrés.
-- **Un enregistrement de chaque exécution.** `outcome.json` dans le dossier de sortie indique comment l’exécution s’est terminée et quel en a été le coût.
-- **Publication facultative.** Une tâche dont la spécification contient `[publish] enabled = true` et `repo_id` télécharge ses résultats sur Hugging Face une fois terminée. Rien n’est publié, sauf si la spécification le demande.
+- **Un historique de chaque exécution.** `outcome.json` dans le dossier de sortie indique comment l’exécution s’est terminée et quel en a été le coût.
+- **La publication vous appartient.** colab-runner ne télécharge jamais rien. Pour partager les résultats, utilisez `hf upload` de Hugging Face
+(voir [docs/reference.md](docs/reference.md)).
 
 ## Installation
 
@@ -101,9 +106,9 @@ Chaque refus et chaque erreur affiche un code, un message et un indice. `python 
 - Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé (`<out-dir>.quarantine/`) sur votre machine. Un répertoire `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` sous le répertoire temporaire du système.
 - Les variables d’environnement que vous nommez avec `--env`, qu’elle transmet à la machine virtuelle à l’intérieur du fichier de cellule.
 
-**Ce que cela ne modifie pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte ou de facturation : il lit le tarif et le solde du compte via la commande `colab` et ne les modifie jamais. Il ne lit aucun identifiant, sauf un jeton Hugging Face lorsqu’une tâche choisit d’être publiée.
+**Ce que cela ne touche pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte, aucune information d’identification ou aucune information de facturation : il lit le tarif et le solde du compte via l’outil en ligne de commande `colab` et ne les modifie jamais.
 
-**Réseau.** Via la commande `colab`, vers Google Colab. colab-runner n’ouvre aucune connexion de son propre chef, sauf vers huggingface.co lorsqu’une tâche choisit d’être publiée.
+**Réseau.** Uniquement via l’outil en ligne de commande `colab`, vers Google Colab. colab-runner n’ouvre aucune connexion de son propre chef.
 
 **Secrets.** Un secret transmis sous forme de `--env NAME` n’apparaît sur aucune ligne de commande. Chaque ligne de sortie, chaque ligne d’erreur, chaque trace de pile et chaque fichier texte téléchargé sont purgés de leurs jetons ; un fichier binaire contenant un jeton est mis en quarantaine sans modification et le téléchargement est refusé (ci-dessus). colab-runner ne supprime jamais la quarantaine : vous devez la supprimer et ne jamais la distribuer.
 

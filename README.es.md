@@ -16,13 +16,18 @@ Ejecute un script en una GPU de Google Colab de pago desde su propia máquina, c
 
 ## Qué hace
 
-- **Un archivo de especificación por tarea.** Entradas, comandos de configuración y ejecución, salidas, tipo de GPU, límite de gasto y límite de tiempo, todo en `colab-window.toml`. No hay scripts de inicio por tarea.
-- **Un límite de gasto que usted establece.** El costo se calcula como tarifa × tiempo transcurrido en su máquina. Cuando se alcanza el límite o el límite de tiempo, la tarea se detiene y la sesión se cierra.
-- **Pruébelo antes de pagar.** `--dry` verifica la especificación sin realizar llamadas a Colab. `--local-cpu` ejecuta toda la tarea en su máquina, de la misma manera que se ejecuta en la máquina virtual.
-- **La sesión siempre se detiene.** Cualquier forma en que pueda finalizar una ejecución intenta detener la sesión. Si su máquina falla durante la ejecución, `stop --out-dir` la cierra más tarde.
+- **Un archivo de especificaciones por tarea.** Entradas, comandos de configuración y ejecución, salidas, tipo de GPU, límite de gasto y límite de tiempo, todo en
+`colab-window.toml`. No se utilizan scripts de inicio por tarea.
+- **Un límite de gasto que usted establece.** El costo se calcula como tarifa × tiempo transcurrido en su máquina. Cuando se alcanza el límite
+o el límite de tiempo, la tarea se detiene y la sesión se cierra.
+- **Pruébelo antes de pagar.** `--dry` verifica las especificaciones sin realizar llamadas a Colab. `--local-cpu` ejecuta toda la tarea en su
+máquina, de la misma manera que se ejecuta en la máquina virtual.
+- **La sesión siempre se detiene.** Cualquier forma en que pueda finalizar una ejecución intenta detener la sesión. Si su máquina falla
+durante la ejecución, `stop --out-dir` la cierra más tarde.
 - **Los tokens no se incluyen en los resultados.** Los registros y los archivos descargados se eliminan para eliminar los tokens de acceso antes de guardarlos.
-- **Un registro de cada ejecución.** `outcome.json` en la carpeta de salida indica cómo finalizó la ejecución y cuál fue su costo.
-- **Publicación opcional.** Una tarea cuya especificación tiene `[publish] enabled = true` y un `repo_id` carga sus resultados en Hugging Face cuando finaliza. No se publica nada a menos que la especificación lo solicite.
+- **Se registra cada ejecución.** `outcome.json` en la carpeta de salida indica cómo finalizó la ejecución y cuál fue su costo.
+- **La publicación es suya.** colab-runner nunca sube nada. Para compartir los resultados, utilice `hf upload` de Hugging Face
+(consulte [docs/reference.md](docs/reference.md)).
 
 ## Instalación
 
@@ -101,9 +106,9 @@ Cada rechazo y error imprime un código, un mensaje y una sugerencia. `python -m
 - El directorio de salida (`--out-dir`) y su directorio de cuarentena hermano `<out-dir>.quarantine/` en su máquina. Un directorio `Colab.download` sin directorio de cuarentena utiliza una nueva carpeta `colab-runner-quarantine-*` dentro del directorio temporal del sistema.
 - Las variables de entorno que especifique con `--env`, que se pasan a la máquina virtual dentro del archivo de la celda.
 
-**Lo que no modifica.** Ningún archivo fuera del directorio de salida, su cuarentena y la cuarentena temporal. Ninguna otra sesión de Colab. Ninguna configuración de cuenta o facturación: lee la tarifa y el saldo de la cuenta a través del comando `colab` y nunca los modifica. No lee ninguna credencial propia, excepto un token de Hugging Face cuando una tarea opta por la publicación.
+**Qué no toca.** Ningún archivo fuera del directorio "out", su cuarentena y la cuarentena temporal. Ninguna otra sesión de Colab. Ninguna configuración de cuenta, credenciales o facturación: lee la tarifa y el saldo de la cuenta a través de la herramienta de línea de comandos `colab` y nunca los cambia.
 
-**Red.** A través del comando `colab`, a Google Colab. colab-runner no abre ninguna conexión propia, excepto a huggingface.co cuando una tarea opta por la publicación.
+**Red.** Solo a través de la herramienta de línea de comandos `colab`, a Google Colab. colab-runner no abre ninguna conexión por sí solo.
 
 **Secretos.** Un secreto que se pasa como `--env NAME` no aparecerá en ninguna línea de comando. Cada línea de salida, cada línea de error, cada rastreo de pila y cada archivo de texto descargado se eliminan para eliminar los tokens; un archivo binario que contenga un token se pone en cuarentena sin cambios y la descarga se rechaza (arriba). colab-runner nunca elimina la cuarentena: usted debe eliminarla y nunca enviarla.
 
