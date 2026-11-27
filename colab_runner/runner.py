@@ -767,7 +767,12 @@ class Runner:
                     u, usage_skipped = self._read_usage()
                     if u is not None:
                         usage_t = self.clock()
-                        _guard_call(fold, u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
+                        try:
+                            fold(u.out if u.ok else u.err, rc=u.rc, epoch=usage_t, at=_utc_now())
+                        except (Refused, RunInterrupted, KeyboardInterrupt):
+                            raise
+                        except Exception as exc:  # a bad usage read is logged, never a stop
+                            self.log("usage read not parsed (not a stop): %s" % type(exc).__name__)
                 left_now, nearer = self._time_left()
                 trip = _guard_call(guard.check, self.clock() - self._t0)
                 if trip:
