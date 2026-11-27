@@ -34,7 +34,7 @@ from colab_runner.launcher import (
     resolve_kit_env,
     status_window,
 )
-from colab_runner.runner import RunInterrupted, Runner
+from colab_runner.runner import RunInterrupted, Runner, _guard_call
 from tests.fakes import FakeClock, FakeColab, rec, usage_text
 from tests.test_tokens import fake_tokens, leak_lines, values
 
@@ -1956,8 +1956,7 @@ class ChunkedDownloadTest(unittest.TestCase):
             nested_bytes = b"NEST\x00" + (b"xyz987654321" * 110)
             (root / "make_outputs.py").write_text(
                 "import os\nfrom pathlib import Path\n"
-                "w = Path(os.environ['CR_WORK_DIR'])\n"
-                "o = Path(os.environ['CR_OUT_DIR'])\n"
+                "w, o = Path(os.environ['CR_WORK_DIR']), Path(os.environ['CR_OUT_DIR'])\n"
                 "(w / 'bundle_dir' / 'nested').mkdir(parents=True, exist_ok=True)\n"
                 f"(w / 'bundle_dir' / 'clean.png').write_bytes({png_bytes!r})\n"
                 f"(w / 'bundle_dir' / 'nested' / 'weights.bin').write_bytes({nested_bytes!r})\n"
@@ -1967,23 +1966,18 @@ class ChunkedDownloadTest(unittest.TestCase):
                 encoding="utf-8",
             )
             spec = root / "colab-window.toml"
-            spec.write_text(
-                'schema_version = 1\n'
-                '[project]\nrepo = "o/c"\nstudy = "chunk-s"\njob = "chunk_j"\n'
+            spec_txt = (
+                'schema_version = 1\n[project]\nrepo = "o/c"\nstudy = "chunk-s"\njob = "chunk_j"\n'
                 '[compute]\ncard = "T4"\nshape = "standard"\nmax_rate = 1.6\ncap = 6.0\nwall_s = 900\npoll_s = 0.15\n'
-                '[inputs]\nroot = "."\nfiles = ["make_outputs.py"]\n'
-                '[job]\nrun = ["python3 make_outputs.py"]\n'
-                '[outputs]\ncollect = ["bundle_dir", "small.txt"]\ndownload_parts = 12\n',
-                encoding="utf-8",
+                '[inputs]\nroot = "."\nfiles = ["make_outputs.py"]\n[job]\nrun = ["python3 make_outputs.py"]\n'
+                '[outputs]\ncollect = ["bundle_dir", "small.txt"]\ndownload_parts = 12\n'
             )
+            spec.write_text(spec_txt, encoding="utf-8")
 
             dry_plan = launch_window(spec, root / "dry", dry=True)
             self.assertEqual(dry_plan["outputs"]["download_parts"], 12)
             spec_p1 = root / "p1.toml"
-            spec_p1.write_text(
-                spec.read_text(encoding="utf-8").replace("download_parts = 12", "download_parts = 1"),
-                encoding="utf-8",
-            )
+            spec_p1.write_text(spec_txt.replace("download_parts = 12", "download_parts = 1"), encoding="utf-8")
             dry_p1 = launch_window(spec_p1, root / "dry1", dry=True)
             self.assertGreaterEqual(dry_plan["budget"]["cleanup_outputs_bound_s"] - dry_p1["budget"]["cleanup_outputs_bound_s"], 1000.0)
             import colab_runner.launcher as launcher_mod
@@ -2040,7 +2034,6 @@ class ChunkedDownloadTest(unittest.TestCase):
             ), ([], True))
             self.assertEqual(errs_over, {"d": "OUTPUT_PARTS_EXCEEDED"})
             self.assertEqual([e for e in col_over.events[col_over.events.index("tar") + 1:] if e == "download"], [])
-
             for name, reply, rfiles, want_err in (
                 ("bad_hdr", CliResult(0, "CR_TAR_READY\nCR_TAR_PART bad\n"), {}, "OUTPUT_TAR_CORRUPT"),
                 ("bad_sha", CliResult(0, "CR_TAR_READY\nCR_TAR_PART /content/j_out/d.tar.part0000 2 %s\n" % ("f" * 64)),
@@ -2056,7 +2049,6 @@ class ChunkedDownloadTest(unittest.TestCase):
                 )
                 self.assertEqual((got, ok, errs), ([], True, {"d": want_err}), name)
                 self.assertFalse((root / (name + ".quarantine")).exists())
-
             touts = iter([10.0, 10.0, None])
             self.assertEqual(_download_declared_outputs(
                 Runner(PartColab(CliResult(0, "CR_TAR_READY\nCR_TAR_PART /content/j_out/d.tar.part0000 2 %s\n" % s0),
@@ -2064,12 +2056,10 @@ class ChunkedDownloadTest(unittest.TestCase):
                 ["d"], root / "o_bud" / "collected", content="/content", job="j",
                 next_timeout=lambda: next(touts, None), next_exec_timeout=lambda: 10.0,
             ), ([], False))
-
             dest_p = root / "o_part" / "collected"
             _download_declared_outputs(Runner(PartColab(CliResult(0, "CR_TAR_MISSING\n"), partial_direct_fail=True),
                                               "s", root / "o_part", job="j"), ["truncated.txt"], dest_p, content="/content", job="j")
             self.assertFalse((dest_p / "truncated.txt").exists())
-
             good_tar = root / "good.tar"
             with tarfile.open(good_tar, "w:") as tf:
                 ti = tarfile.TarInfo("ok.txt"); ti.size = 2
@@ -2078,13 +2068,11 @@ class ChunkedDownloadTest(unittest.TestCase):
             tar_reply = CliResult(0, "CR_TAR_READY\nCR_TAR_PART /content/j_out/dir1.tar.part0000 %d %s\n" % (
                 len(raw_tar), hashlib.sha256(raw_tar).hexdigest()))
             stage_paths_seen, real_move = [], shutil.move
-
             def _spy_move(src, dst, *a, **kw):
                 stage_paths_seen.append(Path(src))
                 if Path(src).name == "dir_bad":
                     raise OSError("disk full")
                 return real_move(src, dst, *a, **kw)
-
             iso_list, errs_iso = [], {}
             with mock.patch("colab_runner.launcher.shutil.move", side_effect=_spy_move):
                 _download_declared_outputs(
@@ -2095,8 +2083,7 @@ class ChunkedDownloadTest(unittest.TestCase):
                     ["first.txt", "dir1", "dir_bad", "last.txt"], root / "o_iso" / "salvage",
                     content="/content", job="j", output_errors=errs_iso, transferred_out=iso_list,
                 )
-            self.assertEqual(iso_list, ["first.txt", "dir1", "last.txt"])
-            self.assertEqual(errs_iso, {"dir_bad": "OUTPUT_DOWNLOAD_FAILED"})
+            self.assertEqual((iso_list, errs_iso), (["first.txt", "dir1", "last.txt"], {"dir_bad": "OUTPUT_DOWNLOAD_FAILED"}))
             self.assertTrue(any(p.is_relative_to(root / "o_iso") and ".salvage.stage-" in str(p) for p in stage_paths_seen))
             self.assertFalse(list((root / "o_iso").glob(".salvage.stage-*")))
 
@@ -2104,7 +2091,8 @@ class ChunkedDownloadTest(unittest.TestCase):
         from colab_runner.errors import GuardFailed
         from colab_runner.spend import SpendGuard
 
-        # (a) Cap priced at max(max_rate, window best_stable), never lower open-time rate
+        with self.assertRaises(Refused):
+            _guard_call(lambda: (_ for _ in ()).throw(Refused("CAP_INVALID", "x")))
         g = SpendGuard(max_rate=1.6, cap=2.0, margin=0.02, cleanup_bound_s=466.0, pre_open_rate=0.0, pre_open_assignments=0)
         g.fold_usage(usage_text(rate=1.07, n=1, balance=99.0), rc=0, epoch=100.0, at="2026-11-26T00:00:00Z")
         self.assertEqual(g.priced_rate(), 1.6)
@@ -2114,7 +2102,6 @@ class ChunkedDownloadTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            # (b) Dead job & hung job with active log emitter stop on dead / progress_stall well before wall_s
             for name, rec_kw, run_kw, want_reason in (
                 ("dead", dict(alive=False, rc=None), dict(dead_confirm=2), "dead"),
                 ("stall", dict(alive=True, rc=None, progress=1), dict(progress_stall_s=20.0), "progress_stall"),
@@ -2129,9 +2116,8 @@ class ChunkedDownloadTest(unittest.TestCase):
                 self.assertEqual(res.reason, want_reason)
                 self.assertLess(res.elapsed_s, 100.0)
 
-            # (c) Guard crash in Runner._loop and open phase records GUARD_FAILED, never CAP_GUARD_TRIPPED
             clk_r, crash_g = FakeClock(), SpendGuard(max_rate=0.3, cap=2.0, cleanup_bound_s=1000.0)
-            with mock.patch.object(crash_g, "check", side_effect=RuntimeError("loop guard boom")):
+            with mock.patch.object(crash_g, "fold_usage", side_effect=RuntimeError("loop fold boom")):
                 with self.assertRaises(GuardFailed):
                     Runner(FakeColab(clock=clk_r), "s-gf", root / "r_gf", clock=clk_r.now, sleep=clk_r.sleep).run(
                         script="run.sh", wall_s=900.0, guard=crash_g,
@@ -2156,6 +2142,14 @@ class ChunkedDownloadTest(unittest.TestCase):
             out_g = json.loads((root / "g_run" / "outcome.json").read_text(encoding="utf-8"))
             self.assertEqual((out_g["status"], out_g["refusal"]["code"], out_g["cap_trip"]), ("error", "GUARD_FAILED", None))
             self.assertTrue(out_g["session_stopped_confirmed"])
+
+            spec_cap = root / "cap.toml"
+            spec_cap.write_text(spec.read_text(encoding="utf-8").replace("max_rate = 0.30\ncap = 2.0\nwall_s = 900", "max_rate = 1.8\ncap = 0.35\nmargin = 0.0\nwall_s = 3600"), encoding="utf-8")
+            cap_s = launch_window(spec_cap, root / "c_dry", dry=True)["budget"]["runtime_at_priced_rate_s"]
+            for tag, delay in (("sub", cap_s - 0.5), ("over", cap_s + 2.0)):
+                clk_c = FakeClock()
+                out_c = launch_window(spec_cap, root / ("c_" + tag), state_dir=root / "st", colab=SimColab(delay_new_s=delay, clock=clk_c), clock=clk_c.now, sleep=clk_c.sleep)
+                self.assertEqual((out_c["status"], out_c["cap_trip"]["code"]), ("cap", "CAP_GUARD_TRIPPED"))
 
 
 if __name__ == "__main__":
