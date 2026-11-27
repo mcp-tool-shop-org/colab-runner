@@ -12,166 +12,85 @@
   <a href="https://mcp-tool-shop-org.github.io/colab-runner/"><img src="https://img.shields.io/badge/Landing_Page-live-blue" alt="Landing Page"></a>
 </p>
 
-L’exécuteur partagé du studio pour les instances Google Colab payantes : un emplacement unique pour le code de chaque instance Colab.
-Il lance une tâche sur une VM Colab dans un processus qui dépasse la durée de vie de l’environnement, surveille son exécution
-dans les limites d’un budget, supprime les jetons de tous les éléments qu’il récupère et tente toujours d’arrêter la session.
+Exécutez un script sur une instance GPU Google Colab payante depuis votre propre machine, avec une limite de dépenses définie, et récupérez les résultats. Vous décrivez la tâche dans un petit fichier ; colab-runner ouvre la session, exécute la tâche, récupère les résultats, arrête la session et enregistre le coût.
 
-**État : 0.1.4.** L’exécuteur détaché (élément 1 ci-dessous) est construit. Les éléments 2 à 5 ne sont pas encore construits.
+## Ce que cela fait
 
-1. **L’exécuteur détaché (0.1.0).** Lance une tâche sur la VM avec un fichier d’état, le surveille avec une politique de réessai, un mode de signalement `--hold-s` et un indicateur qui bascule vers une boucle résidant dans le noyau. La sauvegarde est un hook d’API Python (ci-dessous).
-2. **Gardes de démarrage et de carte.** Une assertion de carte lors de la première étape de la VM (capacité de calcul et VRAM par type de carte, refusant `CARD_MISMATCH`), un journal de refus côté environnement avec un disjoncteur par carte
-(`CARD_CIRCUIT_OPEN`) et `OMP_NUM_THREADS` défini avant le chargement de torch.
-3. **Secrets.** L’itinéraire du fichier de jeton : un fichier 0600, lu uniquement par le processus qui en a besoin, supprimé sur la
-VM, effacé de tous les journaux conservés.
-4. **Un module de stockage Hugging Face.** Synchronise les résultats vers un préfixe de mise en scène par instance, vérifie les nombres et
-sha256 par rapport à un manifeste, puis écrit un reçu `done.json`. Il ne supprime jamais.
-5. **`PLATFORM.md` et `facts.json`.** Ce que la plateforme Colab fait réellement, chaque fait daté et référencé,
-de sorte qu’un kit vérifie ses hypothèses par rapport à ces faits et qu’une hypothèse incorrecte devient un code de refus, et non une surprise payante.
-
-Les instances utilisent une version épinglée de ce dépôt, une instance par demande d’extraction.
+- **Un fichier de spécification par tâche.** Entrées, commandes de configuration et d’exécution, sorties, type de GPU, limite de dépenses et limite de temps, le tout dans `colab-window.toml`. Pas de scripts de lancement par tâche.
+- **Une limite de dépenses que vous définissez.** Le coût est calculé en fonction du tarif × temps écoulé sur votre machine. Lorsque la limite est atteinte ou que la limite de temps est dépassée, la tâche est arrêtée et la session est fermée.
+- **Testez avant de payer.** `--dry` vérifie la spécification sans effectuer d’appels à Colab. `--local-cpu` exécute l’ensemble de la tâche sur votre machine, de la même manière qu’elle serait exécutée sur la machine virtuelle.
+- **La session est toujours arrêtée.** Toutes les méthodes d’arrêt d’une exécution tentent d’arrêter la session. Si votre machine tombe en panne pendant l’exécution, `stop --out-dir` la fermera ultérieurement.
+- **Les jetons sont supprimés des résultats.** Les journaux et les fichiers téléchargés sont purgés des jetons d’accès avant d’être enregistrés.
+- **Un enregistrement de chaque exécution.** `outcome.json` dans le dossier de sortie indique comment l’exécution s’est terminée et quel en a été le coût.
 
 ## Installation
 
-colab-runner n’est pas disponible sur PyPI. Une instance utilise une version épinglée ou l’installe à partir de la balise :
+colab-runner ne se trouve pas dans PyPI. Installez-le à partir d’une étiquette de version :
 
 ```bash
-pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.1.4"
+pip install "git+https://github.com/mcp-tool-shop-org/colab-runner@v0.2.0"
 ```
 
-- **Python** 3.11 ou version ultérieure. Le package n’a aucune dépendance d’exécution.
-- **L’interface de ligne de commande `colab`** (l’interface de ligne de commande Colab de Google), connectée au compte qui paie l’instance. colab-runner
-l’appelle ; il ne l’installe pas et ne vous connecte pas. `COLAB_RUNNER_CLI` pointe vers une autre interface de ligne de commande (ci-dessous).
-- **Plateformes :** les exécutions CI s’effectuent sur Linux avec Python 3.11 et 3.12. Le studio l’exécute également à partir de Windows.
+Vous avez besoin de Linux ou de WSL, de Python 3.11 ou d’une version ultérieure, et de l’outil en ligne de commande `colab` de Google, avec une connexion au compte qui effectue le paiement. colab-runner n’a aucune autre dépendance.
 
 ## Démarrage rapide
 
-L’instance ouvre la session, puis la transmet à `run`, qui la termine en l’arrêtant :
+Écrivez une spécification (une spécification complète se trouve dans [examples/merchant_league_seats](examples/merchant_league_seats/README.md)) :
+
+```toml
+schema_version = 1
+
+[project]
+repo = "you/your-repo"
+study = "first-try"
+job = "train_01"
+
+[compute]
+card = "L4"        # GPU type: T4, L4, G4 or A100
+shape = "standard"
+max_rate = 2.5     # expected compute units per hour
+cap = 5.0          # never spend more than this
+wall_s = 3600      # never run longer than this
+
+[inputs]
+root = "."
+files = [
+  { src = "train.py", dst = "train.py" },
+  { src = "requirements.txt", dst = "requirements.txt" },
+]
+
+[job]
+setup = ["pip install -r requirements.txt"]
+run = ["python3 train.py"]
+cpu_dry_run = ["python3 train.py --smoke"]
+
+[outputs]
+collect = ["model", "metrics.json"]
+```
+
+Vérifiez-la ensuite, effectuez une simulation, puis exécutez-la :
 
 ```bash
-colab new -s my-window            # the lane's own step: open the session (plus the card's flags)
-python -m colab_runner run --session my-window --out-dir runs/w1   --script /content/train.sh --wall-s 3600   --max-rate 13.5 --cap 15 --cleanup-bound-s 600
-echo "exit $?"                    # 0 done and stopped; see the exit codes below
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/try --dry
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/cpu --local-cpu
+python -m colab_runner launch --spec colab-window.toml --out-dir runs/w1 --cap 5 --max-rate 2.5
+python -m colab_runner status --out-dir runs/w1
 ```
 
-Les chiffres sont des espaces réservés. Définissez `--max-rate` sur le nombre d’unités attendues par heure pour la carte et `--cap` sur le budget de l’instance en unités de calcul (voir Tarification).
+Les résultats sont enregistrés dans `runs/w1/collected/`, avec `outcome.json` à côté. Un lancement en direct nécessite `--cap` et `--max-rate` dans la ligne de commande, de sorte qu’une exécution payante est toujours un choix délibéré.
 
-`python -m colab_runner --help` répertorie toutes les commandes ; `run --help` répertorie tous les indicateurs.
+## À la fin d’une exécution
 
-## Utilisation à partir d’une instance (0.1.4)
+| Sortie | Signification |
+| --- | --- |
+| 0 | La tâche est terminée, les résultats ont été récupérés et la session est arrêtée. |
+| 1 | Refusé avant même le début : corrigez la spécification ou les indicateurs (le message indique ce qu’il faut faire). |
+| 2 | L’exécution s’est terminée prématurément (la tâche a échoué, la limite a été atteinte, la limite de temps a été dépassée, l’exécution s’est bloquée ou la cible est inaccessible). La session est arrêtée ; si l’arrêt a échoué, le message indique qu’il faut exécuter `stop`. |
+| 3 | La tâche est terminée, mais l’arrêt n’a pas été confirmé. Exécutez `python -m colab_runner stop --out-dir D`. |
 
-**La session appartient à l’instance.** L’instance ouvre la session Colab et transmet son nom. Une fois que `run` a écrit
-`session_open.json` dans le répertoire de sortie, chaque sortie tente d’arrêter la session, et le marqueur n’est supprimé qu’après un arrêt confirmé.
-- **Un marqueur qui persiste** signifie que la session est peut-être toujours ouverte : un arrêt qui a échoué, ou un `run` qui a été interrompu immédiatement (SIGKILL, un environnement perdu) avant que son nettoyage ne soit effectué. L’instance exécute ensuite `python -m colab_runner stop --out-dir D`.
-- **Avant que le marqueur n’existe** (un refus ou une erreur d’utilisation, les deux entraînant une sortie 1), l’instance exécute `colab stop -s S` elle-même.
+Chaque refus et chaque erreur affiche un code, un message et un indice. `python -m colab_runner --help` liste les commandes, et `launch --help` tous les indicateurs.
 
-**Options requises de `run` :** `--session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N`.
-- `--out-dir` ne doit pas encore exister, ou être vide (`OUT_DIR_NOT_EMPTY` sinon). Un répertoire racine du système de fichiers est refusé (`OUT_DIR_INVALID`) : la zone de quarantaine est un répertoire frère du répertoire de sortie, nommé d’après son chemin résolu. Il en va de même pour un répertoire de sortie qui ne peut pas être créé ou listé.
-- `--cleanup-bound-s` doit être égal ou supérieur à la limite de nettoyage propre du processus (`CLEANUP_BOUND_TOO_SMALL` sinon). Aux délais d’attente par défaut, cette limite est de 466 s, ou 986 s avec `--resident` (`Runner.own_cleanup_bound_s`).
-- Transmettez `--pre-open-rate` et `--pre-open-assignments` ensemble, juste avant l’ouverture de la session, ou ne transmettez aucun des deux. Sans ces options, le débit total du compte est attribué à cette fenêtre, ce qui peut entraîner le dépassement de la limite de débit par une session voisine.
-- Transmettez un `--job` distinct (par défaut `job`) pour chaque étape partageant un répertoire `--content`. Voici comment une `--job` réutilisée est refusée :
-- Chaque exécution a son propre ID d’exécution, `CR_RUN_ID`, qui est différent à chaque fois. Le nom est réservé : `--env CR_RUN_ID=…` (ou `CR_RUN_ID` dans `Runner.run(env=...)`) est refusé (`RUN_ID_RESERVED`), car l’utilisation du même ID entre les étapes désactiverait ce refus.
-- La machine virtuelle écrit l’ID d’exécution dans `<job>.run_id` avant le début de la tâche. Le fichier d’état de la tâche et chaque enregistrement de sondage contiennent cet ID.
-- Les fichiers de la tâche sont `<job>.pid`, `.status.json`, `.run.out`, `.poll.json` et `.run_id`. Si l’un d’eux se trouve là avec un autre ID d’exécution (ou sans aucun ID), l’étape se termine `start_failed` avec `JOB_ALREADY_EXISTS`. Cela est valable que le processus de l’autre tâche soit actif ou non, et avec ou sans fichier d’état.
-- Une étape refusée ne touche aucun des fichiers de l’autre exécution, ne tue jamais sa tâche et arrête toujours sa propre session. En mode `--resident`, le refus est envoyé à `<job>.refused.json`, jamais à `<job>.poll.json`.
-- Le processus ne prend en compte que les enregistrements qui contiennent son propre ID d’exécution. Un enregistrement qu’une autre exécution a laissé dans le même répertoire `--job` (le `<job>.poll.json` final de l’étape 1, par exemple) ne met jamais fin à une étape. En mode `--resident`, si seuls les enregistrements d’une autre exécution apparaissent dans `--setup-stall-s`, l’étape se termine `start_failed` avec `JOB_ALREADY_EXISTS`. Sans `--resident`, un tel enregistrement est considéré comme un sondage ayant échoué.
-- Un dépassement avant qu’aucun enregistrement n’ait été consulté (par exemple, le délai d’attente pendant qu’une autre tâche maintient `--job`) ne tue toujours rien : la cellule de suppression répond `CR_NOT_OURS`, puis le `<job>.run.out` de l’autre exécution n’est pas non plus collecté.
-- Un nouveau démarrage de la même exécution (celle dont la réponse a été perdue) n’est pas refusé.
-- En mode `--resident`, une valeur `CR_RESIDENT_MAX_S` non finie ou non positive transmise via `--env` est refusée immédiatement (`RESIDENT_MAX_INVALID`, sortie 1).
-
-**Codes de sortie** (convention de l’organisation), pour `run` et `stop --out-dir D` :
-
-| Sortie | Signification | `run` | `stop` |
-| --- | --- | --- | --- |
-| 0 | ok | `done`, et l’arrêt confirmé | un arrêt confirmé, ou rien à arrêter |
-| 1 | erreur utilisateur | un refus (`REFUSED: …`) ou une erreur d’utilisation, avant que le marqueur de session n’ait été écrit | un marqueur qui ne nomme aucune session (`SESSION_MARKER_INVALID`), ou une erreur d’utilisation |
-| 2 | erreur d’exécution | toute sortie autre que `done` (quel que soit son arrêt), ou `RUN_ERROR` | un arrêt qui n’a pas été confirmé, ou `STOP_ERROR` |
-| 3 | succès partiel | `done`, mais l’arrêt n’a pas été confirmé : `session_open.json` est toujours présent | (non utilisé) |
-
-À la sortie 3, le résultat du travail est placé dans le répertoire de sortie, et la session doit toujours être arrêtée avec `python -m colab_runner stop --out-dir D`.
-
-Un refus après le marqueur n’est pas une sortie 1. Un `--job` réutilisé, par exemple, entraîne une sortie 2 : l’exécuteur a alors pris le contrôle de la session, l’a donc arrêtée, et la dernière ligne est `RUN_END reason=start_failed … code=JOB_ALREADY_EXISTS`, avec une indication indiquant `--job` sur stderr. Aucune ligne `REFUSED:` n’est écrite.
-
-**Refus et erreurs** : ils comportent un code, un message et une indication, et chaque ligne est nettoyée :
-- Un refus écrit `REFUSED: CODE: message` comme première ligne sur stderr, puis `hint: …` (ce qu’il faut modifier).
-- Une erreur pendant une exécution écrit `RUN_ERROR: CODE: message`, puis `hint: …`. Le code est le code de l’erreur elle-même (`BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`), ou `UNEXPECTED_ERROR`, avec le type de l’exception dans le message. `stop` écrit `STOP_ERROR: …` de la même manière.
-- Une exécution qui se termine par un refus nommé après le marqueur (`JOB_ALREADY_EXISTS`, `BINARY_DOWNLOAD_TOKEN`, `QUARANTINE_ESCAPE`) l’enregistre dans `runner_result.json` sous la forme `refusal: {code, message, hint, retryable}`. `retryable` est faux pour chaque refus de l’entrée de l’appelant : le même appel échoue de la même manière.
-- Chaque code et son indication se trouvent dans `colab_runner/errors.py` (`CODES`).
-
-**Niveaux de journalisation** (`run` et `stop`) : `--quiet` n’écrit que les lignes de fin (`RUN_END`, `STOP_END` ou `STOP_NOTHING`, et un refus ou une erreur avec son indication). Par défaut, il ajoute le journal de l’exécuteur sur stderr. `--verbose` ajoute une ligne par sondage. `--debug` ajoute la trace d’une erreur. Un jeton est nettoyé à chaque niveau, y compris la trace.
-
-**Comment une exécution se termine :** `done`, `failed` (sortie non nulle), `oom`, `wall`, `cap`, `setup_stall`, `progress_stall`, `dead`, `unreachable`, `start_failed`, `interrupted` ou `error`.
-- Toute fin, sauf `error`, écrit `RUN_END reason=… rc=… stopped=…` comme dernière ligne sur stdout, avec ` code=CODE` ajouté lorsque l’exécution s’est terminée par un refus nommé. Une indication suit sur stderr pour un tel refus, et pour un arrêt qui n’a pas été confirmé.
-- Une fin `error` écrit `RUN_ERROR: …` sur stderr et aucune ligne `RUN_END` ; lorsque `session_open.json` est toujours dans le répertoire de sortie, l’indication pour un arrêt qui n’a pas été confirmé suit. Un refus ou une erreur d’utilisation (sortie 1) n’écrit que sur stderr.
-- `runner_result.json` dans le répertoire de sortie enregistre chaque fin après que le marqueur a été écrit, y compris `error`. Un téléchargement binaire refusé pendant le nettoyage transforme la fin en `error` et conserve la fin qu’il a remplacée dans `prior_reason` (et dans les détails).
-
-**Ce que `run` écrit dans le répertoire de sortie** (`--job` a par défaut `job`, `--content` a par défaut `/content`) :
-- `session_open.json` pendant que la session peut être ouverte ;
-- `runner_result.json`, la fin de l’exécution. Son `quarantined` répertorie chaque fichier binaire téléchargé et mis en quarantaine pendant l’exécution, et une quarantaine d’une `Runner.download` ultérieure via le même `Runner` réécrit le fichier avec.
-- `<job>.run.out`, le journal de la tâche (n’apparaît que lorsque la tâche a écrit des lignes de journal, ou une fois que `--resident` l’a collecté) ;
-- lorsque `--resident` est défini, `<job>.poll.json` (le dernier enregistrement de sondage de la tâche, tel que le processus l’a téléchargé) et `<job>.refused.json`, le propre enregistrement de refus de cette exécution, lorsque sa cellule résidente refusée en a écrit un (un `JOB_ALREADY_EXISTS` qui n’a expiré que sur les enregistrements d’une autre exécution n’en a pas) ;
-- `stop_confirmed.json` après un arrêt confirmé, ou `stop_pending.json` après un échec.
-
-**La commande `colab`** est `colab`, sauf si `COLAB_RUNNER_CLI` indique une autre ligne de commande. Elle est divisée avec `shlex.split`, qui utilise les guillemets POSIX : sous Windows, écrivez le chemin avec des barres obliques ou mettez-le entre guillemets (`"C:\tools\colab.exe"`), car une barre oblique inversée non entre guillemets est supprimée. Une commande qui ne peut pas être divisée (une guillemet non fermée) est refusée (`CLI_INVALID`, sortie 1).
-
-**Ce que la tâche doit écrire, afin que les mécanismes de surveillance puissent le voir.** Les chemins se trouvent sur la machine virtuelle ; le répertoire de sortie est `CR_OUT_DIR`, par défaut `<content>/<job>_out`.
-- `phase.txt` : absent, vide ou `setup` pendant l’installation, tout autre contenu une fois l’exécution lancée. Une fois que la tâche quitte la configuration, colab-runner conserve la dernière phase connue lors d’une lecture vide ou manquante de `phase.txt` et ne revient jamais en configuration ; si `phase.txt` lit de nouveau `setup` après une phase d’exécution, colab-runner réinitialise le minuteur de blocage de configuration. Les tâches démarrées avec `--hold-s` ignorent la phase de configuration.
-- `setup.log` : pendant la configuration, une exécution dont le `setup.log` cesse de croître pendant `--setup-stall-s` (par défaut 600) se termine `setup_stall`.
-- **Progression :** après la configuration, une exécution se termine `progress_stall` lorsque rien de ce qu’elle peut voir ne bouge pendant `--progress-stall-s` (par défaut 900). Ce qu’elle voit est la somme du premier entier de chaque fichier correspondant à `CR_PROGRESS_GLOB` (par défaut `<out>/progress/*`), du nombre de fichiers correspondant à `CR_UNITS_GLOB` et des pulsations cardiaques.
-- Une exécution sans sondage valide pendant `--unreachable-polls` sondages consécutifs (par défaut 10), ou pendant `--unreachable-s` (par défaut 1800), se termine `unreachable`.
-
-**Écrivez `phase.txt` de manière atomique.** Le kit écrit `phase.txt` ; colab-runner le lit. Réécrire `phase.txt` sur place (par exemple `echo run > phase.txt`) tronque d’abord le fichier, de sorte que colab-runner peut lire un fichier vide. Écrivez la nouvelle phase dans un fichier temporaire dans le même répertoire, puis renommez le fichier temporaire en `phase.txt` :
-
-```bash
-printf 'run\n' > "$CR_OUT_DIR/phase.tmp" && mv "$CR_OUT_DIR/phase.tmp" "$CR_OUT_DIR/phase.txt"
-```
-
-```python
-import os
-from pathlib import Path
-
-out = Path(os.environ["CR_OUT_DIR"])
-tmp = out / "phase.tmp"
-tmp.write_text("run\n", encoding="utf-8")
-os.replace(tmp, out / "phase.txt")
-```
-
-**Secrets et nettoyage des téléchargements pour assurer la sécurité des données binaires.** Passez un secret en tant que `--env NAME`, en définissant NAME dans l’environnement du processus. `--env NAME=VALUE`
-place la valeur dans la ligne de commande du processus. Les valeurs atteignent la VM à l’intérieur du fichier de cellule du notebook téléchargé, et non en tant qu’arguments pour l’interface CLI `colab`.
-Chaque ligne de sortie et chaque ligne d’erreur de l’interface CLI sont nettoyées à l’aide de la bibliothèque fournie `scrub_colab_tokens`. Les fichiers et
-répertoires téléchargés (y compris les transferts partiels) sont classés uniquement en fonction de leur contenu (un octet NUL ou un échec de décodage strict UTF-8 indique un fichier binaire) :
-- Les fichiers texte sont nettoyés directement à l’aide de `scrub_colab_tokens`.
-- Les fichiers binaires propres restent identiques, octet par octet. Les fichiers illisibles sont supprimés.
-- **La règle binaire.** Un fichier binaire est analysé à l’aide de paires d’octets correspondant aux motifs de jeton de la bibliothèque.
-- Pour UTF-8, les paires correspondent exactement à ce que les motifs de texte font correspondre dans le texte décodé. Chaque caractère que `\s` de Python fait correspondre
-est compté comme un espace, y compris `\x1c`-`\x1f`, NBSP, NEL et EM SPACE.
-- La seule différence se trouve à côté d’une lettre non ASCII, où la paire `hf_` correspond et le motif de texte ne correspond pas. Ainsi,
-la règle binaire peut détecter plus que la règle de texte, mais jamais moins.
-- Une règle est plus stricte que le texte : dans un fichier binaire, `Bearer` est compté uniquement lorsque la valeur qui le suit ressemble à un jeton. Cela signifie
-au moins 20 caractères de `[A-Za-z0-9._-]`, en utilisant au moins deux minuscules, majuscules et chiffres.
-- Ainsi, un rendu dont l’invite indique `Flame Bearer of the North` est transmis tel quel, octet par octet. Un véritable jeton d’authentification (un jeton d’accès OAuth, un JWT, un jeton Hugging Face) est détecté.
-- Les fichiers texte conservent les motifs de la bibliothèque inchangés : le même texte dans un fichier texte devient toujours `Bearer [REDACTED] the
-North`.
-- **Une correspondance n’est jamais réécrite.**
-- Le fichier est déplacé tel quel vers la zone de quarantaine, enregistré et nommé dans `runner_result.json` (`quarantined`) uniquement par son chemin et son nom de motif.
-- Le téléchargement est refusé avec `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). Cela met fin à `Runner.run` en tant que `error` (sortie CLI 2), et la session est toujours arrêtée.
-- **Le téléchargement d’un répertoire** est nettoyé, fichier par fichier, et un échec ne stoppe jamais le reste : une correspondance dont le déplacement vers la zone de quarantaine échoue est supprimée, et un sous-répertoire qui ne peut pas être listé est noté. La première erreur de ce type est signalée une fois que tous les fichiers restants ont été nettoyés. Seuls les fichiers réguliers sont lus. Un lien symbolique, vers un fichier ou un répertoire, est supprimé, jamais suivi, et tout autre élément qui n’est pas un fichier ou un répertoire régulier (un FIFO, une socket, un périphérique) est supprimé, jamais lu.
-- **Où se trouve la zone de quarantaine.**
-- Grâce à `Runner` (et donc `run`), il s’agit du répertoire frère `<out-dir>.quarantine/`. Il se trouve à l’extérieur de `--out-dir`, de sorte que
-ni `salvage` ni le regroupement out-dir ne le prennent en compte.
-- Un simple `Colab.download` ou `scrub_local` sans `quarantine_dir` déplace le fichier vers un nouveau dossier
-`colab-runner-quarantine-*` dans le répertoire temporaire du système (`tempfile.gettempdir()`). Il ne se trouve jamais à côté du fichier, donc
-jamais à l’intérieur du dossier dans lequel le fichier a été téléchargé. Son chemin se trouve dans `BinaryDownloadRefused.quarantined`. Passez
-`Colab(quarantine_dir=...)` pour choisir l’emplacement.
-- Chaque chemin de quarantaine est résolu et vérifié pour s’assurer qu’il se trouve à l’intérieur de son dossier de quarantaine avant le déplacement. Un fichier qui
-se trouverait à l’extérieur est supprimé à la place, et le téléchargement échoue avec `QuarantineEscape` (`QUARANTINE_ESCAPE`).
-- colab-runner ne supprime jamais une zone de quarantaine. **Le processus appelant doit la supprimer et ne doit jamais la transmettre.**
-
-**Salvage** est uniquement un hook d’API Python : `Runner.run(..., salvage=callable)` l’exécute à chaque fin, sauf `done`, avant l’arrêt.
-L’interface de ligne de commande ne dispose pas de fonction de récupération.
-
-**Tarification.** La fenêtre est tarifée à `max(--max-rate, the highest stable window rate)` fois le temps écoulé, à l’aide des fonctions de taux et de limite de la bibliothèque fournie. Un taux stable supérieur à `--max-rate` déclenche `RATE_ABOVE_MAX`, de sorte que chaque fenêtre qui continue de fonctionner est
-tarifée à `--max-rate` : il s’agit d’un seuil, et non d’un plafond flexible. Définissez-le sur le taux attendu de la carte ; un seuil flexible `--max-rate` déclenche la limite
-plus tôt. Le solde du compte est enregistré et n’affecte jamais le prix de la fenêtre.
+**Plus de détails :** la connexion à une session que vous avez ouverte vous-même, ce que la tâche doit écrire pour que la progression soit visible, la manière dont les téléchargements sont purgés et la tarification sont décrits dans [docs/reference.md](docs/reference.md).
 
 ## Sécurité et modèle de menace
 
@@ -180,24 +99,23 @@ plus tôt. Le solde du compte est enregistré et n’affecte jamais le prix de l
 - Le répertoire de sortie (`--out-dir`) et son répertoire de quarantaine associé `<out-dir>.quarantine/` sur le système. Un appel direct à `Colab.download` sans répertoire de quarantaine utilise un nouveau dossier `colab-runner-quarantine-*` dans le répertoire temporaire du système.
 - Les variables d’environnement que la tâche utilise avec `--env`, qu’elle transmet à la machine virtuelle à l’intérieur du fichier de cellule.
 
-**Ce que cela n’affecte pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte, aucune information d’identification ou aucune facturation : il lit le taux et le solde du compte via l’interface de ligne de commande `colab` et ne les modifie jamais.
+**Ce que cela ne touche pas.** Aucun fichier en dehors du répertoire de sortie, de sa zone de quarantaine et de la zone de quarantaine temporaire. Aucune autre session Colab. Aucun paramètre de compte, aucune information d’identification ou aucune information de facturation : il lit le tarif et le solde du compte via l’outil en ligne de commande `colab` et ne les modifie jamais.
 
-**Réseau.** Uniquement via l’interface de ligne de commande `colab`, vers Google Colab. colab-runner n’ouvre aucune connexion de son propre chef.
+**Réseau.** Uniquement via l’outil en ligne de commande `colab`, vers Google Colab. colab-runner n’ouvre aucune connexion de son propre chef.
 
-**Secrets.** Un secret transmis via `--env NAME` ne doit jamais apparaître dans aucune ligne de commande. Chaque ligne de sortie, chaque ligne d’erreur, chaque trace d’exécution et chaque fichier texte téléchargé sont purgés de tout jeton. Un fichier binaire contenant un jeton est mis en quarantaine sans être modifié, et le téléchargement est refusé (comme indiqué ci-dessus). Colab-runner ne supprime jamais la quarantaine : la fonction appelante doit la supprimer et ne doit jamais la transmettre.
+**Secrets.** Un secret transmis sous forme de `--env NAME` ne figure dans aucune ligne de commande. Chaque ligne de sortie, chaque ligne d’erreur, chaque trace de pile et chaque fichier texte téléchargé sont purgés des jetons ; un fichier binaire contenant un jeton est mis en quarantaine sans être modifié et le téléchargement est refusé (ci-dessus). colab-runner ne supprime jamais la zone de quarantaine : le processus appelant doit la supprimer et ne doit jamais la transmettre.
 
-**Autorisations.** Il s’exécute en tant qu’utilisateur qui l’exécute, avec la connexion `colab` que cet utilisateur a déjà. Il n’a besoin d’aucune élévation.
+**Autorisations.** Il s’exécute en tant qu’utilisateur qui l’exécute, avec la connexion `colab` que cet utilisateur a déjà. Il n’a besoin d’aucune élévation de privilèges.
 
-**Aucune télémétrie.** colab-runner ne collecte ni n’envoie aucune donnée.
+**Pas de télémétrie.** colab-runner ne collecte ni ne transmet aucune donnée.
 
-Signaler une vulnérabilité : voir [SECURITY.md](SECURITY.md).
+Pour signaler une vulnérabilité : consultez [SECURITY.md](SECURITY.md).
 
 ## Ce qui n’est pas inclus ici
 
-Aucun nom de bucket, aucun nom de compte, aucun wrapper de lancement ou aucun chemin d’accès local. Un appelant transmet ces éléments via un indicateur ou
-une variable d’environnement ; les tests utilisent des espaces réservés.
+Aucun nom de bucket, aucun nom de compte, aucun script de lancement ou aucun chemin d’accès local. L’appelant transmet ces éléments par le biais d’indicateurs ou de variables d’environnement ; les tests utilisent des espaces réservés.
 
-## Vérifier
+## Vérification
 
 ```bash
 bash verify.sh
