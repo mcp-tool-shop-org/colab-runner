@@ -16,12 +16,13 @@ Execute um script em uma GPU Google Colab paga a partir da sua própria máquina
 
 ## O que ele faz
 
-- **Um arquivo de especificação por tarefa.** Entradas, comandos de configuração e execução, saídas, tipo de GPU, limite de gastos e limite de tempo, tudo em `colab-window.toml`. Sem scripts de execução por tarefa.
+- **Um ficheiro de especificação por tarefa.** Entradas, comandos de configuração e execução, saídas, tipo de GPU, limite de gastos e limite de tempo, tudo em `colab-window.toml`. Sem scripts de execução por tarefa.
 - **Um limite de gastos que você define.** O custo é calculado como taxa × tempo decorrido na sua máquina. Quando atinge o limite ou o limite de tempo, a tarefa é interrompida e a sessão é encerrada.
-- **Teste antes de pagar.** `--dry` verifica a especificação sem fazer chamadas ao Colab. `--local-cpu` executa a tarefa inteira na sua máquina, da mesma forma que seria executada na VM.
-- **A sessão é sempre interrompida.** Todas as formas de término de uma execução tentam interromper a sessão. Se a sua máquina falhar durante a execução, `stop --out-dir` a encerrará posteriormente.
-- **Os tokens são removidos dos resultados.** Os logs e os arquivos baixados são limpos para remover os tokens de acesso antes de serem salvos.
-- **Um registro de cada execução.** `outcome.json` na pasta de saída indica como a execução terminou e qual foi o custo.
+- **Experimente antes de pagar.** `--dry` verifica a especificação sem fazer chamadas ao Colab. `--local-cpu` executa toda a tarefa na sua máquina, da mesma forma que a executa na VM.
+- **A sessão é sempre interrompida.** Qualquer forma como uma execução pode terminar tenta interromper a sessão. Se a sua máquina falhar durante a execução, `stop --out-dir` fecha-a mais tarde.
+- **Os tokens não são incluídos nos resultados.** Os registos e os ficheiros descarregados são limpos para remover os tokens de acesso antes de serem guardados.
+- **Um registo de cada execução.** `outcome.json` na pasta de saída indica como a execução terminou e qual foi o custo.
+- **Publicação opcional.** Uma tarefa cuja especificação tem `[publish] enabled = true` e um `repo_id` carrega as suas saídas para o Hugging Face quando termina. Nada é publicado, a menos que a especificação o solicite.
 
 ## Instalação
 
@@ -100,9 +101,9 @@ Cada recusa e erro imprime um código, uma mensagem e uma dica. `python -m colab
 - O diretório de saída (`--out-dir`) e seu diretório irmão de quarentena `<out-dir>.quarantine/` na sua máquina. Um diretório `Colab.download` sem um diretório de quarentena usa uma nova pasta `colab-runner-quarantine-*` sob o diretório temporário do sistema.
 - As variáveis de ambiente que você define com `--env`, que ele passa para a VM dentro do arquivo de célula.
 
-**O que ele não acessa.** Nenhum arquivo fora do diretório de saída, sua quarentena e a quarentena temporária. Nenhuma outra sessão do Colab. Nenhuma configuração de conta, credenciais ou faturamento: ele lê a taxa e o saldo da conta por meio da ferramenta de linha de comando `colab` e nunca os altera.
+**O que não altera.** Nenhum ficheiro fora da pasta "out", a sua área de quarentena e a área de quarentena temporária. Nenhuma outra sessão do Colab. Nenhumas definições de conta ou faturação: lê a taxa e o saldo da conta através do comando `colab` e nunca os altera. Não lê quaisquer credenciais próprias, exceto um token do Hugging Face quando uma tarefa opta por publicar.
 
-**Rede.** Apenas por meio da ferramenta de linha de comando `colab`, para o Google Colab. O colab-runner não abre nenhuma conexão por conta própria.
+**Rede.** Através do comando `colab`, para o Google Colab. O colab-runner não abre nenhuma ligação própria, exceto para huggingface.co quando uma tarefa opta por publicar.
 
 **Segredos.** Um segredo passado como `--env NAME` não aparece em nenhuma linha de comando. Cada linha de saída, linha de erro, rastreamento e arquivo de texto baixado são limpos de tokens; um arquivo binário com um token é colocado em quarentena sem alterações e o download é rejeitado (acima). O colab-runner nunca exclui a quarentena: você deve excluí-la e nunca enviá-la.
 
