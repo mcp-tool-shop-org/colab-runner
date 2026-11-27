@@ -1,20 +1,21 @@
-"""Continuous work engine: unattended multi-job queue, four-way outcome buckets, and outcome-scanning board."""
+"""Continuous work engine: unattended multi-job queue and four-way outcome buckets."""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional
 
 from colab_runner.cards import validate_card_and_shape
 from colab_runner.colab_cli import Colab, cli_from_env, scrub
 from colab_runner.errors import Refused
-from colab_runner.manifest import WindowSpec
+from colab_runner.manifest import WindowSpec, _reject_unknown_keys
 from colab_runner.runner import Runner, write_json_atomic
 
 OUTCOME_BUCKETS = ("done", "failed-ours", "failed-Google", "refused-capacity")
@@ -74,7 +75,7 @@ class QueueSpec:
 
     queue_path: Path
     out_root: Path
-    state_dir: Path
+    state_dir: Optional[Path]
     default_line: str
     jobs: tuple[QueueJobSpec, ...]
 
@@ -91,14 +92,30 @@ class QueueSpec:
             raise Refused("SPEC_INVALID", "could not parse queue %s (%s)" % (qp, exc)) from None
         if not isinstance(data, dict) or data.get("schema_version", 1) != 1:
             raise Refused("SPEC_INVALID", "queue manifest must have schema_version = 1")
+        if "publish" in data:
+            raise Refused("SPEC_INVALID", "[publish] was removed; delete it; publish with `hf upload`")
+        _reject_unknown_keys(
+            data,
+            frozenset({"schema_version", "queue", "out_root", "state_dir", "line", "jobs"}),
+            "queue top-level",
+        )
         qtbl = data.get("queue", {})
         if not isinstance(qtbl, Mapping):
             raise Refused("SPEC_INVALID", "queue section [queue] must be a table/object")
+        _reject_unknown_keys(qtbl, frozenset({"out_root", "state_dir", "line"}), "[queue]")
         base_dir = qp.resolve().parent
         raw_root = str(qtbl.get("out_root") or data.get("out_root") or "queue_runs").strip()
         out_root = (base_dir / raw_root) if not Path(raw_root).is_absolute() else Path(raw_root)
-        raw_state = str(qtbl.get("state_dir") or data.get("state_dir") or str(out_root / "_state")).strip()
-        state_dir = (base_dir / raw_state) if not Path(raw_state).is_absolute() else Path(raw_state)
+        raw_state_val = qtbl.get("state_dir") if "state_dir" in qtbl else data.get("state_dir")
+        if raw_state_val is not None:
+            if not isinstance(raw_state_val, str) or not raw_state_val.strip():
+                raise Refused("SPEC_INVALID", "queue state_dir must be a non-empty string")
+            s_raw = raw_state_val.strip()
+            state_dir: Optional[Path] = (
+                (base_dir / s_raw) if not Path(s_raw).is_absolute() else Path(s_raw)
+            ).resolve()
+        else:
+            state_dir = None
         default_line = str(qtbl.get("line") or data.get("line") or "").strip()
 
         raw_jobs = data.get("jobs")
@@ -111,6 +128,14 @@ class QueueSpec:
         for idx, entry in enumerate(raw_jobs):
             if not isinstance(entry, Mapping):
                 raise Refused("SPEC_INVALID", "jobs[%d] must be a table/object" % idx)
+            _reject_unknown_keys(
+                entry,
+                frozenset({
+                    "id", "spec", "purpose", "line", "card", "shape",
+                    "max_rate", "cap", "wall_s", "out_dir", "env", "allow_sealed",
+                }),
+                "jobs[%d]" % idx,
+            )
             job_id = str(entry.get("id") or ("job-%d" % (idx + 1))).strip()
             if not QUEUE_JOB_ID_RE.fullmatch(job_id) or job_id in seen_ids:
                 raise Refused("SPEC_INVALID", "jobs[%d].id must be a unique [A-Za-z0-9_-]+ name" % idx)
@@ -173,7 +198,7 @@ class QueueSpec:
         return cls(
             queue_path=qp.resolve(),
             out_root=out_root.resolve(),
-            state_dir=state_dir.resolve(),
+            state_dir=state_dir,
             default_line=default_line,
             jobs=tuple(jobs),
         )
@@ -192,13 +217,24 @@ def run_queue(
     trace: Callable[[str], None] = lambda s: None,
 ) -> dict[str, Any]:
     """Run all jobs in `queue_path` unattended: isolate failures, enforce pool limits via launch, and record spend."""
-    from colab_runner.launcher import launch_window, reconcile_stopped_outcome
+    from colab_runner.launcher import (
+        _default_open_lock_path,
+        _default_user_state_dir,
+        launch_window,
+        reconcile_stopped_outcome,
+    )
 
     q = QueueSpec.from_file(queue_path)
-    eff_state_dir = Path(state_dir).resolve() if state_dir is not None else q.state_dir
+    explicit_state = Path(state_dir).resolve() if state_dir is not None else q.state_dir
+    if explicit_state is not None:
+        eff_state_dir = explicit_state
+        open_lock_path = eff_state_dir / "open.lock"
+    else:
+        env_state = os.environ.get("COLAB_RUNNER_STATE_DIR", "").strip()
+        eff_state_dir = Path(env_state).resolve() if env_state else _default_user_state_dir()
+        open_lock_path = _default_open_lock_path(None)
     eff_state_dir.mkdir(parents=True, exist_ok=True)
     q.out_root.mkdir(parents=True, exist_ok=True)
-    open_lock_path = eff_state_dir / "open.lock"
     state_file = q.out_root / "queue_state.json"
 
     records: list[dict[str, Any]] = [
@@ -357,158 +393,10 @@ def run_queue(
     return queue_state
 
 
-def build_board(
-    *,
-    out_root: Optional[Path | str] = None,
-    out_dirs: Sequence[Path | str] = (),
-    queue_state: Optional[Path | str] = None,
-) -> dict[str, Any]:
-    """Assemble an at-a-glance view of lines, ran/running windows, queued next items, and totals from `outcome.json`."""
-    from colab_runner.launcher import _load_opt_json, status_window
-
-    q_path = Path(queue_state) if queue_state else (Path(out_root) / "queue_state.json" if out_root else None)
-    q_data = _load_opt_json(q_path) if q_path else None
-
-    cand_dirs: list[Path] = [Path(d) for d in out_dirs]
-    if out_root and Path(out_root).is_dir():
-        root_p = Path(out_root)
-        if any((root_p / f).is_file() for f in ("outcome.json", "window_meta.json", "dry_run_plan.json")):
-            cand_dirs.append(root_p)
-        for out_file in sorted(root_p.rglob("outcome.json")):
-            if any(part.endswith(".quarantine") or part == "_local_vm_content" for part in out_file.parts):
-                continue
-            cand_dirs.append(out_file.parent)
-        for child in sorted(root_p.iterdir()):
-            if child.is_dir() and any((child / f).is_file() for f in ("window_meta.json", "dry_run_plan.json")):
-                cand_dirs.append(child)
-    for j in (q_data or {}).get("jobs", []):
-        if j.get("out_dir"):
-            cand_dirs.append(Path(str(j["out_dir"])))
-
-    seen_dirs: set[Path] = set()
-    windows: list[dict[str, Any]] = []
-    for d in cand_dirs:
-        rd = d.resolve()
-        if rd in seen_dirs or not rd.is_dir():
-            continue
-        seen_dirs.add(rd)
-        st = status_window(rd)
-        out_obj = st.get("outcome") or {}
-        meta = _load_opt_json(rd / "window_meta.json") or {}
-        proj = out_obj.get("project") or meta.get("project") or {}
-        windows.append({
-            "out_dir": str(rd),
-            "window_id": out_obj.get("window_id") or meta.get("window_id"),
-            "line": out_obj.get("line") or meta.get("line") or proj.get("line") or proj.get("study") or "",
-            "job": proj.get("job") or "",
-            "purpose": out_obj.get("purpose") or meta.get("purpose") or proj.get("purpose") or proj.get("description") or "",
-            "card": st.get("card"),
-            "state": st.get("state"),
-            "status": st.get("status") or st.get("state"),
-            "outcome_bucket": out_obj.get("outcome_bucket") or (classify_window_outcome(out_obj) if out_obj else None),
-            "spend_ccu": float(st.get("spend_ccu") or 0.0),
-            "session_stopped_confirmed": st.get("session_stopped_confirmed"),
-            "collected_outputs": list(out_obj.get("collected_outputs") or []),
-        })
-
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    seen_wids: set[str] = set()
-    for w in windows:
-        wid = str(w.get("window_id") or "")
-        if wid and wid in seen_wids:
-            continue
-        if wid:
-            seen_wids.add(wid)
-        if w.get("outcome_bucket") is None:
-            continue
-        line_name = str(w.get("line") or "").strip() or "default"
-        grouped.setdefault(line_name, []).append(w)
-
-    lines: dict[str, dict[str, Any]] = {}
-    for line_name in sorted(grouped):
-        lwins = grouped[line_name]
-        lcounts = {b: 0 for b in OUTCOME_BUCKETS}
-        for w in lwins:
-            b = str(w.get("outcome_bucket") or "failed-ours")
-            lcounts[b if b in lcounts else "failed-ours"] += 1
-        lines[line_name] = {
-            "line": line_name,
-            "spent_ccu": round(sum(float(w.get("spend_ccu") or 0.0) for w in lwins), 6),
-            "window_count": len(lwins),
-            "counts": lcounts,
-        }
-
-    next_jobs = [
-        j for j in (q_data or {}).get("jobs", [])
-        if j.get("state") in ("queued", "running")
-    ]
-    counts = {b: 0 for b in OUTCOME_BUCKETS}
-    for w in windows:
-        b = w.get("outcome_bucket")
-        if b in counts:
-            counts[b] += 1
-    totals = {
-        "windows": len(windows),
-        "spend_ccu": round(sum(float(w.get("spend_ccu") or 0.0) for w in windows), 6),
-        "counts": counts,
-        "all_stopped_confirmed": all(w.get("session_stopped_confirmed") is True for w in windows) if windows else True,
-    }
-    return {"lines": lines, "windows": windows, "next": next_jobs, "totals": totals}
-
-
-def format_board(board: Mapping[str, Any]) -> str:
-    """Format `build_board()` as a concise, at-a-glance status report."""
-    lines_out = ["LINES"]
-    lines_map = board.get("lines") or {}
-    if not lines_map:
-        lines_out.append("  (none)")
-    for name, info in lines_map.items():
-        c = info["counts"]
-        lines_out.append(
-            "  %s  spent=%.6f  windows=%d  done=%d failed-ours=%d failed-Google=%d refused-capacity=%d"
-            % (name, float(info["spent_ccu"]), info["window_count"],
-               c["done"], c["failed-ours"], c["failed-Google"], c["refused-capacity"])
-        )
-
-    lines_out.append("WINDOWS")
-    wins = board.get("windows") or []
-    if not wins:
-        lines_out.append("  (none)")
-    for w in wins:
-        produced = ",".join(w.get("collected_outputs") or []) or "-"
-        lines_out.append(
-            "  %s  line=%s  card=%s  status=%s(%s)  spend=%.6f  stopped=%s  produced=%s  purpose=%s"
-            % (w.get("job") or w.get("out_dir"), w.get("line"), w.get("card"), w.get("status"),
-               w.get("outcome_bucket") or "-", float(w.get("spend_ccu") or 0.0),
-               w.get("session_stopped_confirmed"), produced, w.get("purpose") or "-")
-        )
-
-    lines_out.append("NEXT IN QUEUE")
-    nxt = board.get("next") or []
-    if not nxt:
-        lines_out.append("  (none)")
-    for j in nxt:
-        lines_out.append(
-            "  %s  state=%s  line=%s  card=%s  cap=%s  purpose=%s"
-            % (j.get("job_id"), j.get("state"), j.get("line"), j.get("card"), j.get("cap_ccu"), j.get("purpose"))
-        )
-
-    tot = board["totals"]
-    c = tot["counts"]
-    lines_out.append(
-        "TOTALS  windows=%d  spend_ccu=%.6f  done=%d  failed-ours=%d  failed-Google=%d  refused-capacity=%d  all_stopped=%s"
-        % (tot["windows"], float(tot["spend_ccu"]), c["done"], c["failed-ours"], c["failed-Google"],
-           c["refused-capacity"], tot["all_stopped_confirmed"])
-    )
-    return "\n".join(lines_out)
-
-
 __all__ = [
     "OUTCOME_BUCKETS",
     "QueueJobSpec",
     "QueueSpec",
-    "build_board",
     "classify_window_outcome",
-    "format_board",
     "run_queue",
 ]

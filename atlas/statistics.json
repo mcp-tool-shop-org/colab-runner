@@ -35,7 +35,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "colab_runner",
-      "qualifyingSourceCommits": 9,
+      "qualifyingSourceCommits": 11,
       "rebaseline": null
     },
     {
@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 7,
+      "qualifyingSourceCommits": 9,
       "rebaseline": null
     }
   ],
@@ -105,8 +105,8 @@
         "path": ".polyglot-pins.json"
       },
       {
-        "commits": 12,
-        "lines": 259,
+        "commits": 14,
+        "lines": 263,
         "path": "CHANGELOG.md"
       },
       {
@@ -115,43 +115,43 @@
         "path": "LICENSE"
       },
       {
-        "commits": 7,
-        "lines": 528,
+        "commits": 8,
+        "lines": 549,
         "path": "README.es.md"
       },
       {
-        "commits": 7,
-        "lines": 474,
+        "commits": 8,
+        "lines": 495,
         "path": "README.fr.md"
       },
       {
-        "commits": 7,
-        "lines": 479,
+        "commits": 8,
+        "lines": 495,
         "path": "README.hi.md"
       },
       {
-        "commits": 7,
-        "lines": 494,
+        "commits": 8,
+        "lines": 513,
         "path": "README.it.md"
       },
       {
-        "commits": 7,
-        "lines": 444,
+        "commits": 8,
+        "lines": 458,
         "path": "README.ja.md"
       },
       {
-        "commits": 13,
-        "lines": 735,
+        "commits": 14,
+        "lines": 747,
         "path": "README.md"
       },
       {
-        "commits": 7,
-        "lines": 502,
+        "commits": 8,
+        "lines": 518,
         "path": "README.pt-BR.md"
       },
       {
-        "commits": 7,
-        "lines": 441,
+        "commits": 8,
+        "lines": 454,
         "path": "README.zh.md"
       },
       {
@@ -160,8 +160,8 @@
         "path": "SCORECARD.md"
       },
       {
-        "commits": 2,
-        "lines": 60,
+        "commits": 3,
+        "lines": 68,
         "path": "SECURITY.md"
       },
       {
@@ -170,8 +170,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 11,
-        "lines": 240,
+        "commits": 12,
+        "lines": 250,
         "path": "atlas/README.md"
       },
       {
@@ -180,18 +180,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 11,
-        "lines": 650,
+        "commits": 12,
+        "lines": 668,
         "path": "atlas/page.json"
       },
       {
-        "commits": 11,
-        "lines": 1934,
+        "commits": 12,
+        "lines": 2258,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 11,
-        "lines": 7831,
+        "commits": 12,
+        "lines": 8274,
         "path": "atlas/structure.json"
       },
       {
@@ -205,8 +205,8 @@
         "path": "colab_runner/__init__.py"
       },
       {
-        "commits": 6,
-        "lines": 599,
+        "commits": 8,
+        "lines": 630,
         "path": "colab_runner/__main__.py"
       },
       {
@@ -220,28 +220,28 @@
         "path": "colab_runner/colab_cli.py"
       },
       {
-        "commits": 5,
-        "lines": 252,
+        "commits": 6,
+        "lines": 254,
         "path": "colab_runner/errors.py"
       },
       {
-        "commits": 3,
-        "lines": 2400,
+        "commits": 5,
+        "lines": 2955,
         "path": "colab_runner/launcher.py"
       },
       {
-        "commits": 3,
-        "lines": 858,
+        "commits": 5,
+        "lines": 953,
         "path": "colab_runner/manifest.py"
       },
       {
-        "commits": 1,
-        "lines": 385,
+        "commits": 2,
+        "lines": 770,
         "path": "colab_runner/publish.py"
       },
       {
-        "commits": 1,
-        "lines": 593,
+        "commits": 3,
+        "lines": 962,
         "path": "colab_runner/queue.py"
       },
       {
@@ -305,8 +305,8 @@
         "path": "colab_runner/window_lib/remote_runner.py"
       },
       {
-        "commits": 2,
-        "lines": 254,
+        "commits": 4,
+        "lines": 320,
         "path": "docs/reference.md"
       },
       {
@@ -390,23 +390,23 @@
         "path": "site/src/content/docs/handbook/getting-started.md"
       },
       {
-        "commits": 4,
-        "lines": 82,
+        "commits": 6,
+        "lines": 88,
         "path": "site/src/content/docs/handbook/index.md"
       },
       {
-        "commits": 4,
-        "lines": 142,
+        "commits": 6,
+        "lines": 149,
         "path": "site/src/content/docs/handbook/lanes.md"
       },
       {
-        "commits": 4,
-        "lines": 264,
+        "commits": 5,
+        "lines": 268,
         "path": "site/src/content/docs/handbook/reference.md"
       },
       {
-        "commits": 4,
-        "lines": 99,
+        "commits": 5,
+        "lines": 103,
         "path": "site/src/content/docs/handbook/security.md"
       },
       {
@@ -455,13 +455,13 @@
         "path": "tests/test_bounds.py"
       },
       {
-        "commits": 2,
-        "lines": 755,
+        "commits": 3,
+        "lines": 793,
         "path": "tests/test_cards_and_manifest.py"
       },
       {
-        "commits": 1,
-        "lines": 772,
+        "commits": 3,
+        "lines": 1301,
         "path": "tests/test_continuous.py"
       },
       {
@@ -480,8 +480,8 @@
         "path": "tests/test_followups.py"
       },
       {
-        "commits": 3,
-        "lines": 1988,
+        "commits": 4,
+        "lines": 2219,
         "path": "tests/test_launcher.py"
       },
       {
@@ -560,331 +560,289 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-27T01:53:06.488Z",
+  "generatedAt": "2026-11-27T03:09:55.503Z",
   "generatedFrom": {
-    "commit": "0d00e065a4dfb7694fde878dde96dd4d24f4df9b"
+    "commit": "d96e285131b12076f9bb0c8920b6488ea094edcc"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
-      "b": "README.md",
-      "either": 13,
-      "shared": 7,
-      "strength": 0.538462
-    },
-    {
-      "a": "CHANGELOG.md",
       "b": "atlas/README.md",
-      "either": 10,
-      "shared": 6,
-      "strength": 0.6
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/page.json",
-      "either": 10,
-      "shared": 6,
-      "strength": 0.6
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/statistics.json",
-      "either": 10,
-      "shared": 6,
-      "strength": 0.6
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/structure.json",
-      "either": 10,
-      "shared": 6,
-      "strength": 0.6
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "CHANGELOG.md",
       "b": "colab_runner/__init__.py",
-      "either": 9,
+      "either": 11,
       "shared": 6,
-      "strength": 0.666667
-    },
-    {
-      "a": "CHANGELOG.md",
-      "b": "colab_runner/runner.py",
-      "either": 9,
-      "shared": 5,
-      "strength": 0.555556
+      "strength": 0.545455
     },
     {
       "a": "CHANGELOG.md",
       "b": "pyproject.toml",
-      "either": 9,
+      "either": 11,
       "shared": 7,
-      "strength": 0.777778
+      "strength": 0.636364
     },
     {
       "a": "README.es.md",
       "b": "README.fr.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.hi.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.it.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.ja.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.es.md",
       "b": "README.pt-BR.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.es.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.hi.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.it.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.ja.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.fr.md",
       "b": "README.pt-BR.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.fr.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.it.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.ja.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.hi.md",
       "b": "README.pt-BR.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.hi.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.ja.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.it.md",
       "b": "README.pt-BR.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.it.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.ja.md",
       "b": "README.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.ja.md",
       "b": "README.pt-BR.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.ja.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "README.md",
       "b": "README.pt-BR.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.md",
       "b": "README.zh.md",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/README.md",
       "either": 12,
-      "shared": 6,
-      "strength": 0.5
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/page.json",
-      "either": 12,
-      "shared": 6,
-      "strength": 0.5
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/statistics.json",
-      "either": 12,
-      "shared": 6,
-      "strength": 0.5
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/structure.json",
-      "either": 12,
-      "shared": 6,
-      "strength": 0.5
+      "shared": 7,
+      "strength": 0.583333
     },
     {
       "a": "README.pt-BR.md",
       "b": "README.zh.md",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
@@ -905,16 +863,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-26T20:34:07-05:00",
+    "headDate": "2026-11-26T21:20:15-05:00",
     "inScopeFiles": 93,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 14,
+    "qualifyingCommits": 17,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-31T01:34:07.000Z",
+    "since": "2026-05-31T02:20:15.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

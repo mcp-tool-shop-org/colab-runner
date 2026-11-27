@@ -73,7 +73,7 @@ class WorkedExampleTest(unittest.TestCase):
             self.assertEqual(outcome["spend_basis"], "cpu_configured_rate_x_elapsed")
             self.assertIn("from-seat", outcome["collected_outputs"])
             self.assertEqual(outcome["missing_outputs"], [])
-            self.assertTrue((cpu_dir / "_local_vm_content" / "league_turn_01_out" / "from-seat.tar").is_file())
+            self.assertTrue((cpu_dir / "_local_vm_content" / "league_turn_01_out" / "from-seat.tar.part0000").is_file())
 
             summary = json.loads((cpu_dir / "collected" / "turn_summary.json").read_text(encoding="utf-8"))
             guilds = [s["guild"] for s in summary["seats"]]

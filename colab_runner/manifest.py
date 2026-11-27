@@ -98,6 +98,7 @@ class WindowSpec:
     env: tuple[str, ...] = ()
     collect_outputs: tuple[str, ...] = ()
     salvage_outputs: tuple[str, ...] = ()
+    download_parts: int = 1
     spec_base_dir: Path = Path(".")
     spec_path: Optional[Path] = None
     purpose: str = ""
@@ -141,16 +142,41 @@ class WindowSpec:
         schema_version = data.get("schema_version", 1)
         if schema_version != 1:
             raise Refused("SPEC_INVALID", "schema_version must be 1 (got %r)" % (schema_version,))
+        if "publish" in data:
+            raise Refused("SPEC_INVALID", "[publish] was removed; delete it; publish with `hf upload`")
+        _reject_unknown_keys(
+            data,
+            frozenset({"schema_version", "project", "compute", "inputs", "job", "outputs"}),
+            "spec top-level",
+        )
 
         proj = _require_table(data, "project")
+        if "data_class" in proj:
+            raise Refused("SPEC_INVALID", "project.data_class was removed; delete it; publish with `hf upload`")
+        _reject_unknown_keys(proj, frozenset({"repo", "study", "job", "description", "purpose", "line"}), "[project]")
         comp = _require_table(data, "compute")
+        _reject_unknown_keys(
+            comp,
+            frozenset({
+                "card", "shape", "max_rate", "cap", "wall_s", "margin", "cleanup_bound_s",
+                "poll_s", "setup_stall_s", "progress_stall_s", "unreachable_polls", "unreachable_s",
+                "resident", "omp_num_threads", "min_vram_mib", "min_vram_mib_by_card",
+            }),
+            "[compute]",
+        )
         inp = data.get("inputs", {})
         if not isinstance(inp, Mapping):
             raise Refused("SPEC_INVALID", "inputs must be a table/object")
         job_tbl = _require_table(data, "job")
+        _reject_unknown_keys(
+            job_tbl,
+            frozenset({"setup", "run", "cpu_dry_run", "progress_glob", "units_glob", "env"}),
+            "[job]",
+        )
         out_tbl = data.get("outputs", {})
         if not isinstance(out_tbl, Mapping):
             raise Refused("SPEC_INVALID", "outputs must be a table/object")
+        _reject_unknown_keys(out_tbl, frozenset({"collect", "salvage", "download_parts"}), "[outputs]")
 
         repo = _require_nonempty_str(proj, "repo", "project.repo")
         study = _require_nonempty_str(proj, "study", "project.study")
@@ -208,6 +234,7 @@ class WindowSpec:
                 "SPEC_INVALID",
                 "inputs.allow_sealed and inputs.preregistration were replaced by [inputs.sealed] with path + sha256",
             )
+        _reject_unknown_keys(inp, frozenset({"root", "deny_globs", "sealed", "files"}), "[inputs]")
         raw_root = str(inp.get("root", ".")).strip() or "."
         inputs_root = (base_dir / raw_root) if not Path(raw_root).is_absolute() else Path(raw_root)
         deny_globs = tuple(_string_list(inp.get("deny_globs", []), "inputs.deny_globs"))
@@ -225,6 +252,8 @@ class WindowSpec:
 
         collect_outputs = tuple(_validate_output_relpaths(out_tbl.get("collect", []), "outputs.collect"))
         salvage_outputs = tuple(_validate_output_relpaths(out_tbl.get("salvage", []), "outputs.salvage"))
+        download_parts = out_tbl.get("download_parts", 1)
+        require_number("SPEC_INVALID", "outputs.download_parts", download_parts, low=1, inclusive=True, integer=True)
 
         return cls(
             schema_version=schema_version,
@@ -260,11 +289,19 @@ class WindowSpec:
             env=env,
             collect_outputs=collect_outputs,
             salvage_outputs=salvage_outputs,
+            download_parts=int(download_parts),
             spec_base_dir=base_dir.resolve(),
             spec_path=spec_path,
             purpose=purpose,
             line=line,
         )
+
+
+def _reject_unknown_keys(tbl: Mapping[str, Any], allowed: frozenset[str], scope: str) -> None:
+    """Refuse any unknown keys or sections in `tbl` with `SPEC_INVALID`."""
+    unknown = sorted(str(k) for k in tbl.keys() if str(k) not in allowed)
+    if unknown:
+        raise Refused("SPEC_INVALID", "unknown key(s) in %s: %s" % (scope, ", ".join(unknown)))
 
 
 def _require_table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -311,6 +348,11 @@ def _parse_sealed_policy(raw: Any, *, base_dir: Path) -> Optional[SealedPolicySp
         return None
     if not isinstance(raw, Mapping):
         raise Refused("SPEC_INVALID", "inputs.sealed must be a table/object")
+    _reject_unknown_keys(
+        raw,
+        frozenset({"preregistration_path", "preregistration_sha256", "allowed_cards", "allowed_host"}),
+        "[inputs.sealed]",
+    )
     p_raw = _require_nonempty_str(raw, "preregistration_path", "inputs.sealed.preregistration_path")
     sha_raw = lg.normalize_hex_sha(_require_nonempty_str(raw, "preregistration_sha256", "inputs.sealed.preregistration_sha256"))
     if not SHA256_RE.fullmatch(sha_raw):
@@ -357,6 +399,7 @@ def _parse_input_files(raw: Any) -> tuple[InputFileSpec, ...]:
             rel = _check_rel_path(entry, False, "inputs.files[%d]" % idx)
             items.append(InputFileSpec(src=rel, dst=rel))
         elif isinstance(entry, Mapping):
+            _reject_unknown_keys(entry, frozenset({"src", "dst"}), "inputs.files[%d]" % idx)
             src = entry.get("src")
             dst = entry.get("dst", src)
             if not isinstance(src, str) or not isinstance(dst, str):
