@@ -93,6 +93,9 @@ CODES: dict[str, Code] = {
         "the session's open-time rate exceeded --max-rate: pass the card's real rate as --max-rate (and a matching "
         "--cap)",
         _FIX),
+    "GUARD_FAILED": Code(
+        "a wall or spend guard check crashed and stopped the window; inspect the error and fix the guard input or bug",
+        _FIX),
     "UNEXPECTED_ERROR": Code(
         "read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop "
         "--out-dir D`; rerun with --debug for the traceback", _FIX),
@@ -219,4 +222,14 @@ class Refused(ValueError):
         return {"code": self.code, "message": self.message, "hint": self.hint, "retryable": self.retryable}
 
 
-__all__ = ["CODES", "Code", "Refused", "cap_trip_record", "error_record", "lookup"]
+class GuardFailed(RuntimeError):
+    """A wall or spend guard check raised an unexpected exception; stops the window and records GUARD_FAILED."""
+
+    def __init__(self, exc: BaseException):
+        msg = "%s: %s" % (type(exc).__name__, exc)
+        super().__init__("GUARD_FAILED: %s" % msg)
+        c = lookup("GUARD_FAILED")
+        self.code, self.message, self.hint, self.retryable = "GUARD_FAILED", msg, c.hint, c.retryable
+
+
+__all__ = ["CODES", "Code", "GuardFailed", "Refused", "cap_trip_record", "error_record", "lookup"]

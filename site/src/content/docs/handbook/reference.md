@@ -197,6 +197,7 @@ again.
 | `CAP_GUARD_TRIPPED` | no | the window's priced spend reached its ceiling (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
 | `CAP_CEILING_REACHED` | no | the clock reached the cap's ceiling at the priced rate (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
 | `RATE_ABOVE_MAX` | no | the session's open-time rate exceeded --max-rate: pass the card's real rate as --max-rate (and a matching --cap) |
+| `GUARD_FAILED` | no | a wall or spend guard check crashed and stopped the window; inspect the error and fix the guard input or bug |
 | `PLATFORM_UNSUPPORTED` | no | run colab-runner on Linux or inside WSL |
 | `UNEXPECTED_ERROR` | no | read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop --out-dir D`; rerun with --debug for the traceback |
 | `SPEC_NOT_FOUND` | no | pass --spec PATH pointing to an existing .toml or .json window spec |
@@ -239,7 +240,6 @@ again.
 | Name | Where | What |
 | --- | --- | --- |
 | `COLAB_RUNNER_CLI` | local | The `colab` command line to call, split with POSIX quoting (default `colab`). |
-| `CR_DOWNLOAD_CHUNK_BYTES` | local | Chunk threshold in bytes (default `268435456`, 256 MiB) for splitting directory `.tar.partNNNN` slices. |
 | `CR_RUN_ID` | VM | The run's own id. Reserved: a caller may not set it. |
 | `CR_OUT_DIR` | VM | The job's out dir (default `<content>/<job>_out`). |
 | `CR_PROGRESS_GLOB` | VM | Files whose first integer counts as progress (default `<out>/progress/*`). |
