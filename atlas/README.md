@@ -1,14 +1,16 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-26 from commit a887fd2 by Atlas 1.23.0.
+Mapped at 2026-11-27 from commit 73b6b84 by Atlas 1.26.0.
 
 ## What this is
 
 4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-26 (1f0f567)
+## What changed since 2026-11-26 (a887fd2)
 
-Nothing structural changed since 2026-11-26; 4 files changed content.
+- colab_runner/**/*.py is now read by tests/test_errors.py.
+- docs/reference.md is new and belongs to no part, so atlas check fails on it against the previous map.
+- 1 file added and 9 changed content, across 2 parts.
 
 ## What comes in
 
@@ -72,7 +74,7 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 - 1 write goes to places this repository does not track, so it is not listed as generated.
 - 20 writes and 26 reads go to a path their caller passes, not to this repository.
 - 1 write goes to a temporary directory or a path its caller passes, not to this repository.
-- 24 files belong to no part: examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml, examples/merchant_league_seats/response_schema.json and 21 more.
+- 25 files belong to no part: docs/reference.md, examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml and 22 more.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
