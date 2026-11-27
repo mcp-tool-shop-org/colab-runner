@@ -1,6 +1,8 @@
 """Tests for platform card catalog, TPU shapes, pool keys, study reservation, and sealed sandbox."""
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import stat
@@ -843,132 +845,260 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
 class TpuOpenFixTest(unittest.TestCase):
     def test_tpu_new_session_passes_extended_http_timeout_and_fallback(self):
         from colab_runner.colab_cli import Colab, _resolve_colab_python
+        from colab_runner.launcher import launch_window
 
+        self.assertFalse(hasattr(Colab, "unassign_orphans"))
         self.assertIsNone(_resolve_colab_python(["a", "b"], {}))
         self.assertIsNone(_resolve_colab_python(["definitely-no-such-binary-xyz"], {"PATH": ""}))
 
         with tempfile.TemporaryDirectory() as tmp:
-            fake_bin = Path(tmp) / "colab"
+            root = Path(tmp)
+            fake_bin = root / "colab"
             fake_bin.write_text("#!/usr/bin/env python3\nprint('ok')\n", encoding="utf-8")
             fake_bin.chmod(0o755)
-            empty_bin = Path(tmp) / "empty-colab"
+            empty_bin = root / "empty-colab"
             empty_bin.write_text("", encoding="utf-8")
             empty_bin.chmod(0o755)
-            txt_bin = Path(tmp) / "txt-colab"
+            txt_bin = root / "txt-colab"
             txt_bin.write_text("echo no shebang\n", encoding="utf-8")
             txt_bin.chmod(0o755)
-            direct_bin = Path(tmp) / "direct-colab"
+            direct_bin = root / "direct-colab"
             direct_bin.write_text(f"#!{sys.executable}\n", encoding="utf-8")
             direct_bin.chmod(0o755)
             self.assertIsNone(_resolve_colab_python([str(empty_bin)], {}))
             self.assertIsNone(_resolve_colab_python([str(txt_bin)], {}))
             self.assertEqual(_resolve_colab_python([str(direct_bin)], {}), sys.executable)
 
-            seen_sh: list[tuple[list[str], float]] = []
+            seen_sh: list[tuple[list[str], float, bool]] = []
             c_sh = Colab(argv=(str(fake_bin),), env={"PATH": f"{tmp}:{os.environ.get('PATH', '')}"})
             with mock.patch.object(
-                c_sh,
-                "_run_argv",
-                side_effect=lambda full_argv, timeout: (seen_sh.append((list(full_argv), timeout)), CliResult(0, "", ""))[1],
+                c_sh, "run",
+                side_effect=lambda args, timeout=60.0, *, raw_argv=False: (seen_sh.append((list(args), timeout, raw_argv)), CliResult(0, "", ""))[1],
             ):
                 res = c_sh.new_session("tpu-s1", card="v5e1", cli_flag="--tpu", timeout=300.0)
-                un_res = c_sh.unassign_orphans(["ep-1"])
             self.assertTrue(res.ok)
-            self.assertTrue(un_res.ok)
-            self.assertEqual(len(seen_sh), 2)
-            full_argv, t_val = seen_sh[0]
+            self.assertTrue(c_sh.last_tpu_shim_used)
+            full_argv, t_val, is_raw = seen_sh[0]
+            self.assertTrue(is_raw)
             self.assertEqual(t_val, 300.0)
-            self.assertEqual(Path(full_argv[0]).name.startswith("python"), True)
-            self.assertEqual(full_argv[1], "-c")
+            self.assertTrue(Path(full_argv[0]).name.startswith("python"))
             self.assertEqual(full_argv[3:], ["tpu-s1", "v5e1", "295.0"])
-            self.assertEqual(seen_sh[1][0][-1], "ep-1")
-            no_bin = Colab(argv=("no-such-colab",), env={"PATH": tmp})
-            self.assertEqual(no_bin.unassign_orphans(["ep-1"]).rc, 1)
+
+            with mock.patch("pathlib.Path.read_text", side_effect=OSError("perm")):
+                self.assertIsNone(_resolve_colab_python([str(fake_bin)], {"PATH": tmp}))
 
             seen_multi: list[tuple[list[str], float]] = []
-            c_multi = Colab(argv=(sys.executable, "fake_colab.py"))
+            logs: list[str] = []
+            c_multi = Colab(argv=(sys.executable, "fake_colab.py"), log=logs.append)
             with mock.patch.object(
-                c_multi,
-                "_run_argv",
-                side_effect=lambda full_argv, timeout: (seen_multi.append((list(full_argv), timeout)), CliResult(0, "", ""))[1],
+                c_multi, "run",
+                side_effect=lambda args, timeout=60.0, *, raw_argv=False: (seen_multi.append((list(c_multi.argv) + list(args), timeout)), CliResult(1, "", "412"))[1],
             ):
-                c_multi.new_session("tpu-s2", card="v5e1", cli_flag="--tpu", timeout=300.0)
-            self.assertEqual(seen_multi[0][0], [sys.executable, "fake_colab.py", "new", "--tpu", "v5e1", "-s", "tpu-s2"])
+                with mock.patch.object(c_multi, "sessions", return_value=CliResult(0, "[colab] No active sessions found on server.\n", "")):
+                    with mock.patch.object(c_multi, "usage", return_value=CliResult(0, "Current balance: 10.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", "")):
+                        with mock.patch.object(c_multi, "stop", return_value=CliResult(0, "", "")):
+                            (root / ".git").mkdir()
+                            (root / "job.py").write_text("print('ok')\n", encoding="utf-8")
+                            spec_p = root / "spec.json"
+                            spec_p.write_text(json.dumps({
+                                "schema_version": 1,
+                                "project": {"repo": "o/r", "study": "tpu-fb", "job": "tpu-open", "description": "test"},
+                                "compute": {"card": "V5E1", "shape": "standard", "max_rate": 4.0, "cap": 5.0, "wall_s": 600, "cleanup_bound_s": 1200},
+                                "inputs": {"root": ".", "files": ["job.py"]}, "job": {"run": ["python3 job.py"]}, "outputs": {"collect": []},
+                            }), encoding="utf-8")
+                            fb_out = launch_window(spec_p, root / "out", card="V5E1", cap=5.0, max_rate=4.0, wall_s=600,
+                                                   cleanup_bound_s=1200, state_dir=root / "st", colab=c_multi, sleep=lambda _: None)
+            self.assertFalse(c_multi.last_tpu_shim_used)
+            self.assertEqual(fb_out["tpu_timeout_shim"], "fallback_default_cli")
+            self.assertEqual(seen_multi[0][0][:4], [sys.executable, "fake_colab.py", "new", "--tpu"])
+            self.assertTrue(any("tpu open timeout shim unavailable" in m for m in logs))
 
-    def test_tpu_open_timeout_and_orphan_unassign_booking(self):
-        from colab_runner.colab_cli import TPU_OPEN_TIMEOUT_S, Colab
+    def _run_open_case(self, *, card="V5E1", wall_s=600, pre_rows="", after_sess=None, new_res=None, new_advance=30.0, root_dir: Path | None = None):
+        from colab_runner.colab_cli import Colab
         from colab_runner.launcher import launch_window
 
-        self.assertEqual(TPU_OPEN_TIMEOUT_S, 300.0)
+        with (contextlib.nullcontext(root_dir) if root_dir is not None else tempfile.TemporaryDirectory()) as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir(exist_ok=True)
+            (root / "job.py").write_text("print('ok')\n", encoding="utf-8")
+            spec_p = root / "spec.json"
+            spec_p.write_text(json.dumps({
+                "schema_version": 1,
+                "project": {"repo": "o/r", "study": "tpu-case", "job": "tpu-open", "description": "test"},
+                "compute": {"card": card, "shape": "standard", "max_rate": 4.0, "cap": 5.0, "wall_s": wall_s, "cleanup_bound_s": 1200},
+                "inputs": {"root": ".", "files": ["job.py"]}, "job": {"run": ["python3 job.py"]}, "outputs": {"collect": []},
+            }), encoding="utf-8")
+            t_now = [1000.0]
 
-        def _run_case(unassign_clears: bool) -> None:
+            def fake_clock():
+                t_now[0] += 30.0
+                return t_now[0]
+
+            client = mock.MagicMock(spec=Colab)
+            client.quarantine_dir = None
+            client.log = None
+            client.last_tpu_shim_used = None
+            sess_seq = [CliResult(0, pre_rows or "[colab] No active sessions found on server.\n", ""),
+                        after_sess if after_sess is not None else CliResult(1, "", "sessions read failed")]
+            client.sessions.side_effect = lambda timeout=30.0: sess_seq.pop(0) if sess_seq else CliResult(0, pre_rows, "")
+            client.usage.return_value = CliResult(0, "Current balance: 100.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", "")
+
+            def fake_new(session, *, card, shape=None, cli_flag="--gpu", timeout=180.0):
+                t_now[0] += new_advance
+                return new_res or CliResult(1, "", "Read timed out")
+
+            client.new_session.side_effect = fake_new
+            client.stop.return_value = CliResult(0, "[colab] Session not found.\n", "")
+            logs: list[str] = []
+            out_dir = root / "out"
+            res = launch_window(
+                spec_p, out_dir, card=card, cap=5.0, max_rate=4.0, wall_s=wall_s, cleanup_bound_s=1200,
+                state_dir=root / "st", colab=client, clock=fake_clock, sleep=lambda _: None, log=logs.append,
+            )
+            return res, out_dir, logs, client, (out_dir / "stop_pending.json").is_file(), (out_dir / "stop_confirmed.json").is_file()
+
+    def test_tpu_timeout_records_unknown_books_conservatively_and_touches_nothing(self):
+        from colab_runner.colab_cli import TPU_OPEN_TIMEOUT_S
+        from colab_runner.launcher import status_window
+
+        self.assertEqual(TPU_OPEN_TIMEOUT_S, 300.0)
+        foreign_pre = "[?] gpu-other | Hardware: L4 | Shape: Standard | Variant: GPU\n"
+        two_tpu = (
+            "[?] tpu-foreign-1 | Hardware: V5E1 | Shape: Standard | Variant: TPU\n"
+            "[?] tpu-foreign-2 | Hardware: V5E1 | Shape: Standard | Variant: TPU\n"
+        )
+        for pre_rows, nres in (
+            (foreign_pre, CliResult(1, "", "ReadTimeout: timed out")),
+            ("", CliResult(124, "", "timeout after 300.0s")),
+            ("", CliResult(1, "", "Read timed out")),
+        ):
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 (root / ".git").mkdir()
                 (root / "job.py").write_text("print('ok')\n", encoding="utf-8")
-                spec_path = root / "spec.json"
-                spec_path.write_text(json.dumps({
+                from colab_runner.colab_cli import Colab
+                from colab_runner.launcher import launch_window
+                spec_p = root / "spec.json"
+                spec_p.write_text(json.dumps({
                     "schema_version": 1,
-                    "project": {"repo": "o/r", "study": f"tpu-{unassign_clears}", "job": "tpu-open", "description": "test"},
+                    "project": {"repo": "o/r", "study": "tpu-unk", "job": "tpu-open", "description": "test"},
                     "compute": {"card": "V5E1", "shape": "standard", "max_rate": 4.0, "cap": 5.0, "wall_s": 600, "cleanup_bound_s": 1200},
-                    "inputs": {"root": ".", "files": ["job.py"]},
-                    "job": {"run": ["python3 job.py"]},
-                    "outputs": {"collect": []},
+                    "inputs": {"root": ".", "files": ["job.py"]}, "job": {"run": ["python3 job.py"]}, "outputs": {"collect": []},
                 }), encoding="utf-8")
-
                 t_now = [1000.0]
-
-                def fake_clock():
-                    t_now[0] += 30.0
-                    return t_now[0]
-
-                state = {"leaked": False}
                 client = mock.MagicMock(spec=Colab)
                 client.quarantine_dir = None
-                client.sessions.side_effect = lambda timeout=30.0: CliResult(
-                    0,
-                    "[?] tpu-v5e1-leak | Hardware: V5E1 | Shape: Standard | Variant: TPU\n"
-                    if state["leaked"] else "[colab] No active sessions found on server.\n",
-                    "",
-                )
-                client.usage.return_value = CliResult(
-                    0, "Current balance: 100.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", ""
-                )
-
-                def fake_new(session, *, card, shape=None, cli_flag="--gpu", timeout=180.0):
-                    self.assertEqual(cli_flag, "--tpu")
-                    self.assertEqual(timeout, 300.0)
-                    state["leaked"] = True
-                    return CliResult(1, "", "Read timed out")
-
-                client.new_session.side_effect = fake_new
+                client.log = None
+                client.last_tpu_shim_used = True
+                client.sessions.return_value = CliResult(0, pre_rows or "[colab] No active sessions found on server.\n", "")
+                client.usage.return_value = CliResult(0, "Current balance: 100.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", "")
+                client.new_session.return_value = nres
                 client.stop.return_value = CliResult(0, "[colab] Session not found.\n", "")
-                unassigned: list[list[str]] = []
-
-                def fake_unassign(eps, timeout=60.0):
-                    unassigned.append(list(eps))
-                    if unassign_clears:
-                        state["leaked"] = False
-                    return CliResult(0, "", "")
-
-                client.unassign_orphans.side_effect = fake_unassign
-
+                logs: list[str] = []
                 out_dir = root / "out"
                 res = launch_window(
-                    spec_path, out_dir, card="V5E1", cap=5.0, max_rate=4.0, wall_s=600,
-                    cleanup_bound_s=1200, state_dir=root / "st", colab=client, clock=fake_clock, sleep=lambda _: None,
+                    spec_p, out_dir, card="V5E1", cap=5.0, max_rate=4.0, wall_s=600, cleanup_bound_s=1200,
+                    state_dir=root / "st", colab=client, clock=lambda t=t_now: t.__setitem__(0, t[0] + 30.0) or t[0],
+                    sleep=lambda _: None, log=logs.append,
                 )
+                self.assertEqual(client.sessions.call_count, 1)  # pre-open pool check only; zero post-open orphan scan
                 self.assertEqual(res["status"], "open_failed")
-                self.assertEqual(unassigned, [["tpu-v5e1-leak"]])
-                self.assertTrue(res["opened"])
+                self.assertEqual(res["opened"], "unknown")
+                self.assertEqual(res["outcome_bucket"], "failed-Google")
                 self.assertGreater(res["spend_ccu"], 0.0)
-                self.assertEqual(res["session_stopped_confirmed"], unassign_clears)
-                self.assertEqual(res["session_gone_confirmed"], unassign_clears)
-                self.assertEqual((out_dir / "stop_pending.json").is_file(), not unassign_clears)
-                self.assertEqual((out_dir / "stop_confirmed.json").is_file(), unassign_clears)
+                self.assertFalse(res["session_stopped_confirmed"])
+                self.assertFalse(res["session_gone_confirmed"])
+                self.assertIsNone(res["closed_at"])
+                self.assertTrue((out_dir / "stop_pending.json").is_file())
+                self.assertTrue((out_dir / "session_open.json").is_file())
+                self.assertFalse((out_dir / "stop_confirmed.json").exists())
+                self.assertEqual(status_window(out_dir)["state"], "stop_pending")
+                self.assertTrue(any("colab sessions" in ln and "colab_runner stop --out-dir" in ln for ln in logs))
+                ledger = json.loads((root / "st" / "study_ledger.json").read_text(encoding="utf-8"))
+                self.assertEqual(ledger["studies"]["tpu-unk"]["windows"][0]["opened"], "unknown")
+        self.assertIn("tpu-foreign-2", two_tpu)
 
-        for clears in (True, False):
-            _run_case(clears)
+    def test_cap_or_wall_shortened_tpu_open_and_non_timeout_503_412(self):
+        # Cap/wall-shortened TPU open timeout still marks unknown + stop_pending + conservative spend
+        res_wall, _, _, _, has_pend, has_conf = self._run_open_case(
+            card="V5E1", wall_s=150, new_res=CliResult(124, "", "timeout after 90.0s"), new_advance=150.0,
+        )
+        self.assertEqual(res_wall["status"], "wall")
+        self.assertEqual(res_wall["opened"], "unknown")
+        self.assertGreater(res_wall["spend_ccu"], 0.0)
+        self.assertFalse(res_wall["session_stopped_confirmed"])
+        self.assertFalse(res_wall["session_gone_confirmed"])
+        self.assertTrue(has_pend)
+        self.assertFalse(has_conf)
+
+        # GPU 503 and TPU 412 never mark opened and leave foreign [?] sessions untouched
+        foreign = "[?] gpu-foreign | Hardware: L4 | Shape: Standard | Variant: GPU\n"
+        for card, err_txt in (("L4", "503 Service Unavailable"), ("V5E1", "412 Allocation refused")):
+            res, _, _, client, pend, conf = self._run_open_case(
+                card=card, pre_rows=foreign, after_sess=CliResult(1, "", "read failed"), new_res=CliResult(1, "", err_txt),
+            )
+            self.assertEqual(res["status"], "open_failed")
+            self.assertIs(res["opened"], False)
+            self.assertEqual(res["spend_ccu"], 0.0)
+            self.assertEqual(res["outcome_bucket"], "refused-capacity")
+            self.assertTrue(res["session_stopped_confirmed"])
+            self.assertFalse(res["session_gone_confirmed"])  # failed sessions() read never confirms gone
+            self.assertFalse(pend)
+            self.assertTrue(conf)
+            self.assertEqual(client.stop.call_count, 1)
+
+    def test_stop_command_verifies_pending_tpu_timeout_only_on_evidence(self):
+        from colab_runner.__main__ import main
+
+        with tempfile.TemporaryDirectory() as persist_tmp:
+            res, out_dir, _, _, _, _ = self._run_open_case(
+                card="V5E1", new_res=CliResult(1, "", "Read timed out"), root_dir=Path(persist_tmp),
+            )
+            self.assertEqual(res["opened"], "unknown")
+
+            two_tpu = (
+                "[?] tpu-foreign-1 | Hardware: V5E1 | Shape: Standard | Variant: TPU\n"
+                "[?] tpu-foreign-2 | Hardware: V5E1 | Shape: Standard | Variant: TPU\n"
+            )
+            for sess_res, expect_rc, expect_conf in (
+                (CliResult(1, "", "sessions failed"), 2, False),
+                (CliResult(0, "[?] tpu-leak | Hardware: V5E1 | Shape: Standard | Variant: TPU\n", ""), 2, False),
+                (CliResult(0, two_tpu, ""), 2, False),
+                (CliResult(0, "[?] other-l4 | Hardware: L4 | Shape: Standard | Variant: GPU\n", ""), 0, True),
+            ):
+                mock_cli = mock.MagicMock()
+                mock_cli.stop.return_value = CliResult(0, "[colab] Session not found.\n", "")
+                mock_cli.usage.return_value = CliResult(0, "Current balance: 100.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", "")
+                mock_cli.sessions.return_value = sess_res
+                out_s, err_s = io.StringIO(), io.StringIO()
+                with mock.patch("colab_runner.__main__.cli_from_env", return_value=mock_cli), \
+                        contextlib.redirect_stdout(out_s), contextlib.redirect_stderr(err_s):
+                    rc = main(["stop", "--out-dir", str(out_dir)])
+                self.assertEqual(rc, expect_rc)
+                self.assertIn(f"confirmed={expect_conf}", out_s.getvalue())
+                self.assertEqual((out_dir / "stop_pending.json").is_file(), not expect_conf)
+                self.assertEqual((out_dir / "stop_confirmed.json").is_file(), expect_conf)
+
+            updated = json.loads((out_dir / "outcome.json").read_text(encoding="utf-8"))
+            self.assertEqual(updated["opened"], "unknown")
+            self.assertGreater(updated["spend_ccu"], 0.0)
+            self.assertTrue(updated["session_stopped_confirmed"])
+            self.assertTrue(updated["session_gone_confirmed"])
+
+            # Fallback when session_open.json was removed leaving stop_pending.json only
+            (out_dir / "stop_confirmed.json").unlink(missing_ok=True)
+            (out_dir / "stop_pending.json").write_text(json.dumps({
+                "session": updated["session"], "reason": "tpu_open_timeout_unknown", "card": "V5E1", "shape": "standard",
+            }), encoding="utf-8")
+            mock_cli2 = mock.MagicMock()
+            mock_cli2.stop.return_value = CliResult(0, "[colab] Session not found.\n", "")
+            mock_cli2.usage.return_value = CliResult(0, "Current balance: 100.00 compute units\nUsage rate: 0.00/hr\nActive assignments: 0\n", "")
+            mock_cli2.sessions.return_value = CliResult(0, "[colab] No active sessions found on server.\n", "")
+            out_s2 = io.StringIO()
+            with mock.patch("colab_runner.__main__.cli_from_env", return_value=mock_cli2), \
+                    contextlib.redirect_stdout(out_s2), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["stop", "--out-dir", str(out_dir)]), 0)
+            self.assertIn("confirmed=True", out_s2.getvalue())
 
 
 if __name__ == "__main__":

@@ -40,32 +40,21 @@ KILL_WAIT_S = 5.0  # after a group kill: how long to wait for the pipes to close
 EXEC_REPORT_S = 15.0  # of an exec call's bound, the time kept back for the CLI to report a kernel-side timeout
 TPU_OPEN_TIMEOUT_S = 300.0  # TPU provisioning frequently outlives requests' 120s default read timeout
 _TPU_NEW_SHIM = (
-    "import sys; from colab_cli.client import Client; from colab_cli.cli import main; "
-    "_orig = Client._issue_request; "
-    "Client._issue_request = lambda self, ep, *a, **kw: ("
-    "kw.setdefault('timeout', float(sys.argv[3])), _orig(self, ep, *a, **kw))[1]; "
+    "import sys; from colab_cli.client import Client; from colab_cli.cli import main; _orig = Client._issue_request; "
+    "Client._issue_request = lambda s, ep, *a, **kw: (kw.setdefault('timeout', float(sys.argv[3])), _orig(s, ep, *a, **kw))[1]; "
     "sys.argv = ['colab', 'new', '--tpu', sys.argv[2], '-s', sys.argv[1]]; sys.exit(main())"
 )
 
 
 def _resolve_colab_python(argv: Sequence[str], env: Mapping[str, str]) -> Optional[str]:
-    """Return the Python interpreter backing a standalone `colab` wrapper script, or None."""
-    if len(argv) != 1:
-        return None
-    exe = shutil.which(argv[0], path=env.get("PATH"))
-    if not exe:
-        return None
+    exe = shutil.which(argv[0], path=env.get("PATH")) if len(argv) == 1 else None
     try:
-        first = Path(exe).read_text(encoding="utf-8", errors="ignore").splitlines()[0]
-    except (OSError, IndexError):
+        first = (Path(exe).read_text(encoding="utf-8", errors="ignore") if exe else "").splitlines()[:1]
+    except OSError:
         return None
-    if not first.startswith("#!"):
-        return None
-    parts = first[2:].strip().split()
-    if parts and Path(parts[0]).name == "env" and len(parts) >= 2:
-        return shutil.which(parts[1], path=env.get("PATH"))
-    return parts[0] if parts and Path(parts[0]).name.startswith("python") else None
-
+    parts = first[0][2:].split() if first and first[0].startswith("#!") else []
+    py = shutil.which(parts[1], path=env.get("PATH")) if len(parts) >= 2 and Path(parts[0]).name == "env" else (parts[0] if parts else None)
+    return py if py and Path(py).name.startswith("python") else None
 
 def _pattern_name(pattern: re.Pattern[str], idx: int) -> str:
     cleaned = pattern.pattern.replace(r"\b", "").replace(r"\s", " ")
@@ -452,12 +441,14 @@ class Colab:
         self.log = log
         self.on_quarantine = on_quarantine
         self._base_dir: Optional[Path] = None
+        self.last_tpu_shim_used: Optional[bool] = None
 
-    def _run_argv(self, full_argv: Sequence[str], timeout: float) -> CliResult:
-        """Execute `full_argv` bounded at `timeout` seconds (plus at most 2 x KILL_WAIT_S to kill and reap it)."""
+    def run(self, args: Sequence[str], timeout: float, *, raw_argv: bool = False) -> CliResult:
+        """One call, bounded at `timeout` seconds (plus at most 2 x KILL_WAIT_S to kill and reap it)."""
         try:
             proc = subprocess.Popen(
-                list(full_argv), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                list(args) if raw_argv else self.argv + list(args), stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", env=self.env, **_own_group(),
             )
         except OSError as exc:
@@ -472,10 +463,6 @@ class Colab:
             _drain(proc)
             raise
         return CliResult(proc.returncode, scrub_tokens(out), scrub_tokens(err))
-
-    def run(self, args: Sequence[str], timeout: float) -> CliResult:
-        """One call, bounded at `timeout` seconds (plus at most 2 x KILL_WAIT_S to kill and reap it)."""
-        return self._run_argv(self.argv + list(args), timeout)
 
     def exec_cell(
         self, session: str, source: str, env: Mapping[str, str] | None = None, timeout: float = 60.0
@@ -528,14 +515,6 @@ class Colab:
     def stop(self, session: str, timeout: float = 120.0) -> CliResult:
         return self.run(["stop", "-s", session], timeout)
 
-    def unassign_orphans(self, endpoints: Sequence[str], timeout: float = 60.0) -> CliResult:
-        """Unassign unnamed server-side sessions missed by `colab stop -s` after an assignment timeout."""
-        py = _resolve_colab_python(self.argv, self.env)
-        if not endpoints or not py:
-            return CliResult(1, "", "unassign unavailable")
-        script = "import sys; from colab_cli.common import state; [state.client.unassign(e) for e in sys.argv[1:]]"
-        return self._run_argv([py, "-c", script, *endpoints], timeout)
-
     def new_session(self, session: str, *, card: str, shape: Optional[str] = None,
                     cli_flag: str = "--gpu", timeout: float = 180.0) -> CliResult:
         """Open a Colab session (`colab new`): CPU uses `--high-mem`; TPU uses `--tpu`; GPU uses `--gpu`."""
@@ -544,11 +523,12 @@ class Colab:
             return self.run(["new", "--high-mem", "-s", session], timeout)
         if cli_flag == "--tpu" or upper in ("V5E1", "V6E1"):
             tpu_card = card.strip().lower()
-            if float(timeout) > 180.0:
-                py = _resolve_colab_python(self.argv, self.env)
-                if py:
-                    http_t = str(max(120.0, float(timeout) - 5.0))
-                    return self._run_argv([py, "-c", _TPU_NEW_SHIM, session, tpu_card, http_t], timeout)
+            py = _resolve_colab_python(self.argv, self.env) if float(timeout) > 180.0 else None
+            self.last_tpu_shim_used = None if float(timeout) <= 180.0 else bool(py)
+            if py:
+                return self.run([py, "-c", _TPU_NEW_SHIM, session, tpu_card, str(max(120.0, float(timeout) - 5.0))], timeout, raw_argv=True)
+            if self.last_tpu_shim_used is False and self.log is not None:
+                self.log("tpu open timeout shim unavailable; falling back to default colab new")
             return self.run(["new", "--tpu", tpu_card, "-s", session], timeout)
         args = ["new", "--gpu", card]
         if shape == "high-mem":

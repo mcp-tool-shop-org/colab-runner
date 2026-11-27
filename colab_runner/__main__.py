@@ -30,9 +30,7 @@ from colab_runner.cards import resolve_card
 from colab_runner.colab_cli import cli_from_env, scrub
 from colab_runner.errors import CODES, Refused, error_record, lookup
 from colab_runner.launcher import (
-    launch_window,
-    reconcile_stopped_outcome,
-    status_window,
+    _load_opt_json, launch_window, reconcile_stopped_outcome, status_window, verify_pending_stop,
 )
 from colab_runner.manifest import WindowSpec
 from colab_runner.queue import QueueSpec, run_queue
@@ -388,6 +386,9 @@ def stop_command(argv: list[str]) -> int:
     args = p.parse_args(argv)
     out_dir = Path(args.out_dir)
     marker = out_dir / "session_open.json"
+    pending, saved_open = _load_opt_json(out_dir / "stop_pending.json"), _load_opt_json(marker)
+    if not marker.is_file():
+        marker = out_dir / "stop_pending.json"
     if not marker.is_file():
         _out("STOP_NOTHING: no session_open.json in %s" % out_dir)
         return EXIT_OK
@@ -404,6 +405,8 @@ def stop_command(argv: list[str]) -> int:
             marker_mtime = None
         client = cli_from_env()
         ok = Runner(client, session, out_dir, log=_log_for(args.level)).stop_session()
+        if ok and (pending or {}).get("reason") == "tpu_open_timeout_unknown":
+            ok = verify_pending_stop(out_dir, client, session, pending, saved_open)
     except Refused as exc:
         return _refused(exc)
     except (Exception, KeyboardInterrupt) as exc:

@@ -44,7 +44,7 @@ def classify_window_outcome(outcome: Mapping[str, Any]) -> str:
         return "refused-capacity"
     if status in ("unreachable", "shape_mismatch", "card_mismatch") or (
         code in ("SESSION_OPEN_FAILED", "UPLOAD_FAILED", "SESSIONS_READ_FAILED")
-        and any(k in msg for k in ("500", "502", "503", "504", "service", "internal error", "connection", "reset", "timed out"))
+        and any(k in msg for k in ("500", "502", "503", "504", "service", "internal error", "connection", "reset", "timed out", "timeout"))
     ):
         return "failed-Google"
     return "failed-ours"
