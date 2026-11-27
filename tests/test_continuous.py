@@ -16,7 +16,7 @@ from colab_runner.__main__ import main
 from colab_runner.colab_cli import BinaryDownloadRefused, CliResult
 from colab_runner.errors import Refused
 from colab_runner.launcher import launch_window
-from colab_runner.queue import QueueSpec, build_board, classify_window_outcome, format_board, run_queue
+from colab_runner.queue import QueueSpec, classify_window_outcome, run_queue
 from colab_runner.window_lib import launch_guards as lg
 from tests.fakes import FakeClock, rec, usage_text
 from tests.test_launcher import SimColab, _write_spec
@@ -208,7 +208,7 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(outcome_b["refusal"]["code"], "BINARY_DOWNLOAD_TOKEN")
             self.assertEqual(outcome_b["missing_outputs"], [])
 
-    def test_queue_failure_isolation_board_and_four_way_counts(self):
+    def test_queue_failure_isolation_and_four_way_counts(self):
         if os.name != "posix":
             self.skipTest("queue --local-cpu execution requires POSIX bash/nohup")
         with tempfile.TemporaryDirectory() as tmp:
@@ -267,22 +267,12 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(qres["counts"], {"done": 2, "failed-ours": 1, "failed-Google": 0, "refused-capacity": 0})
             self.assertEqual([j["status"] for j in qres["jobs"]], ["done", "failed", "done"])
 
-            # Board scans outcome.json under --out-root and computes per-line spend + four-way counts
-            b = build_board(out_root=root / "q_runs")
-            txt = format_board(b)
-            self.assertIn("LINES\n", txt)
-            self.assertIn("Recovery window after failure", txt)
-            self.assertEqual(b["lines"]["l1"]["window_count"], 3)
-            self.assertEqual(b["lines"]["l1"]["counts"], {"done": 2, "failed-ours": 1, "failed-Google": 0, "refused-capacity": 0})
-            self.assertAlmostEqual(b["lines"]["l1"]["spent_ccu"], b["totals"]["spend_ccu"], places=6)
-            self.assertEqual(b["totals"]["counts"]["done"], 2)
-            self.assertEqual(b["totals"]["counts"]["failed-ours"], 1)
-
+            # `board` subcommand was removed
             out, err = io.StringIO(), io.StringIO()
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                rc_board = main(["board", "--out-root", str(root / "q_runs")])
-            self.assertEqual(rc_board, 0)
-            self.assertIn("TOTALS  windows=3", out.getvalue())
+                rc_board = main(["board"])
+            self.assertEqual(rc_board, 1)
+            self.assertIn("unknown arguments: board", err.getvalue())
 
             # Four-way classification checks
             self.assertEqual(classify_window_outcome({"status": "open_failed", "opened": False,
@@ -290,41 +280,54 @@ class ContinuousWorkEngineTest(unittest.TestCase):
             self.assertEqual(classify_window_outcome({"status": "unreachable", "opened": True}), "failed-Google")
             self.assertFalse(lg.evaluate_wall_guard(elapsed_s=1.0, wall_s=10.0, grace_s=0.0)["tripped"])
 
-    def test_board_outcome_scan_and_queue_edge_paths(self):
+    def test_queue_strict_keys_per_user_state_dir_and_edge_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             spec = _write_spec(root, card="T4", shape="standard", cap=2.5, max_rate=1.6, wall_s=180)
             base_text = spec.read_text(encoding="utf-8")
 
-            # 1) Multi-line outcome.json scanning under --out-root (including nested subdirs & quarantine skip)
-            scan_root = root / "scan_root"
-            for rel, rec_data in (
-                ("batch_a/w1", {"window_id": "id-1", "line": "l1", "project": {"job": "j1", "purpose": "p1"}, "card": "T4", "status": "done", "spend_ccu": 1.25, "session_stopped_confirmed": True}),
-                ("batch_a/w2", {"window_id": "id-2", "line": "l1", "project": {"job": "j2", "purpose": "p2"}, "card": "T4", "status": "unreachable", "opened": True, "spend_ccu": 0.5, "session_stopped_confirmed": True}),
-                ("batch_b/w3", {"window_id": "id-3", "line": "l2", "project": {"job": "j3", "purpose": "p3"}, "card": "T4", "status": "open_failed", "opened": False, "refusal": {"code": "POOL_CEILING_REACHED", "message": "full"}, "spend_ccu": 0.0, "session_stopped_confirmed": True}),
-                ("batch_b/w3.quarantine/ignored", {"window_id": "id-q", "line": "l2", "status": "done", "spend_ccu": 99.0}),
+            # Unknown keys in top-level, [queue], and [[jobs]] refuse with SPEC_INVALID
+            spec_t4_ok = root / "t4_ok.toml"
+            spec_t4_ok.write_text(base_text, encoding="utf-8")
+            for bad_toml in (
+                'out_root = "qr"\n[publish]\nrepo = "o/r"\n[[jobs]]\nid = "j1"\nspec = "t4_ok.toml"\npurpose = "p"\n',
+                '[queue]\nout_root = "qr"\nextra = 1\n[[jobs]]\nid = "j1"\nspec = "t4_ok.toml"\npurpose = "p"\n',
+                'out_root = "qr"\n[[jobs]]\nid = "j1"\nspec = "t4_ok.toml"\npurpose = "p"\nbogus = 2\n',
+                'out_root = "qr"\nstate_dir = ""\n[[jobs]]\nid = "j1"\nspec = "t4_ok.toml"\npurpose = "p"\n',
             ):
-                d = scan_root / rel
-                d.mkdir(parents=True)
-                (d / "outcome.json").write_text(json.dumps(rec_data), encoding="utf-8")
-            (scan_root / "pending_win").mkdir(parents=True)
-            (scan_root / "pending_win" / "window_meta.json").write_text(
-                json.dumps({"window_id": "id-p", "line": "l3", "project": {"job": "jp", "purpose": "pending"}, "card": "T4"}),
-                encoding="utf-8",
+                with self.assertRaises(Refused) as ctx_u:
+                    QueueSpec.from_file(_write_queue_spec(root, bad_toml))
+                self.assertEqual(ctx_u.exception.code, "SPEC_INVALID")
+
+            # Queue without state_dir defaults to launch's per-user state dir (and respects COLAB_RUNNER_STATE_DIR)
+            qp_default = _write_queue_spec(
+                root,
+                'out_root = "qr_def"\nline = "ldef"\n'
+                '[[jobs]]\nid = "d1"\nspec = "t4_ok.toml"\npurpose = "Default state dir check"\n',
             )
-            board = build_board(out_root=scan_root)
-            self.assertEqual(board["lines"]["l1"], {"line": "l1", "spent_ccu": 1.75, "window_count": 2, "counts": {"done": 1, "failed-ours": 0, "failed-Google": 1, "refused-capacity": 0}})
-            self.assertEqual(board["lines"]["l2"], {"line": "l2", "spent_ccu": 0.0, "window_count": 1, "counts": {"done": 0, "failed-ours": 0, "failed-Google": 0, "refused-capacity": 1}})
-            self.assertNotIn("l3", board["lines"])
-            self.assertEqual(board["totals"]["windows"], 4)
-            self.assertEqual(board["totals"]["spend_ccu"], 1.75)
+            q_def = QueueSpec.from_file(qp_default)
+            self.assertIsNone(q_def.state_dir)
+            fake_user_state = (root / "user_state").resolve()
+            sim_def = SimColab(clock=FakeClock(), usage=usage_text(rate=1.4, n=1), polls=lambda n, env: rec(rc=0, progress=1))
+            with mock.patch.object(launcher_mod, "_default_user_state_dir", return_value=fake_user_state):
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("COLAB_RUNNER_STATE_DIR", None)
+                    res_def = run_queue(qp_default, colab=sim_def, clock=sim_def.clock.now, sleep=sim_def.clock.sleep)
+            self.assertEqual(Path(res_def["state_dir"]).resolve(), fake_user_state)
+            self.assertTrue((fake_user_state / "study_ledger.json").is_file())
 
-            out_b, err_b = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(out_b), contextlib.redirect_stderr(err_b):
-                self.assertEqual(main(["board", "--out-root", str(scan_root), "--json"]), 0)
-            self.assertIn('"spent_ccu": 1.75', out_b.getvalue())
+            env_state = (root / "env_state").resolve()
+            qp_env = _write_queue_spec(
+                root,
+                'out_root = "qr_env"\nline = "lenv"\n'
+                '[[jobs]]\nid = "e1"\nspec = "t4_ok.toml"\npurpose = "Env state dir check"\n',
+            )
+            sim_env = SimColab(clock=FakeClock(), usage=usage_text(rate=1.4, n=1), polls=lambda n, env: rec(rc=0, progress=1))
+            with mock.patch.dict(os.environ, {"COLAB_RUNNER_STATE_DIR": str(env_state)}):
+                res_env = run_queue(qp_env, colab=sim_env, clock=sim_env.clock.now, sleep=sim_env.clock.sleep)
+            self.assertEqual(Path(res_env["state_dir"]).resolve(), env_state)
 
-            # 2) Queue validation errors, dry-run via CLI, card mix enforced by cards.py, pool ceiling, halt on unconfirmed stop
+            # Queue validation errors, dry-run via CLI, card mix enforced by cards.py, pool ceiling, halt on unconfirmed stop
             with self.assertRaises(Refused):
                 QueueSpec.from_file(root / "missing_q.toml")
             spec_g4 = root / "g4.toml"

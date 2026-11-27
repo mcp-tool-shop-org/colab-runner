@@ -22,8 +22,13 @@ from colab_runner.launcher import (
     _acquire_dir_lock,
     _check_empty_out_dir,
     _default_open_lock_path,
+    _download_chunk_bytes,
+    _download_declared_outputs,
+    _finalize_staged_file,
+    _parse_tar_manifest,
     _pid_alive,
     _read_pre_open_usage,
+    _scrub_and_place_staged,
     _state_paths,
     _try_acquire_reclaim_guard,
     default_cleanup_bound_s,
@@ -1936,6 +1941,232 @@ class FollowupFenceReclaimRaceAndClampTest(unittest.TestCase):
                 next_timeout=lambda: next(touts, None), next_exec_timeout=lambda: 10.0,
             )
             self.assertEqual((got2, ok2), ([], False))
+
+
+class ChunkedDownloadTest(unittest.TestCase):
+    def test_local_cpu_chunked_directory_and_file_download_with_sha_and_scrub(self):
+        if os.name != "posix":
+            self.skipTest("local-cpu VM cell execution requires POSIX bash/nohup")
+        t = fake_tokens()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".git").mkdir()
+            png_bytes = b"\x89PNG\r\n\x1a\n\x00" + (bytes(range(256)) * 10)
+            big_bytes = b"BIN\x00" + (b"0123456789abcdef" * 220)
+            nested_bytes = b"NEST\x00" + (b"xyz987654321" * 110)
+            (root / "make_outputs.py").write_text(
+                "import os\nfrom pathlib import Path\n"
+                "w = Path(os.environ['CR_WORK_DIR'])\n"
+                "(w / 'bundle_dir' / 'nested').mkdir(parents=True, exist_ok=True)\n"
+                f"(w / 'bundle_dir' / 'clean.png').write_bytes({png_bytes!r})\n"
+                f"(w / 'bundle_dir' / 'nested' / 'weights.bin').write_bytes({nested_bytes!r})\n"
+                f"(w / 'bundle_dir' / 'note.txt').write_text('tok=' + {t['hf']!r} + '\\n', encoding='utf-8')\n"
+                f"(w / 'big_model.bin').write_bytes({big_bytes!r})\n"
+                "(w / 'small.txt').write_text('hello small\\n', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            spec = root / "colab-window.toml"
+            spec.write_text(
+                'schema_version = 1\n'
+                '[project]\nrepo = "o/c"\nstudy = "chunk-s"\njob = "chunk_j"\n'
+                '[compute]\ncard = "T4"\nshape = "standard"\nmax_rate = 1.6\ncap = 6.0\nwall_s = 900\npoll_s = 0.15\n'
+                '[inputs]\nroot = "."\nfiles = ["make_outputs.py"]\n'
+                '[job]\nrun = ["python3 make_outputs.py"]\n'
+                '[outputs]\ncollect = ["bundle_dir", "big_model.bin", "small.txt"]\ndownload_parts = 6\n',
+                encoding="utf-8",
+            )
+
+            dry_plan = launch_window(spec, root / "dry", dry=True)
+            self.assertEqual(dry_plan["outputs"]["download_parts"], 6)
+            spec_p1 = root / "p1.toml"
+            spec_p1.write_text(
+                spec.read_text(encoding="utf-8").replace("download_parts = 6", "download_parts = 1"),
+                encoding="utf-8",
+            )
+            dry_p1 = launch_window(spec_p1, root / "dry1", dry=True)
+            self.assertGreater(dry_plan["budget"]["cleanup_outputs_bound_s"], dry_p1["budget"]["cleanup_outputs_bound_s"])
+
+            with mock.patch.dict(os.environ, {"CR_DOWNLOAD_CHUNK_BYTES": "1024"}):
+                out = launch_window(spec, root / "live_cpu", local_cpu=True)
+
+            self.assertEqual(out["status"], "done", out)
+            self.assertEqual(out["exit_code"], 0)
+            self.assertEqual(sorted(out["collected_outputs"]), ["big_model.bin", "bundle_dir", "small.txt"])
+            collected = root / "live_cpu" / "collected"
+            self.assertEqual((collected / "bundle_dir" / "clean.png").read_bytes(), png_bytes)
+            self.assertEqual((collected / "bundle_dir" / "nested" / "weights.bin").read_bytes(), nested_bytes)
+            self.assertEqual((collected / "bundle_dir" / "note.txt").read_text(encoding="utf-8"), "tok=hf_[REDACTED]\n")
+            self.assertEqual((collected / "big_model.bin").read_bytes(), big_bytes)
+            self.assertEqual((collected / "small.txt").read_text(encoding="utf-8"), "hello small\n")
+            self.assertEqual(list((root / "live_cpu" / "_local_vm_content").rglob("*.part*")), [])
+
+    def test_chunk_bytes_validation_manifest_errors_checksum_failures_and_token_quarantine(self):
+        t = fake_tokens()
+        for bad_env in ("0", "-5", "not-an-int"):
+            with mock.patch.dict(os.environ, {"CR_DOWNLOAD_CHUNK_BYTES": bad_env}):
+                with self.assertRaises(Refused) as ctx:
+                    _download_chunk_bytes()
+                self.assertEqual(ctx.exception.code, "SETTING_INVALID")
+
+        self.assertEqual(_parse_tar_manifest("CR_TAR_READY\n"), (False, None))
+        for bad_line in (
+            "CR_TAR_MANIFEST {bad",
+            "CR_TAR_MANIFEST []",
+            'CR_TAR_MANIFEST {"kind":"bad","size":1,"sha256":"aa","parts":[]}',
+            'CR_TAR_MANIFEST {"kind":"file","size":1,"sha256":"aa","parts":[]}',
+            'CR_TAR_MANIFEST {"kind":"file","size":1,"sha256":"aa","parts":["bad"]}',
+            'CR_TAR_MANIFEST {"kind":"file","size":1,"sha256":"aa","parts":[{"path":"/x","size":true,"sha256":"aa"}]}',
+        ):
+            self.assertEqual(_parse_tar_manifest("CR_TAR_READY\n" + bad_line + "\n"), (True, None))
+
+        class ManifestColab(SimColab):
+            def __init__(self, cell_reply: CliResult, **kw):
+                super().__init__(**kw)
+                self.cell_reply = cell_reply
+
+            def exec_cell(self, session, source, env=None, timeout=60.0) -> CliResult:
+                if "CR_TAR_REL" in (env or {}):
+                    self._record("tar", session, timeout)
+                    return self.cell_reply
+                return super().exec_cell(session, source, env=env, timeout=timeout)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # 1) Malformed manifest -> OUTPUT_TAR_CORRUPT
+            runner_bad_m = Runner(
+                ManifestColab(CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST {broken\n")),
+                "s", root / "o1", job="j",
+            )
+            errs: dict[str, str] = {}
+            got, ok = _download_declared_outputs(
+                runner_bad_m, ["f.bin"], root / "d1", content="/content", job="j",
+                output_errors=errs, download_parts=2, chunk_bytes=512,
+            )
+            self.assertEqual((got, ok, errs), ([], True, {"f.bin": "OUTPUT_TAR_CORRUPT"}))
+
+            # 2) Single-file remote sha256 mismatch -> OUTPUT_TAR_CORRUPT
+            man_single = {
+                "kind": "file", "remote": "/content/j_work/f.bin",
+                "size": 4, "sha256": "0" * 64, "parts": [],
+            }
+            runner_single = Runner(
+                ManifestColab(
+                    CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_single) + "\n"),
+                    remote_files={"/content/j_work/f.bin": b"abcd"},
+                ),
+                "s", root / "o2", job="j",
+            )
+            errs2: dict[str, str] = {}
+            got2, ok2 = _download_declared_outputs(
+                runner_single, ["f.bin"], root / "d2", content="/content", job="j",
+                output_errors=errs2, chunk_bytes=512,
+            )
+            self.assertEqual((got2, ok2, errs2), ([], True, {"f.bin": "OUTPUT_TAR_CORRUPT"}))
+
+            # 3) Part sha256 mismatch + whole sha256 mismatch + missing part + budget exhaustion
+            p0 = b"hello "
+            p1 = b"world!"
+            p0_sha = hashlib.sha256(p0).hexdigest()
+            p1_sha = hashlib.sha256(p1).hexdigest()
+            man_parts_bad_part = {
+                "kind": "file", "remote": None,
+                "size": len(p0 + p1), "sha256": hashlib.sha256(p0 + p1).hexdigest(),
+                "parts": [
+                    {"path": "/content/j_out/f.bin.part0000", "size": len(p0), "sha256": p0_sha},
+                    {"path": "/content/j_out/f.bin.part0001", "size": len(p1), "sha256": "f" * 64},
+                ],
+            }
+            rfiles = {"/content/j_out/f.bin.part0000": p0, "/content/j_out/f.bin.part0001": p1}
+            errs3: dict[str, str] = {}
+            got3, ok3 = _download_declared_outputs(
+                Runner(ManifestColab(
+                    CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_parts_bad_part) + "\n"),
+                    remote_files=rfiles,
+                ), "s", root / "o3", job="j"),
+                ["f.bin"], root / "d3", content="/content", job="j", output_errors=errs3, chunk_bytes=6,
+            )
+            self.assertEqual((got3, ok3, errs3), ([], True, {"f.bin": "OUTPUT_TAR_CORRUPT"}))
+
+            man_bad_whole = dict(man_parts_bad_part)
+            man_bad_whole["sha256"] = "e" * 64
+            man_bad_whole["parts"] = [
+                {"path": "/content/j_out/f.bin.part0000", "size": len(p0), "sha256": p0_sha},
+                {"path": "/content/j_out/f.bin.part0001", "size": len(p1), "sha256": p1_sha},
+            ]
+            errs4: dict[str, str] = {}
+            got4, ok4 = _download_declared_outputs(
+                Runner(ManifestColab(
+                    CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_bad_whole) + "\n"),
+                    remote_files=rfiles,
+                ), "s", root / "o4", job="j"),
+                ["f.bin"], root / "d4", content="/content", job="j", output_errors=errs4, chunk_bytes=6,
+            )
+            self.assertEqual((got4, ok4, errs4), ([], True, {"f.bin": "OUTPUT_TAR_CORRUPT"}))
+
+            # Missing part returns ([], True) cleanly; exhausted budget on part 2 returns ([], False)
+            errs5: dict[str, str] = {}
+            got5, ok5 = _download_declared_outputs(
+                Runner(ManifestColab(
+                    CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_bad_whole) + "\n"),
+                    remote_files={"/content/j_out/f.bin.part0000": p0},
+                ), "s", root / "o5", job="j"),
+                ["f.bin"], root / "d5", content="/content", job="j", output_errors=errs5, chunk_bytes=6,
+            )
+            self.assertEqual((got5, ok5, errs5), ([], True, {}))
+
+            touts = iter([10.0, None])
+            got6, ok6 = _download_declared_outputs(
+                Runner(ManifestColab(
+                    CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_bad_whole) + "\n"),
+                    remote_files=rfiles,
+                ), "s", root / "o6", job="j"),
+                ["f.bin"], root / "d6", content="/content", job="j",
+                next_timeout=lambda: next(touts, None), next_exec_timeout=lambda: 10.0, chunk_bytes=6,
+            )
+            self.assertEqual((got6, ok6), ([], False))
+
+            # 4) Multi-part standalone binary file carrying a token -> BINARY_DOWNLOAD_TOKEN + quarantine
+            poison = b"\x89PNG\x00" + t["hf"].encode("ascii")
+            pp0, pp1 = poison[:8], poison[8:]
+            man_poison = {
+                "kind": "file", "remote": None,
+                "size": len(poison), "sha256": hashlib.sha256(poison).hexdigest(),
+                "parts": [
+                    {"path": "/content/j_out/leak.bin.part0000", "size": len(pp0), "sha256": hashlib.sha256(pp0).hexdigest()},
+                    {"path": "/content/j_out/leak.bin.part0001", "size": len(pp1), "sha256": hashlib.sha256(pp1).hexdigest()},
+                ],
+            }
+            runner_p = Runner(ManifestColab(
+                CliResult(0, "CR_TAR_READY\nCR_TAR_MANIFEST " + json.dumps(man_poison) + "\n"),
+                remote_files={"/content/j_out/leak.bin.part0000": pp0, "/content/j_out/leak.bin.part0001": pp1},
+            ), "s", root / "op", job="j")
+            errs_p: dict[str, str] = {}
+            got_p, ok_p = _download_declared_outputs(
+                runner_p, ["leak.bin"], root / "op" / "collected", content="/content", job="j",
+                output_errors=errs_p, chunk_bytes=8,
+            )
+            self.assertEqual((got_p, ok_p, errs_p), ([], True, {"leak.bin": "BINARY_DOWNLOAD_TOKEN"}))
+            self.assertIsInstance(runner_p._download_refusal, BinaryDownloadRefused)
+            self.assertTrue((root / "op.quarantine" / "collected" / "leak.bin").is_file())
+
+            # 5) _finalize_staged_file + _scrub_and_place_staged OSError / missing staged file edges
+            stage_root = root / "st"
+            asm = root / "asm.txt"
+            asm.write_text("clean\n", encoding="utf-8")
+            dst_file = root / "dst_file.txt"
+            dst_file.mkdir()
+            self.assertIsNone(_finalize_staged_file(asm, stage_root, "clean.txt", dst_file, runner_p))
+            self.assertEqual(dst_file.read_text(encoding="utf-8"), "clean\n")
+
+            missing_stage = stage_root / "gone.txt"
+            self.assertEqual(_scrub_and_place_staged(missing_stage, stage_root, "gone.txt", root / "g", runner_p), "OUTPUT_SCRUB_FAILED")
+
+            bad_stage = stage_root / "err.txt"
+            bad_stage.parent.mkdir(parents=True, exist_ok=True)
+            bad_stage.write_text("hi", encoding="utf-8")
+            with mock.patch("colab_runner.launcher.scrub_local", side_effect=OSError("disk error")):
+                self.assertEqual(_scrub_and_place_staged(bad_stage, stage_root, "err.txt", root / "e", runner_p), "OUTPUT_SCRUB_FAILED")
 
 
 if __name__ == "__main__":

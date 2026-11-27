@@ -193,21 +193,32 @@ open (`RATE_ABOVE_MAX`). The account balance is recorded and never prices the wi
 files with exit code 1 (`REFUSED: PLATFORM_UNSUPPORTED: colab-runner runs on Linux or WSL`). Run `colab-runner` on Linux
 or inside WSL.
 
-## Continuous work (`purpose`, `line`, `queue`, `board`)
+## Continuous work (`purpose`, `line`, `queue`)
 
-A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) so `board` can total their spend and outcomes together.
+A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) inside `outcome.json` and `QUEUE_END`.
 
-- **Purpose and line in `[project]`:** optional `purpose` (falls back to `description`, and is required non-empty for
+- **Purpose, line, and strict specs:** optional `purpose` (falls back to `description`, and is required non-empty for
   every queued job) and `line` (falls back to `study`). The runner distinguishes only sealed (`[inputs.sealed]` plus
-  `--allow-sealed`) versus unsealed inputs; per-window `--cap` and `--wall-s` are the only limits.
+  `--allow-sealed`) versus unsealed inputs; per-window `--cap` and `--wall-s` are the only limits. Unknown spec keys
+  or tables (in window or queue manifests) are refused upfront with `SPEC_INVALID`.
 - **Unattended queues (`queue validate` / `queue run`):** declare `[[jobs]]` in a TOML/JSON queue manifest with per-job
-  `spec`, `purpose`, `line`, `cap`, `max_rate`, and `wall_s`. `queue validate` verifies every spec. `queue run` respects
+  `spec`, `purpose`, `line`, `cap`, `max_rate`, and `wall_s`. `queue validate` verifies every spec. `queue run` shares
+  `launch`'s per-user state directory and `open.lock` by default (override with `state_dir` or `--state-dir`), respects
   account/card pool ceilings through `launch_window` (`POOL_CEILING_REACHED` classifies as `refused-capacity`), enforces
   single card per study (`CARD_MIX_REFUSED`), isolates per-job failures (stopping & recording before advancing to the next
-  job, halting only if a session stop cannot be confirmed), and writes `queue_state.json`.
-- **At-a-glance `board`:** `python -m colab_runner board [--out-root D | --out-dir D ...] [--queue-state P] [--json]`
-  scans `outcome.json` under `--out-root` (or `--out-dir`) to show per-line spend and four-way counts (`done`,
-  `failed-ours`, `failed-Google`, `refused-capacity`), ran/running windows, upcoming queued jobs, and totals.
+  job, halting only if a session stop cannot be confirmed), and writes `queue_state.json` plus `QUEUE_END`.
+
+## Chunked output download (`outputs.download_parts`, `CR_DOWNLOAD_CHUNK_BYTES`)
+
+Declared `outputs.collect` and `outputs.salvage` paths support streaming tars and multi-part downloads bounded by
+`cleanup_bound_s`:
+
+- **Streaming VM archive + chunk splitting:** directory outputs stream through `tar` (`CR_DOWNLOAD_CHUNK_BYTES`, default
+  `268435456` = 256 MiB) instead of buffering large files in memory, and any directory tar or single file exceeding the
+  chunk limit is split on the VM into `.partNNNN` slices with per-part and whole-payload SHA-256 verification and
+  reassembly before local binary-safe token scrubbing (`OUTPUT_TAR_CORRUPT` on any mismatch or corrupt manifest).
+- **Cleanup reserve scaling:** set `outputs.download_parts` (positive integer, default `1`; values above `3` scale each
+  output's `cleanup_outputs_bound_s` reserve linearly) so multi-part downloads stay inside `--cap`.
 
 ## Publishing your outputs
 

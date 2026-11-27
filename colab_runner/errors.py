@@ -122,7 +122,7 @@ CODES: dict[str, Code] = {
         "check local destination permissions or unreadable files; directory output scrub failed", _FIX
     ),
     "OUTPUT_TAR_CORRUPT": Code(
-        "inspect the job's directory output on the VM: its tar archive could not be read or extracted", _FIX
+        "inspect the job's output on the VM: its archive or chunked transfer failed size/sha256 verification or extraction", _FIX
     ),
     "OUTPUT_TAR_UNSAFE": Code(
         "remove symlinks, absolute paths, or '..' entries from the job's directory output", _FIX

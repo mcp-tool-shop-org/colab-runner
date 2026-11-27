@@ -750,6 +750,44 @@ class AdditionalCardCliRunnerTest(unittest.TestCase):
                 WindowSpec.from_mapping(no_run, base_dir=root)
             self.assertEqual(ctx.exception.code, "SPEC_INVALID")
 
+            # Unknown keys/tables (including removed [publish] / project.data_class) refuse upfront with SPEC_INVALID
+            unknown_cases = [
+                lambda d: d.__setitem__("publish", {"enabled": True}),
+                lambda d: d["project"].__setitem__("data_class", "public"),
+                lambda d: d["compute"].__setitem__("extra_budget", 1.0),
+                lambda d: d["inputs"].__setitem__("extra_flag", True),
+                lambda d: d["inputs"].__setitem__("files", [{"src": "a.txt", "dst": "a.txt", "mode": "0644"}]),
+                lambda d: d["job"].__setitem__("after", ["echo hi"]),
+                lambda d: d["outputs"].__setitem__("upload", True),
+                lambda d: d["inputs"].__setitem__(
+                    "sealed",
+                    {
+                        "preregistration_path": "p.md",
+                        "preregistration_sha256": "0" * 64,
+                        "allowed_cards": ["G4"],
+                        "allowed_host": "colab.google.com",
+                        "extra": 1,
+                    },
+                ),
+            ]
+            for mutate in unknown_cases:
+                bad_u = _minimal_spec_dict()
+                mutate(bad_u)
+                with self.assertRaises(Refused) as ctx_u:
+                    WindowSpec.from_mapping(bad_u, base_dir=root)
+                self.assertEqual(ctx_u.exception.code, "SPEC_INVALID")
+
+            for bad_parts in (0, -2, True, 1.5, "2"):
+                bad_dp = _minimal_spec_dict()
+                bad_dp["outputs"]["download_parts"] = bad_parts
+                with self.assertRaises(Refused) as ctx_dp:
+                    WindowSpec.from_mapping(bad_dp, base_dir=root)
+                self.assertEqual(ctx_dp.exception.code, "SPEC_INVALID")
+
+            good_dp = _minimal_spec_dict()
+            good_dp["outputs"]["download_parts"] = 5
+            self.assertEqual(WindowSpec.from_mapping(good_dp, base_dir=root).download_parts, 5)
+
 
 if __name__ == "__main__":
     unittest.main()

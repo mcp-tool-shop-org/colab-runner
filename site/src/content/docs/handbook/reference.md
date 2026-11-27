@@ -11,7 +11,6 @@ sidebar:
 usage: python -m colab_runner --version
        python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu] [options] [--quiet | --verbose | --debug]
        python -m colab_runner queue (validate | run) --queue SPEC [--dry | --local-cpu] [options]
-       python -m colab_runner board [--out-root D | --out-dir D ...] [--json]
        python -m colab_runner status --out-dir D [--json] [--quiet | --verbose | --debug]
        python -m colab_runner run --session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N [options] [--quiet | --verbose | --debug]
        python -m colab_runner stop --out-dir D [--quiet | --verbose | --debug]   (stops the session a killed run left in D/session_open.json)
@@ -20,7 +19,7 @@ exit codes: 0 ok, 1 refusal or usage error, 2 runtime error, 3 done but the sess
 
 ### `launch` and `status`
 
-- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec, card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs, confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) so `board` can total their spend and outcomes together.
+- `launch --spec SPEC --out-dir D [--dry | --local-cpu] [--allow-sealed]`: validates the spec (refusing unknown keys/tables with `SPEC_INVALID`), card/shape rules, circuit breaker, study card lock, input sandbox, verified `[inputs.sealed]` pre-registration gate, and `SpendGuard` + open-phase budget; runs offline (`--dry` / `--local-cpu`) or opens a Colab session under a global lock, bounds the open phase from `colab new` against `--cap` and `--wall-s`, uploads flat into `/content`, supervises execution via `Runner`, downloads declared outputs (streaming tars and chunked `.partNNNN` transfers with SHA-256 verification), confirms the session stopped, and writes `outcome.json` on every exit. Live GPU/TPU launches require explicit `--cap` and `--max-rate` on the CLI. A `line` is a short label that groups related runs (for example `feature-eval` or `canary`) in `outcome.json` and `QUEUE_END`.
 - `status --out-dir D [--json]`: inspects `dry_run_plan.json`, `window_meta.json` (reporting `orphaned` if `launcher_pid` died while `session_open.json` exists), `session_open.json`, `stop_confirmed.json`, `stop_pending.json`, `outcome.json`, and the log tail without calling Colab.
 
 ### `run`
@@ -235,6 +234,7 @@ again.
 | Name | Where | What |
 | --- | --- | --- |
 | `COLAB_RUNNER_CLI` | local | The `colab` command line to call, split with POSIX quoting (default `colab`). |
+| `CR_DOWNLOAD_CHUNK_BYTES` | local | Chunk threshold in bytes (default `268435456`, 256 MiB) for splitting oversized output files/tars into `.partNNNN` slices. |
 | `CR_RUN_ID` | VM | The run's own id. Reserved: a caller may not set it. |
 | `CR_OUT_DIR` | VM | The job's out dir (default `<content>/<job>_out`). |
 | `CR_PROGRESS_GLOB` | VM | Files whose first integer counts as progress (default `<out>/progress/*`). |

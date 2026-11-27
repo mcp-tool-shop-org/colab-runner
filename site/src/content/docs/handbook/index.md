@@ -16,7 +16,7 @@ It does four things:
    logging flaky account reads or mid-run rate drift without aborting healthy work.
 3. **Scrubs every output.** Scrubs every log and downloaded file in place, and quarantines any binary file containing a token.
 4. **Always tries to stop and record.** Stops sessions on every exit, records spend by `line` (a short label grouping
-   related runs) and `purpose`, runs unattended multi-job queues (`queue run`), and summarizes progress in `board`.
+   related runs) and `purpose`, and runs unattended multi-job queues (`queue run`).
 
 ## Status
 

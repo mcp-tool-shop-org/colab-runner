@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -66,33 +67,149 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DEFAULT_CLEANUP_FLOOR_S = 600.0
 OPEN_LOCK_STALE_MTIME_S = 10.0
 DEFAULT_TAR_TIMEOUT_S = 60.0
+DEFAULT_DOWNLOAD_CHUNK_BYTES = 256 * 1024 * 1024
+_STREAM_BUF_BYTES = 1024 * 1024
 
 _TAR_OUTPUT_CELL_SRC = """
+import glob as _cr_glob
+import hashlib as _cr_hash
 import io as _cr_io
+import json as _cr_json
 import posixpath as _cr_posix
 import tarfile as _cr_tar
+
+_CR_SMALL_TEXT_SCAN_BYTES = 8 * 1024 * 1024
+
+
+class _CrPartWriter:
+    def __init__(self, base_path, chunk_bytes):
+        self.base_path = base_path
+        self.chunk_bytes = max(1, int(chunk_bytes))
+        self.parts = []
+        self.total_size = 0
+        self.total_sha = _cr_hash.sha256()
+        self._fh = None
+        self._part_path = None
+        self._part_size = 0
+        self._part_sha = None
+        self._idx = 0
+        parent = os.path.dirname(base_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        for stale in _cr_glob.glob(base_path + ".part*") + [base_path + ".tmp"]:
+            if not os.path.islink(stale) and os.path.isfile(stale):
+                try:
+                    os.unlink(stale)
+                except OSError:
+                    pass
+
+    def _open_next(self):
+        self._close_part()
+        self._part_path = "%s.part%04d" % (self.base_path, self._idx)
+        self._idx += 1
+        self._fh = open(self._part_path, "wb")
+        self._part_size = 0
+        self._part_sha = _cr_hash.sha256()
+
+    def _close_part(self):
+        if self._fh is not None:
+            self._fh.close()
+            self.parts.append({
+                "path": self._part_path,
+                "size": self._part_size,
+                "sha256": self._part_sha.hexdigest(),
+            })
+            self._fh = None
+
+    def writable(self):
+        return True
+
+    def tell(self):
+        return self.total_size
+
+    def write(self, data):
+        mv = memoryview(data)
+        off = 0
+        n = len(mv)
+        while off < n:
+            if self._fh is None or self._part_size >= self.chunk_bytes:
+                self._open_next()
+            space = self.chunk_bytes - self._part_size
+            chunk = mv[off:off + space]
+            self._fh.write(chunk)
+            clen = len(chunk)
+            self._part_sha.update(chunk)
+            self._part_size += clen
+            self.total_sha.update(chunk)
+            self.total_size += clen
+            off += clen
+        return n
+
+    def close(self):
+        self._close_part()
+
 
 def _cr_tar_output():
     rel = os.environ.get("CR_TAR_REL", "").strip().replace("\\\\", "/")
     if not rel:
         print("CR_TAR_MISSING", flush=True)
         return
+    try:
+        chunk_bytes = max(1, int(os.environ.get("CR_TAR_CHUNK_BYTES", "268435456")))
+    except ValueError:
+        chunk_bytes = 268435456
     work_dir = os.path.join(CR_CONTENT, CR_JOB + "_work")
     src = None
+    kind = None
     for base in (work_dir, CR_OUT):
         cand = os.path.join(base, rel)
-        if os.path.isdir(cand) and not os.path.islink(cand):
-            src = cand
+        if os.path.islink(cand):
+            continue
+        if os.path.isdir(cand):
+            src, kind = cand, "dir"
+            break
+        if os.path.isfile(cand):
+            src, kind = cand, "file"
             break
     if src is None:
         print("CR_TAR_MISSING", flush=True)
         return
+
+    if kind == "file":
+        fsize = os.lstat(src).st_size
+        if fsize <= chunk_bytes:
+            h = _cr_hash.sha256()
+            with open(src, "rb") as fh:
+                while True:
+                    blk = fh.read(1024 * 1024)
+                    if not blk:
+                        break
+                    h.update(blk)
+            manifest = {"kind": "file", "remote": src, "size": fsize, "sha256": h.hexdigest(), "parts": []}
+        else:
+            stage_base = os.path.join(CR_OUT, rel)
+            writer = _CrPartWriter(stage_base, chunk_bytes)
+            with open(src, "rb") as fh:
+                while True:
+                    blk = fh.read(1024 * 1024)
+                    if not blk:
+                        break
+                    writer.write(blk)
+            writer.close()
+            manifest = {
+                "kind": "file",
+                "remote": None,
+                "size": writer.total_size,
+                "sha256": writer.total_sha.hexdigest(),
+                "parts": writer.parts,
+            }
+        print("CR_TAR_READY", flush=True)
+        print("CR_TAR_MANIFEST " + _cr_json.dumps(manifest), flush=True)
+        return
+
     tar_path = os.path.join(CR_OUT, rel + ".tar")
-    tar_parent = os.path.dirname(tar_path)
-    if tar_parent:
-        os.makedirs(tar_parent, exist_ok=True)
-    tmp_path = tar_path + ".tmp"
-    with _cr_tar.open(tmp_path, "w:") as tf:
+    writer = _CrPartWriter(tar_path, chunk_bytes)
+    with _cr_tar.open(fileobj=writer, mode="w:") as tf:
         for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
             rel_dir = os.path.relpath(dirpath, src)
             dir_arc = "." if rel_dir == "." else rel_dir.replace(os.sep, "/")
@@ -112,22 +229,46 @@ def _cr_tar_output():
                 if os.path.islink(fp) or not os.path.isfile(fp):
                     continue
                 arc = fn if dir_arc == "." else _cr_posix.join(dir_arc, fn)
-                with open(fp, "rb") as fh:
-                    data = fh.read()
-                if b"\\x00" not in data:
-                    try:
-                        txt = data.decode("utf-8")
-                        scrubbed = scrub_colab_tokens(txt)
-                        if scrubbed != txt:
-                            data = scrubbed.encode("utf-8")
-                    except UnicodeDecodeError:
-                        pass
+                fsize = os.lstat(fp).st_size
                 ti = _cr_tar.TarInfo(arc)
-                ti.size = len(data)
                 ti.mode = 0o644
-                tf.addfile(ti, _cr_io.BytesIO(data))
-    os.replace(tmp_path, tar_path)
+                if fsize <= _CR_SMALL_TEXT_SCAN_BYTES:
+                    with open(fp, "rb") as fh:
+                        data = fh.read()
+                    if b"\\x00" not in data:
+                        try:
+                            txt = data.decode("utf-8")
+                            scrubbed = scrub_colab_tokens(txt)
+                            if scrubbed != txt:
+                                data = scrubbed.encode("utf-8")
+                        except UnicodeDecodeError:
+                            pass
+                    ti.size = len(data)
+                    tf.addfile(ti, _cr_io.BytesIO(data))
+                else:
+                    ti.size = fsize
+                    with open(fp, "rb") as fh:
+                        tf.addfile(ti, fh)
+    writer.close()
+    if len(writer.parts) == 1:
+        os.replace(writer.parts[0]["path"], tar_path)
+        manifest = {
+            "kind": "dir",
+            "remote": tar_path,
+            "size": writer.total_size,
+            "sha256": writer.total_sha.hexdigest(),
+            "parts": [],
+        }
+    else:
+        manifest = {
+            "kind": "dir",
+            "remote": None,
+            "size": writer.total_size,
+            "sha256": writer.total_sha.hexdigest(),
+            "parts": writer.parts,
+        }
     print("CR_TAR_READY", flush=True)
+    print("CR_TAR_MANIFEST " + _cr_json.dumps(manifest), flush=True)
 
 _cr_tar_output()
 """
@@ -209,16 +350,29 @@ def build_job_env(
     return env
 
 
+def _download_chunk_bytes() -> int:
+    raw = os.environ.get("CR_DOWNLOAD_CHUNK_BYTES", "").strip()
+    if not raw:
+        return DEFAULT_DOWNLOAD_CHUNK_BYTES
+    try:
+        val = int(raw)
+    except ValueError:
+        raise Refused("SETTING_INVALID", "CR_DOWNLOAD_CHUNK_BYTES must be a positive integer") from None
+    if val < 1:
+        raise Refused("SETTING_INVALID", "CR_DOWNLOAD_CHUNK_BYTES must be a positive integer")
+    return val
+
+
 def cleanup_outputs_bound_s(
     spec: WindowSpec,
     card_spec: CardSpec,
     *,
     download_timeout_s: float = DEFAULT_DOWNLOAD_TIMEOUT_S,
 ) -> float:
-    """Worst-case seconds for `vm_card.json` plus salvage (or collect) downloads including directory tars and kills."""
+    """Worst-case seconds for `vm_card.json` plus salvage (or collect) downloads including directory tars, chunks, and kills."""
     one_dl_s = float(download_timeout_s) + 2.0 * KILL_WAIT_S
     tar_exec_s = DEFAULT_TAR_TIMEOUT_S + 2.0 * KILL_WAIT_S
-    per_output_s = 3.0 * one_dl_s + tar_exec_s
+    per_output_s = float(max(3, int(spec.download_parts))) * one_dl_s + tar_exec_s
     vm_card_s = one_dl_s if (card_spec.card_class == "gpu" and card_spec.cli_flag == "--gpu") else 0.0
     salvage_s = vm_card_s + len(spec.salvage_outputs) * per_output_s
     collect_s = vm_card_s + len(spec.collect_outputs) * per_output_s
@@ -889,6 +1043,56 @@ def _base_outcome(
     }
 
 
+def _scrub_and_place_staged(
+    stage_rel: Path,
+    stage_root: Path,
+    rel: str,
+    local: Path,
+    runner: Runner,
+) -> Optional[str]:
+    """Scrub a staged output file or directory under quarantine binding and move it into `local`."""
+    with runner._bind_quarantine():
+        try:
+            scrub_local(
+                stage_rel, quarantine_dir=runner.quarantine_dir, base_dir=stage_root,
+                log=runner.log, on_quarantine=runner._record_quarantine,
+            )
+        except (BinaryDownloadRefused, QuarantineEscape) as exc:
+            if runner._download_refusal is None:
+                runner._download_refusal = exc
+            return exc.code
+        except OSError as exc:
+            runner.log("output %r scrub failed: %s: %s" % (rel, type(exc).__name__, exc))
+            code = "OUTPUT_SCRUB_FAILED"
+            return code
+    if not stage_rel.exists():
+        code = "OUTPUT_SCRUB_FAILED"
+        return code
+    if local.is_dir():
+        shutil.rmtree(local)
+    elif local.exists():
+        local.unlink()
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(stage_rel), str(local))
+    return None
+
+
+def _finalize_staged_file(
+    assembled: Path,
+    stage_root: Path,
+    rel: str,
+    local: Path,
+    runner: Runner,
+    *,
+    bucket: str = "collected",
+) -> Optional[str]:
+    """Place a single assembled output file into `stage_root/bucket/rel`, scrub/quarantine, then move to `local`."""
+    stage_rel = stage_root / bucket / rel
+    stage_rel.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(assembled), str(stage_rel))
+    return _scrub_and_place_staged(stage_rel, stage_root, rel, local, runner)
+
+
 def _extract_dir_tar(
     tmp_tar: Path,
     stage_root: Path,
@@ -918,27 +1122,125 @@ def _extract_dir_tar(
             return code
     finally:
         tmp_tar.unlink(missing_ok=True)
-    with runner._bind_quarantine():
-        try:
-            scrub_local(
-                stage_rel, quarantine_dir=runner.quarantine_dir, base_dir=stage_root,
-                log=runner.log, on_quarantine=runner._record_quarantine,
-            )
-        except (BinaryDownloadRefused, QuarantineEscape) as exc:
-            if runner._download_refusal is None:
-                runner._download_refusal = exc
-            return exc.code
-        except OSError as exc:
-            runner.log("directory output %r scrub failed: %s: %s" % (rel, type(exc).__name__, exc))
-            code = "OUTPUT_SCRUB_FAILED"
-            return code
-    if local.is_dir():
-        shutil.rmtree(local)
-    elif local.exists():
-        local.unlink()
-    local.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(stage_rel), str(local))
-    return None
+    return _scrub_and_place_staged(stage_rel, stage_root, rel, local, runner)
+
+
+def _hash_file(path: Path) -> tuple[int, str]:
+    size = 0
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            blk = fh.read(_STREAM_BUF_BYTES)
+            if not blk:
+                break
+            size += len(blk)
+            digest.update(blk)
+    return size, digest.hexdigest()
+
+
+def _parse_tar_manifest(out_text: str) -> tuple[bool, Optional[dict[str, Any]]]:
+    line = next((ln for ln in (out_text or "").splitlines() if ln.startswith("CR_TAR_MANIFEST ")), None)
+    if line is None:
+        return False, None
+    try:
+        obj = json.loads(line[len("CR_TAR_MANIFEST "):])
+    except ValueError:
+        return True, None
+    if not isinstance(obj, dict):
+        return True, None
+    kind = obj.get("kind")
+    size = obj.get("size")
+    sha = obj.get("sha256")
+    parts = obj.get("parts")
+    if (
+        kind not in ("dir", "file")
+        or not isinstance(size, int) or isinstance(size, bool) or size < 0
+        or not isinstance(sha, str) or not sha
+        or not isinstance(parts, list)
+    ):
+        return True, None
+    if not parts:
+        remote = obj.get("remote")
+        if not isinstance(remote, str) or not remote:
+            return True, None
+        return True, obj
+    for part in parts:
+        if not isinstance(part, dict):
+            return True, None
+        p_path, p_size, p_sha = part.get("path"), part.get("size"), part.get("sha256")
+        if (
+            not isinstance(p_path, str) or not p_path
+            or not isinstance(p_size, int) or isinstance(p_size, bool) or p_size < 0
+            or not isinstance(p_sha, str) or not p_sha
+        ):
+            return True, None
+    return True, obj
+
+
+def _download_manifest_payload(
+    runner: Runner,
+    manifest: dict[str, Any],
+    stage_root: Path,
+    rel: str,
+    assembled: Path,
+    next_timeout: Optional[Callable[[], Optional[float]]],
+) -> tuple[Optional[str], bool]:
+    """Download single or multi-part payload from VM, verify per-part + whole SHA-256, and reassemble."""
+    parts = manifest["parts"]
+    if not parts:
+        dl_t = runner.download_timeout_s if next_timeout is None else next_timeout()
+        if dl_t is None:
+            return None, False
+        dl_res = runner._clean(runner.colab.download_unscrubbed(runner.session, manifest["remote"], str(assembled), dl_t))
+        if not dl_res.ok:
+            return None, True
+        got_size, got_sha = _hash_file(assembled)
+        if (got_size, got_sha) != (manifest["size"], manifest["sha256"]):
+            runner.log("output %s payload mismatch (expected %d/%s, got %d/%s)"
+                       % (rel, manifest["size"], manifest["sha256"][:12], got_size, got_sha[:12]))
+            code = "OUTPUT_TAR_CORRUPT"
+            return code, True
+        return "", True
+
+    part_local = stage_root / "part.bin"
+    whole_size = 0
+    whole_sha = hashlib.sha256()
+    with assembled.open("wb") as out_fh:
+        for part in parts:
+            dl_t = runner.download_timeout_s if next_timeout is None else next_timeout()
+            if dl_t is None:
+                return None, False
+            dl_part = runner._clean(runner.colab.download_unscrubbed(runner.session, part["path"], str(part_local), dl_t))
+            if isinstance(runner.colab, LocalColab):
+                try:
+                    runner.colab._translate_remote(part["path"]).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if not dl_part.ok or not part_local.is_file():
+                part_local.unlink(missing_ok=True)
+                return None, True
+            p_size = 0
+            p_sha = hashlib.sha256()
+            with part_local.open("rb") as in_fh:
+                while True:
+                    blk = in_fh.read(_STREAM_BUF_BYTES)
+                    if not blk:
+                        break
+                    out_fh.write(blk)
+                    p_size += len(blk)
+                    p_sha.update(blk)
+                    whole_size += len(blk)
+                    whole_sha.update(blk)
+            part_local.unlink(missing_ok=True)
+            if (p_size, p_sha.hexdigest()) != (part["size"], part["sha256"]):
+                runner.log("output %s part %s checksum mismatch" % (rel, part["path"]))
+                code = "OUTPUT_TAR_CORRUPT"
+                return code, True
+    if (whole_size, whole_sha.hexdigest()) != (manifest["size"], manifest["sha256"]):
+        runner.log("output %s assembled size/sha256 mismatch" % rel)
+        code = "OUTPUT_TAR_CORRUPT"
+        return code, True
+    return "", True
 
 
 def _download_declared_outputs(
@@ -951,29 +1253,33 @@ def _download_declared_outputs(
     next_timeout: Optional[Callable[[], Optional[float]]] = None,
     next_exec_timeout: Optional[Callable[[], Optional[float]]] = None,
     output_errors: Optional[dict[str, str]] = None,
+    download_parts: int = 1,
+    chunk_bytes: int = DEFAULT_DOWNLOAD_CHUNK_BYTES,
 ) -> tuple[list[str], bool]:
     transferred: list[str] = []
     completed = True
     base = content.rstrip("/\\") or "/"
     work_prefix = "%s/%s_work" % (base, job)
     out_prefix = "%s/%s_out" % (base, job)
+    try_direct = int(download_parts) == 1 and int(chunk_bytes) == DEFAULT_DOWNLOAD_CHUNK_BYTES
     for rel in paths:
         local = dest_dir / rel
         local.parent.mkdir(parents=True, exist_ok=True)
-        dl_t = runner.download_timeout_s if next_timeout is None else next_timeout()
-        if dl_t is None:
-            completed = False
-            break
-        res = runner.download("%s/%s" % (work_prefix, rel), local, timeout=dl_t)
-        if not res.ok:
-            dl_t2 = runner.download_timeout_s if next_timeout is None else next_timeout()
-            if dl_t2 is None:
+        if try_direct:
+            dl_t = runner.download_timeout_s if next_timeout is None else next_timeout()
+            if dl_t is None:
                 completed = False
                 break
-            res = runner.download("%s/%s" % (out_prefix, rel), local, timeout=dl_t2)
-        if res.ok and local.is_file():
-            transferred.append(rel)
-            continue
+            res = runner.download("%s/%s" % (work_prefix, rel), local, timeout=dl_t)
+            if not res.ok:
+                dl_t2 = runner.download_timeout_s if next_timeout is None else next_timeout()
+                if dl_t2 is None:
+                    completed = False
+                    break
+                res = runner.download("%s/%s" % (out_prefix, rel), local, timeout=dl_t2)
+            if res.ok and local.is_file():
+                transferred.append(rel)
+                continue
 
         exec_t = DEFAULT_TAR_TIMEOUT_S if next_exec_timeout is None else next_exec_timeout()
         if exec_t is None:
@@ -981,27 +1287,49 @@ def _download_declared_outputs(
             break
         tar_res = runner._clean(runner.colab.exec_cell(
             runner.session, vm_lib_source() + "\n" + _TAR_OUTPUT_CELL_SRC,
-            runner._env({"CR_TAR_REL": rel}), exec_t,
+            runner._env({"CR_TAR_REL": rel, "CR_TAR_CHUNK_BYTES": str(int(chunk_bytes))}), exec_t,
         ))
-        if tar_res.ok and "CR_TAR_READY" in tar_res.out:
-            dl_t3 = runner.download_timeout_s if next_timeout is None else next_timeout()
-            if dl_t3 is None:
-                completed = False
-                break
-            with tempfile.TemporaryDirectory(prefix="colab-dir-tar-") as tmp_stage:
-                stage_root = Path(tmp_stage)
-                tmp_tar = stage_root / "archive.tar"
+        if not (tar_res.ok and "CR_TAR_READY" in tar_res.out):
+            continue
+        has_manifest, manifest = _parse_tar_manifest(tar_res.out)
+        if has_manifest and manifest is None:
+            if output_errors is not None:
+                code = "OUTPUT_TAR_CORRUPT"
+                output_errors[rel] = code
+            continue
+        with tempfile.TemporaryDirectory(prefix="colab-dir-tar-") as tmp_stage:
+            stage_root = Path(tmp_stage)
+            assembled = stage_root / "archive.tar"
+            if manifest is not None:
+                status, ok_budget = _download_manifest_payload(
+                    runner, manifest, stage_root, rel, assembled, next_timeout,
+                )
+                if not ok_budget:
+                    completed = False
+                    break
+                if status != "":
+                    if status and output_errors is not None:
+                        output_errors[rel] = status
+                    continue
+                if manifest["kind"] == "file":
+                    err_code = _finalize_staged_file(assembled, stage_root, rel, local, runner, bucket=dest_dir.name)
+                else:
+                    err_code = _extract_dir_tar(assembled, stage_root, rel, local, runner, bucket=dest_dir.name)
+            else:
+                dl_t3 = runner.download_timeout_s if next_timeout is None else next_timeout()
+                if dl_t3 is None:
+                    completed = False
+                    break
                 dl_tar = runner._clean(runner.colab.download_unscrubbed(
-                    runner.session, "%s/%s.tar" % (out_prefix, rel), str(tmp_tar), dl_t3,
+                    runner.session, "%s/%s.tar" % (out_prefix, rel), str(assembled), dl_t3,
                 ))
-                if dl_tar.ok:
-                    err_code = _extract_dir_tar(
-                        tmp_tar, stage_root, rel, local, runner, bucket=dest_dir.name,
-                    )
-                    if err_code is None:
-                        transferred.append(rel)
-                    elif output_errors is not None:
-                        output_errors[rel] = err_code
+                if not dl_tar.ok:
+                    continue
+                err_code = _extract_dir_tar(assembled, stage_root, rel, local, runner, bucket=dest_dir.name)
+            if err_code is None:
+                transferred.append(rel)
+            elif output_errors is not None:
+                output_errors[rel] = err_code
     return transferred, completed
 
 
@@ -1322,6 +1650,7 @@ def launch_window(
     _refuse_native_windows()
     out_path = _check_empty_out_dir(Path(out_dir))
     spec = WindowSpec.from_file(spec_path)
+    chunk_bytes = _download_chunk_bytes()
     (
         card_spec, clean_shape, eff_max_rate, eff_cap, eff_wall_s, eff_margin, eff_cleanup, eff_resident,
     ) = _apply_overrides(
@@ -1416,7 +1745,11 @@ def launch_window(
             "sealed": sealed_record,
             "script": str(script_path),
             "bundle": str(bundle_path),
-            "outputs": {"collect": list(spec.collect_outputs), "salvage": list(spec.salvage_outputs)},
+            "outputs": {
+                "collect": list(spec.collect_outputs),
+                "salvage": list(spec.salvage_outputs),
+                "download_parts": spec.download_parts,
+            },
         }
         write_json_atomic(out_path / "dry_run_plan.json", plan)
         return plan
@@ -1816,6 +2149,8 @@ def launch_window(
                     next_timeout=_next_cleanup_download_timeout,
                     next_exec_timeout=_next_cleanup_exec_timeout,
                     output_errors=output_errors,
+                    download_parts=spec.download_parts,
+                    chunk_bytes=chunk_bytes,
                 )
                 collected.extend(got)
                 ok = dl_ok and all(rel in collected for rel in spec.collect_outputs)
@@ -1830,6 +2165,8 @@ def launch_window(
                     next_timeout=_next_cleanup_download_timeout,
                     next_exec_timeout=_next_cleanup_exec_timeout,
                     output_errors=output_errors,
+                    download_parts=spec.download_parts,
+                    chunk_bytes=chunk_bytes,
                 )
                 salvaged.extend(got)
                 ok = dl_ok

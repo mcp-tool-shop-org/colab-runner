@@ -35,7 +35,7 @@ from colab_runner.launcher import (
     status_window,
 )
 from colab_runner.manifest import WindowSpec
-from colab_runner.queue import QueueSpec, build_board, format_board, run_queue
+from colab_runner.queue import QueueSpec, run_queue
 from colab_runner.runner import RunInterrupted, Runner
 from colab_runner.spend import SpendGuard
 
@@ -47,7 +47,6 @@ USAGE = (
     "       python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu] [options] "
     "[--quiet | --verbose | --debug]\n"
     "       python -m colab_runner queue (validate | run) --queue SPEC [--dry | --local-cpu] [options]\n"
-    "       python -m colab_runner board [--out-root D | --out-dir D ...] [--json]\n"
     "       python -m colab_runner status --out-dir D [--json] [--quiet | --verbose | --debug]\n"
     "       python -m colab_runner run --session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R "
     "--cap C --cleanup-bound-s N [options] [--quiet | --verbose | --debug]\n"
@@ -457,25 +456,6 @@ def queue_command(argv: list[str]) -> int:
     return int(res["exit_code"])
 
 
-def board_command(argv: list[str]) -> int:
-    """Display an at-a-glance board of lines, windows, queued items, and totals."""
-    p = ScrubbingParser(prog="colab_runner board", description="Inspect lines, windows, queued jobs, and spend.")
-    p.add_argument("--out-root", help="directory holding queue_state.json and window subdirs")
-    p.add_argument("--out-dir", action="append", default=[], help="explicit window out-dir to include")
-    p.add_argument("--queue-state", help="path to queue_state.json")
-    p.add_argument("--json", action="store_true")
-    _add_levels(p)
-    args = p.parse_args(argv)
-    try:
-        data = build_board(
-            out_root=args.out_root, out_dirs=args.out_dir, queue_state=args.queue_state,
-        )
-    except Refused as exc:
-        return _refused(exc)
-    _out(json.dumps(data, indent=2) if args.json else format_board(data))
-    return EXIT_OK
-
-
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in ([], ["--help"], ["-h"]):
@@ -488,8 +468,6 @@ def main(argv: list[str] | None = None) -> int:
         return launch_command(args[1:])
     if args[0] == "queue":
         return queue_command(args[1:])
-    if args[0] == "board":
-        return board_command(args[1:])
     if args[0] == "status":
         return status_command(args[1:])
     if args[0] == "run":
