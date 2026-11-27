@@ -161,8 +161,10 @@ directories (including partial transfers) are classified by content only (a NUL 
   - The download is refused with `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`). That ends `Runner.run` as `error` (CLI
     exit 2), and the session is still stopped.
 - **A directory download** is scrubbed of tokens file by file, and one failure never stops the rest: a hit whose move to quarantine
-  fails is removed, and a subdirectory that cannot be listed is noted. The first such error is raised once all the remaining
-  files have been scrubbed. Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
+  fails is removed, and a subdirectory that cannot be listed is noted. At the end, `QuarantineEscape` raises first if triggered;
+  otherwise any binary token hit still raises `BinaryDownloadRefused` (`BINARY_DOWNLOAD_TOKEN`, with `failures` and `removed`
+  attached) so a quarantine move failure cannot downgrade a token hit into `partial`, and any other `OSError` raises first.
+  Only regular files are read. A symlink, to a file or to a directory, is unlinked, never
   followed, and any other entry that is not a regular file or a directory (a FIFO, a socket, a device) is unlinked, never
   read.
 - **Where the quarantine is.**
@@ -179,8 +181,43 @@ directories (including partial transfers) are classified by content only (a NUL 
 **Salvage** is a Python-API hook only: `Runner.run(..., salvage=callable)` runs it on every end but `done`, before the stop. The
 CLI has no salvage.
 
-**Pricing.** The window is priced at `max(--max-rate, the highest stable window rate)` times elapsed, through the vendored
-library's rate and cap functions. A stable rate above `--max-rate` trips `RATE_ABOVE_MAX`, so every window that keeps running is
-priced at `--max-rate`: it is a floor, not a loose ceiling. Set it to the card's expected rate; a loose `--max-rate` trips the cap
-early. The account balance is recorded and never prices the window.
+**Pricing & three stop reasons.** A running paid window stops for only three reasons: (a) **cap** (`own_rate x elapsed >= ceiling`),
+(b) **wall** (`--wall-s`), or (c) **dead job** (`dead` after `dead_confirm` polls, `setup_stall`, `progress_stall`, or
+`unreachable`). Mid-run `colab usage` parse failures, missing `Active assignments` counts, rates below catalog floor, and
+mid-run rate drift are logged rather than killing the window; `--max-rate` is enforced against the session's rate only at
+open (`RATE_ABOVE_MAX`). The account balance is recorded and never prices the window.
+
+## Platform requirement (`PLATFORM_UNSUPPORTED`)
+
+`launch` and `queue run` refuse native Windows (`sys.platform == "win32"`) before opening directories or writing state
+files with exit code 1 (`REFUSED: PLATFORM_UNSUPPORTED: colab-runner runs on Linux or WSL`). Run `colab-runner` on Linux
+or inside WSL.
+
+## Continuous work engine (`purpose`, `line`, `queue`, `budget`, `board`)
+
+- **Purpose, line of work, and data class in `[project]`:** optional `purpose` (falls back to `description`, and is
+  required non-empty for every queued job), `line` (falls back to `study`), and `data_class` (`"public"`, `"synthetic"`,
+  `"private"`, or `"sealed"`, defaulting to `"sealed"` when `[inputs.sealed]` is declared and `"private"` otherwise).
+  Sealed manifests with `data_class` set to `"public"` or `"synthetic"` are refused (`SEALED_DATA_REFUSED`).
+- **Standing budgets (`budget set` / `budget show`):** set and inspect per-line standing CCU caps in `line_ledger.json`.
+  Windows book spend idempotently by `window_id` and classify into `done`, `failed-ours`, `failed-Google`, or
+  `refused-capacity` (`outcome_bucket`).
+- **Unattended queues (`queue validate` / `queue run`):** declare `[[jobs]]` in a TOML/JSON queue manifest with per-job
+  `spec`, `purpose`, `line`, `cap`, `max_rate`, and `wall_s`. `queue validate` verifies every spec and enforces single card
+  per study (`CARD_MIX_REFUSED`). `queue run` defers jobs whose `cap` would exceed the line's standing budget, respects
+  account/card pool ceilings (20 total, 3 per GPU tier), isolates per-job failures (stopping & booking before advancing to
+  the next job, halting only if a session stop cannot be confirmed), and writes `queue_state.json`.
+- **At-a-glance `board`:** `python -m colab_runner board [--out-root D | --out-dir D ...] [--state-dir S] [--json]`
+  shows line budgets, ran/running windows (purpose, card, status, spend, artifacts, HF link), upcoming queued jobs, and
+  totals with four-way counts.
+
+## Hugging Face publish (`[publish]`)
+
+When `project.data_class` is `"public"` or `"synthetic"` and `[inputs.sealed]` is absent, a live window ending `done`
+stops the Colab session first, then runs `publish_window_outputs`: creates the Hugging Face repo (default org
+`mcp-tool-shop`, default `repo_type = "dataset"`) as **private**, verifies it is private, uploads `collected/` artifacts
+plus a generated `README.md` card, runs a full identity/token scan over every file and card, flips the repo public, and
+records `repo_url` and `flipped_public_at` in `outcome.json`. Scan or upload failure leaves any created repo private and
+marks the outcome `partial` (`exit_code = 2`).
+
 

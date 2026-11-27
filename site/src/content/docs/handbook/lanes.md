@@ -9,8 +9,9 @@ sidebar:
 
 Most projects no longer need per-window `launch.sh` scripts. Write one declarative `colab-window.toml` (`WindowSpec`) with:
 
-- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`.
-- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`, `V5E1`, `V6E1`), explicit `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate` (>= catalog floor; explicit `--cap` and `--max-rate` required on live GPU/TPU launches), `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`, `min_vram_mib_by_card`.
+- `[project]`: `repo`, `study`, `job` (`[A-Za-z0-9_-]+`), `description`, optional `purpose`, `line`, `data_class` (`public`, `synthetic`, `private`, `sealed`).
+- `[publish]`: optional `org` (default `mcp-tool-shop`), `repo_name`, `repo_type` (`dataset` or `model`) for `public`/`synthetic` windows.
+- `[compute]`: `card` (`CPU`, `T4`, `L4`, `G4`, `A100`, `V5E1`, `V6E1`), explicit `shape` (`standard` or `high-mem`, omitted on `CPU`), `max_rate` (rate above max checked at open; lower rates logged, not refused), `cap`, `wall_s`, `cleanup_bound_s`, `omp_num_threads`, `min_vram_mib_by_card`.
 - `[inputs]`: `root`, explicit `files`, optional `deny_globs` (for project-specific patterns such as `staging*` or holdout directory names), and `[inputs.sealed]` (`preregistration_path`, `preregistration_sha256`, `allowed_cards`, `allowed_host`). Whole-path `inputs.root` components, outside-repo roots, and `inputs.files` entries are checked against sealed/deny patterns; verified sealed launches also require `--allow-sealed` on the CLI.
 - `[job]`: `setup`, `run`, optional `cpu_dry_run`, `env`.
 - `[outputs]`: relative `collect` (downloaded on `done`) and `salvage` (downloaded on failure/trip) paths scrubbed through `Runner.download`. GPU runs always fetch `vm_card.json`.

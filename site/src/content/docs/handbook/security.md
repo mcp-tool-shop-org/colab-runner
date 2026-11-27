@@ -16,11 +16,12 @@ sidebar:
 
 **What it does not touch.** No files outside the declared `inputs.files` allowlist under `inputs.root` (during staging), the out dir, its quarantine, and the temp quarantine. Symlinks, NTFS junctions, `..` traversal, whole-path sealed or outside-repo `inputs.root` directories (including any directory without `.git` above the spec), and sealed/restricted paths (matching default patterns or caller `inputs.deny_globs` such as `staging*` or holdout names) are refused unless `[inputs.sealed]` verifies a read-only pre-registration file by SHA-256 and single unfenced declarations of `study`, `allowed_cards`, `allowed_host`, and `sealed_paths` (matched by resolved path against the pre-registration directory), authorized destination card/host, and `--allow-sealed` on live runs. No other Colab session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab` command line and never changes them.
 
-**Network.** Only through the `colab` command line, to Google Colab. colab-runner opens no connection of its own.
+**Network.** Colab CLI (`colab`) to Google Colab, plus optional Hugging Face REST API publish (`huggingface.co`) when a `public` or `synthetic` non-sealed window completes `done` (after closing the Colab session, private upload first, identity scan verified before public flip).
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
-and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the
-download is refused (below). colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
+and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged (or removed if
+the move fails, still raising `BinaryDownloadRefused` with `.failures`/`.removed`) and the download is refused (below).
+colab-runner never deletes the quarantine: the calling lane must delete it, and must never ship it.
 
 **Permissions.** It runs as the user who runs it, with the `colab` sign-in that user already has. It needs no
 elevation.

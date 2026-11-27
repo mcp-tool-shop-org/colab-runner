@@ -10,7 +10,7 @@ sidebar:
 - **Python 3.11 or later.** The package has no runtime dependencies.
 - **The `colab` command line** (Google's Colab CLI), signed in to the account that pays for the window. colab-runner
   calls it; it does not install it or sign in for you.
-- **Platforms:** CI runs on Linux with Python 3.11 and 3.12. The studio also runs it from Windows.
+- **Platforms:** Linux or WSL (`launch` and `queue run` refuse native Windows with `PLATFORM_UNSUPPORTED`). CI runs on Linux with Python 3.11 and 3.12.
 
 ## Install
 

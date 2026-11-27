@@ -90,15 +90,9 @@ CODES: dict[str, Code] = {
         "the clock reached the cap's ceiling at the priced rate (the cap less --margin and the cleanup reserve): raise "
         "--cap, or give the job less to do in one window", _FIX),
     "RATE_ABOVE_MAX": Code(
-        "the window's stable rate went above --max-rate: pass the card's real rate as --max-rate (and a --cap to "
-        "match), and --pre-open-rate with --pre-open-assignments so a neighbour's rate is not counted as this one's",
+        "the session's open-time rate exceeded --max-rate: pass the card's real rate as --max-rate (and a matching "
+        "--cap)",
         _FIX),
-    "ASSIGNMENTS_UNREADABLE": Code(
-        "`colab usage` gave no readable Active assignments count (or a stable rate below the floor) 3 times in a "
-        "row: check `colab usage` by hand, then run the window again", True),
-    "COLAB_USAGE_PARSE_FAILED": Code(
-        "`colab usage` could not be read or parsed, and the guard never prices a window it cannot read: check "
-        "`colab usage` by hand (sign-in, network), then run the window again", True),
     "UNEXPECTED_ERROR": Code(
         "read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop "
         "--out-dir D`; rerun with --debug for the traceback", _FIX),
@@ -133,11 +127,10 @@ CODES: dict[str, Code] = {
     "OUTPUT_TAR_UNSAFE": Code(
         "remove symlinks, absolute paths, or '..' entries from the job's directory output", _FIX
     ),
-    "MAX_RATE_BELOW_FLOOR": Code(
-        "raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate", _FIX),
     "SESSIONS_READ_FAILED": Code(
         "check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a "
         "window", True),
+    "PLATFORM_UNSUPPORTED": Code("run colab-runner on Linux or inside WSL", _FIX),
     # platform catalog, shape rules, study policy and circuit breaker
     "CARD_UNKNOWN": Code("choose a known Colab card from the catalog (CPU, T4, L4, G4, A100)", _FIX),
     "CARD_UNAVAILABLE": Code(
@@ -168,8 +161,6 @@ CODES: dict[str, Code] = {
         "before retrying", True),
     "SHAPE_MISMATCH": Code(
         "Colab assigned a different machine shape than requested; the session was stopped", True),
-    "POST_OPEN_RATE_UNREAD": Code(
-        "Colab did not report a stable positive GPU rate after open; check colab usage and retry", True),
     "UPLOAD_FAILED": Code(
         "check session connectivity and file size; colab upload into /content failed and the session was stopped",
         True),

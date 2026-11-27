@@ -189,13 +189,27 @@ def binary_token_hit(data: bytes) -> Optional[str]:
 
 
 class BinaryDownloadRefused(RuntimeError):
-    """A downloaded binary file matched a token pattern: quarantined unchanged, never rewritten, and refused."""
+    """A downloaded binary file matched a token pattern: quarantined (or removed if quarantine failed) and refused."""
 
-    def __init__(self, quarantined: list[dict[str, str]]):
+    def __init__(
+        self,
+        quarantined: list[dict[str, str]],
+        *,
+        removed: Sequence[dict[str, str]] = (),
+        failures: Sequence[OSError] = (),
+    ):
         self.code = "BINARY_DOWNLOAD_TOKEN"
         self.quarantined = list(quarantined)
-        summary = ", ".join("%s (pattern=%s)" % (q["source"], q["pattern"]) for q in self.quarantined)
-        self.message = "binary download quarantined: %s" % summary
+        self.removed = list(removed)
+        self.failures = list(failures)
+        parts: list[str] = []
+        if self.quarantined:
+            parts.append("binary download quarantined: %s" % ", ".join(
+                "%s (pattern=%s)" % (q["source"], q["pattern"]) for q in self.quarantined))
+        if self.removed:
+            parts.append("removed after quarantine failure: %s" % ", ".join(
+                "%s (pattern=%s, %s)" % (r["source"], r["pattern"], r["error"]) for r in self.removed))
+        self.message = "; ".join(parts) or "binary download token refused"
         self.hint, self.retryable = lookup(self.code).hint, lookup(self.code).retryable
         super().__init__("%s: %s" % (self.code, self.message))
 
@@ -656,13 +670,14 @@ def scrub_local(
 
     One failure never stops the scrub of the other files: a hit whose move fails, or whose quarantine path would land
     outside the quarantine (QuarantineEscape, checked before the move), is removed, and a directory that cannot be
-    listed is noted, and the scrub goes on with the rest. At the end the first such OSError is raised;
-    with none, a quarantine raises BinaryDownloadRefused."""
+    listed is noted, and the scrub goes on with the rest. QuarantineEscape raises first; otherwise any binary token hit
+    raises BinaryDownloadRefused (with `failures` and `removed` attached), and any other OSError raises failures[0]."""
     root = Path(local)
     failures: list[OSError] = []
     files = _iter_files(root, failures)
     qdir = Path(quarantine_dir) if quarantine_dir is not None else None
     quarantined: list[dict[str, str]] = []
+    removed_hits: list[dict[str, str]] = []
     for p in files:
         try:
             data = p.read_bytes()
@@ -690,6 +705,8 @@ def scrub_local(
         except OSError as exc:
             _unlink_quiet(p)  # never left in place with its token
             failures.append(exc)
+            if not isinstance(exc, QuarantineEscape):
+                removed_hits.append({"source": str(p), "pattern": hit, "error": "%s: %s" % (type(exc).__name__, exc)})
             if log is not None:
                 log(scrub("BINARY_DOWNLOAD_TOKEN: %s could not be moved to quarantine and was removed (%s: %s)"
                           % (p, type(exc).__name__, exc)))
@@ -700,10 +717,13 @@ def scrub_local(
             log(scrub("BINARY_DOWNLOAD_TOKEN: quarantined %s -> %s (pattern=%s)" % (p, dest, hit)))
         if on_quarantine is not None:
             on_quarantine(entry)
+    escape = next((e for e in failures if isinstance(e, QuarantineEscape)), None)
+    if escape is not None:
+        raise escape
+    if quarantined or removed_hits:
+        raise BinaryDownloadRefused(quarantined, removed=removed_hits, failures=failures)
     if failures:
         raise failures[0]
-    if quarantined:
-        raise BinaryDownloadRefused(quarantined)
 
 
 def cli_from_env() -> Colab:

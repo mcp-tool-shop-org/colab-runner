@@ -48,6 +48,8 @@ from colab_runner.colab_cli import (
 )
 from colab_runner.errors import Refused, cap_trip_record, error_record
 from colab_runner.manifest import DEFAULT_SEALED_HOST, StagedInputRecord, WindowSpec, render_vm_script, stage_inputs
+from colab_runner.publish import TransportFn, publish_window_outputs
+from colab_runner.queue import LineLedger, classify_window_outcome
 from colab_runner.runner import (
     DEFAULT_DOWNLOAD_TIMEOUT_S,
     MIN_CALL_S,
@@ -134,6 +136,12 @@ _cr_tar_output()
 
 def _utc_now(dt: Optional[datetime] = None) -> str:
     return (dt or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _refuse_native_windows() -> None:
+    """Refuse launch on native Windows so callers run on Linux or WSL."""
+    if sys.platform == "win32":
+        raise Refused("PLATFORM_UNSUPPORTED", "colab-runner runs on Linux or WSL")
 
 
 def _slug(value: str) -> str:
@@ -769,6 +777,7 @@ def _apply_overrides(
     resident: Optional[bool] = None,
     local_cpu: bool = False,
     runner_cls: type[Runner] = Runner,
+    log: Callable[[str], None] = lambda s: None,
 ) -> tuple[CardSpec, Optional[str], float, float, float, float, float, bool]:
     eff_card_name = "CPU" if local_cpu else (card or spec.card)
     if local_cpu:
@@ -786,10 +795,8 @@ def _apply_overrides(
         eff_max_rate = card_spec.default_rate
     require_number("MAX_RATE_INVALID", "max_rate", eff_max_rate)
     if float(eff_max_rate) < card_spec.min_rate:
-        raise Refused(
-            "MAX_RATE_BELOW_FLOOR",
-            "max_rate %g/h is below %s catalog floor %g/h" % (float(eff_max_rate), card_spec.name, card_spec.min_rate),
-        )
+        log("rate note (not a refusal): max_rate %g/h is below %s catalog floor %g/h"
+            % (float(eff_max_rate), card_spec.name, card_spec.min_rate))
 
     eff_cap = cap if cap is not None else spec.cap
     require_number("CAP_INVALID", "cap", eff_cap)
@@ -831,6 +838,8 @@ def _base_outcome(
     max_rate: float,
     staged: Sequence[StagedInputRecord],
     sealed: Optional[dict[str, Any]],
+    purpose: str = "",
+    line: str = "",
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -841,12 +850,19 @@ def _base_outcome(
             "study": spec.study,
             "job": spec.job,
             "description": spec.description,
+            "purpose": purpose,
+            "line": line,
+            "data_class": spec.data_class,
         },
+        "purpose": purpose,
+        "line": line,
+        "data_class": spec.data_class,
         "card": card_spec.name,
         "card_class": card_spec.card_class,
         "shape": shape,
         "mode": mode,
         "status": "unknown",
+        "outcome_bucket": None,
         "exit_code": 2,
         "run_rc": None,
         "opened": False,
@@ -873,6 +889,9 @@ def _base_outcome(
         "missing_outputs": [],
         "output_errors": {},
         "quarantined": [],
+        "publish": None,
+        "repo_url": None,
+        "flipped_public_at": None,
     }
 
 
@@ -1248,23 +1267,28 @@ def reconcile_stopped_outcome(
             outcome["session_gone_confirmed"] = not any(r.get("session") == session for r in rows)
     except Exception:
         pass
+    outcome["outcome_bucket"] = classify_window_outcome(outcome)
     write_json_atomic(outcome_path, outcome)
 
-    study = str((outcome.get("project") or {}).get("study") or "")
+    proj = outcome.get("project") or {}
+    study = str(proj.get("study") or "")
+    line_name = str(outcome.get("line") or proj.get("line") or (meta or {}).get("line") or study or "")
     mode_val = str(outcome.get("mode") or (meta or {}).get("mode") or "live")
-    if study and outcome.get("card_class") == "gpu" and mode_val == "live":
-        _, l_file = _state_paths(
-            (meta or {}).get("state_dir"),
-            (meta or {}).get("study_ledger"),
-            live=True,
-        )
-        if l_file is not None:
-            lock_p = _default_open_lock_path((meta or {}).get("open_lock"))
-            with _open_lock(lock_p):
+    s_dir, l_file = _state_paths(
+        (meta or {}).get("state_dir"),
+        (meta or {}).get("study_ledger"),
+        live=(mode_val == "live"),
+    )
+    if s_dir is not None and (mode_val == "live" or (meta or {}).get("state_dir") is not None):
+        lock_p = _default_open_lock_path((meta or {}).get("open_lock"))
+        with _open_lock(lock_p):
+            if study and outcome.get("card_class") == "gpu" and mode_val == "live" and l_file is not None:
                 ledger = StudyLedger(l_file)
                 if not outcome.get("opened"):
                     ledger.release_reservation(study, window_id=str(outcome.get("window_id") or ""))
                 ledger.record_window(study, outcome)
+            if line_name:
+                LineLedger(s_dir / "line_ledger.json").record_outcome(line_name, outcome, out_dir=out_root)
     return outcome
 
 
@@ -1289,6 +1313,9 @@ def launch_window(
     state_dir: Optional[Path | str] = None,
     study_ledger: Optional[Path | str] = None,
     open_lock: Optional[Path | str] = None,
+    purpose: Optional[str] = None,
+    line: Optional[str] = None,
+    publish_transport: Optional[TransportFn] = None,
     post_open_polls: int = 6,
     rate_poll_interval_s: float = 5.0,
     shape_check_attempts: int = 3,
@@ -1300,6 +1327,7 @@ def launch_window(
     trace: Callable[[str], None] = lambda s: None,
 ) -> dict[str, Any]:
     """Validate, stage, plan (`--dry`), or execute (`--local-cpu` / live) one Colab window end-to-end."""
+    _refuse_native_windows()
     out_path = _check_empty_out_dir(Path(out_dir))
     spec = WindowSpec.from_file(spec_path)
     (
@@ -1307,8 +1335,10 @@ def launch_window(
     ) = _apply_overrides(
         spec, card=card, shape=shape, cap=cap, max_rate=max_rate, wall_s=wall_s,
         cleanup_bound_s=cleanup_bound_s, margin=margin, resident=resident, local_cpu=local_cpu,
-        runner_cls=runner_cls,
+        runner_cls=runner_cls, log=log,
     )
+    eff_purpose = (purpose.strip() if purpose and purpose.strip() else spec.purpose) or "%s/%s" % (spec.study, spec.job)
+    eff_line = (line.strip() if line and line.strip() else spec.line) or spec.study
     merged_env = resolve_kit_env(list(spec.env) + list(extra_env))
     _refuse_reserved_env(merged_env)
 
@@ -1332,7 +1362,8 @@ def launch_window(
             "cleanup_bound_s %g is below required cleanup bound %g s (runner own %g s + declared outputs %g s)"
             % (eff_cleanup, min_bound, own_bound_s, outputs_bound_s),
         )
-    guard = SpendGuard(max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup)
+    guard_log = lambda msg: log(scrub(msg))
+    guard = SpendGuard(max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup, log=guard_log)
     eff_session = session or default_session_name(spec, card_spec.name)
     window_id = "%s-%s" % (_slug(spec.job), uuid.uuid4().hex[:8])
 
@@ -1375,7 +1406,13 @@ def launch_window(
             "mode": "dry_run",
             "window_id": window_id,
             "session": eff_session,
-            "project": {"repo": spec.repo, "study": spec.study, "job": spec.job, "description": spec.description},
+            "project": {
+                "repo": spec.repo, "study": spec.study, "job": spec.job, "description": spec.description,
+                "purpose": eff_purpose, "line": eff_line, "data_class": spec.data_class,
+            },
+            "purpose": eff_purpose,
+            "line": eff_line,
+            "data_class": spec.data_class,
             "card": card_spec.name,
             "card_class": card_spec.card_class,
             "shape": clean_shape,
@@ -1409,7 +1446,7 @@ def launch_window(
         window_id=window_id, session=eff_session, spec=spec, card_spec=card_spec,
         shape=clean_shape, mode=mode_name, cap_ccu=eff_cap, margin_ccu=eff_margin,
         cleanup_bound_s=eff_cleanup, max_rate=eff_max_rate, staged=staged_inputs,
-        sealed=sealed_record,
+        sealed=sealed_record, purpose=eff_purpose, line=eff_line,
     )
     meta = {
         "schema_version": 1,
@@ -1417,6 +1454,9 @@ def launch_window(
         "launcher_pid": os.getpid(),
         "session": eff_session,
         "project": outcome["project"],
+        "purpose": eff_purpose,
+        "line": eff_line,
+        "data_class": spec.data_class,
         "card": card_spec.name,
         "card_class": card_spec.card_class,
         "shape": clean_shape,
@@ -1456,13 +1496,22 @@ def launch_window(
         cap_left = guard.seconds_left(elapsed)
         return (cap_left, "cap") if cap_left < wall_left else (wall_left, "wall")
 
+    line_ledger = LineLedger(s_dir / "line_ledger.json") if (s_dir is not None and (live_mode or state_dir is not None)) else None
+
     def _record_window_outcome(stopped_ok: bool) -> None:
-        if ledger is None or card_spec.card_class != "gpu" or not live_mode:
+        outcome["outcome_bucket"] = classify_window_outcome(outcome)
+        if not live_mode and state_dir is None:
             return
         with _with_state_lock():
-            if not outcome["opened"] and stopped_ok:
-                ledger.release_reservation(spec.study, window_id=window_id)
-            ledger.record_window(spec.study, outcome)
+            if ledger is not None and card_spec.card_class == "gpu" and live_mode:
+                if not outcome["opened"] and stopped_ok:
+                    ledger.release_reservation(spec.study, window_id=window_id)
+                ledger.record_window(spec.study, outcome)
+            if line_ledger is not None:
+                summary = line_ledger.record_outcome(eff_line, outcome, out_dir=out_path)
+                if summary.get("over_budget"):
+                    log("budget note: line %r spent %s CCU > standing budget %s CCU"
+                        % (eff_line, summary["spent_ccu"], summary["budget_ccu"]))
 
     def _trip_open_bound(sig_state: dict[str, Any]) -> Optional[dict[str, Any]]:
         if t_open_monotonic is None:
@@ -1537,7 +1586,7 @@ def launch_window(
                     outcome["account_balance"]["start"] = bal_start
                     guard = SpendGuard(
                         max_rate=eff_max_rate, cap=eff_cap, margin=eff_margin, cleanup_bound_s=eff_cleanup,
-                        pre_open_rate=pre_rate, pre_open_assignments=pre_assign, balance=bal_start,
+                        pre_open_rate=pre_rate, pre_open_assignments=pre_assign, balance=bal_start, log=guard_log,
                     )
                     warn = neighbour_warning(pre_assign or 0)
                     if warn:
@@ -1691,21 +1740,8 @@ def launch_window(
                                 if pause_s > 0:
                                     sleep(pause_s)
                         if guard.decision() == "unread":
-                            sig_state["cleaning"] = True
-                            stopped_ok, stopped_at = _finalize_close(
-                                client, eff_session, out_path, outcome, runner, already_stopped=None, clock=clock
-                            )
-                            _book_spend(outcome, card_spec=card_spec, guard=guard,
-                                        elapsed_s=stopped_at - t_open_monotonic, bal_end=_read_end_balance(client))
-                            outcome["status"] = "open_failed"
-                            outcome["exit_code"] = 2
-                            outcome["refusal"] = error_record(
-                                "POST_OPEN_RATE_UNREAD",
-                                "post-open `colab usage` did not settle on a positive stable GPU rate",
-                            )
-                            write_json_atomic(out_path / "outcome.json", outcome)
-                            _record_window_outcome(stopped_ok)
-                            return outcome
+                            log("post-open usage rate not settled; continuing priced locally at max_rate %g/h"
+                                % eff_max_rate)
                 finally:
                     lock_held = False
 
@@ -1765,6 +1801,7 @@ def launch_window(
         collected: list[str] = []
         salvaged: list[str] = []
         output_errors: dict[str, str] = {}
+        collect_attempted = False
 
         def _next_cleanup_budget(max_call_s: float) -> Optional[float]:
             now = clock()
@@ -1803,6 +1840,8 @@ def launch_window(
             return True
 
         def _do_collect() -> bool:
+            nonlocal collect_attempted
+            collect_attempted = True
             ok = _download_vm_card(collected)
             if ok and spec.collect_outputs:
                 got, dl_ok = _download_declared_outputs(
@@ -1880,7 +1919,8 @@ def launch_window(
                 outcome["salvaged_outputs"] = list(salvaged)
                 outcome["missing_outputs"] = (
                     [rel for rel in spec.collect_outputs if rel not in collected]
-                    if (run_result.reason == "done" or run_result.prior_reason == "done") else []
+                    if (run_result.reason == "done" or (collect_attempted and run_result.prior_reason == "done"))
+                    else []
                 )
                 outcome["output_errors"] = dict(output_errors)
                 outcome["quarantined"] = list(run_result.quarantined)
@@ -1925,6 +1965,28 @@ def launch_window(
             else:
                 outcome["exit_code"] = 2
 
+            if spec.sealed is None and spec.data_class in ("public", "synthetic"):
+                if outcome["status"] == "done" and (live_mode or publish_transport is not None):
+                    pub_rec = publish_window_outputs(
+                        spec=spec, out_dir=out_path, outcome=outcome, transport=publish_transport, log=log,
+                    )
+                    outcome["publish"] = pub_rec
+                    if pub_rec.get("status") == "published":
+                        outcome["repo_url"] = pub_rec.get("repo_url")
+                        outcome["flipped_public_at"] = pub_rec.get("flipped_public_at")
+                    else:
+                        outcome["status"] = "partial"
+                        outcome["exit_code"] = 2
+                        log("publish step failed (%s): %s"
+                            % (pub_rec.get("status"), pub_rec.get("error") or pub_rec.get("findings")))
+                elif outcome["status"] == "done" and local_cpu:
+                    outcome["publish"] = {"status": "skipped_local_cpu", "data_class": spec.data_class}
+                else:
+                    outcome["publish"] = {"status": "skipped_not_done", "data_class": spec.data_class}
+            else:
+                outcome["publish"] = None
+
+            outcome["outcome_bucket"] = classify_window_outcome(outcome)
             write_json_atomic(out_path / "outcome.json", outcome)
             _record_window_outcome(stopped_ok)
 

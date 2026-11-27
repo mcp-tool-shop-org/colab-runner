@@ -727,7 +727,7 @@ class BinaryDownloadScrubTest(unittest.TestCase):
     def test_unreadable_file_and_quarantine_move_failure_remove_source(self):
         from unittest import mock
 
-        from colab_runner.colab_cli import scrub_local
+        from colab_runner.colab_cli import BinaryDownloadRefused, scrub_local
 
         p = self.root / "unreadable.bin"
         p.write_bytes(b"\x00secret")
@@ -737,9 +737,13 @@ class BinaryDownloadScrubTest(unittest.TestCase):
 
         p2 = self.root / "cannot_move.png"
         p2.write_bytes(self.PNG_HEAD + self.t["hf"].encode("ascii"))
-        with mock.patch("colab_runner.colab_cli.shutil.move", side_effect=PermissionError),                 mock.patch.object(tempfile, "tempdir", str(self.root)):  # the bare quarantine, made here
-            with self.assertRaises(PermissionError):
+        with mock.patch("colab_runner.colab_cli.shutil.move", side_effect=PermissionError), \
+                mock.patch.object(tempfile, "tempdir", str(self.root)):  # the bare quarantine, made here
+            with self.assertRaises(BinaryDownloadRefused) as ctx:
                 scrub_local(p2)
+        self.assertEqual(len(ctx.exception.failures), 1)
+        self.assertIsInstance(ctx.exception.failures[0], PermissionError)
+        self.assertEqual(len(ctx.exception.removed), 1)
         self.assertFalse(p2.exists())
 
     def test_symlinks_are_unlinked_without_following(self):
@@ -792,7 +796,7 @@ class BinaryDownloadScrubTest(unittest.TestCase):
 
         colab = RenderColab(polls=polls)
         logs: list[str] = []
-        runner = Runner(colab, "sess", out_dir, log=logs.append)
+        runner = Runner(colab, "sess", out_dir, poll_s=0.05, log=logs.append)
         salvage_saw: list[str] = []
 
         def salvage(reason: str) -> bool:

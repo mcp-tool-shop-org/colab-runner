@@ -67,7 +67,9 @@ class SharedFixturesTest(unittest.TestCase):
     CAP, MARGIN, CLEANUP = 40.0, 0.5, 900.0
 
     def guard_for(self, settings, readings):
-        g = SpendGuard(cap=self.CAP, margin=self.MARGIN, cleanup_bound_s=self.CLEANUP, **settings)
+        logs = []
+        g = SpendGuard(cap=self.CAP, margin=self.MARGIN, cleanup_bound_s=self.CLEANUP, log=logs.append, **settings)
+        g._test_logs = logs
         for epoch, rc, raw in readings:
             g.fold_usage(raw, rc=rc, epoch=epoch, at="t%d" % epoch)
         return g
@@ -85,11 +87,12 @@ class SharedFixturesTest(unittest.TestCase):
                 self.assertEqual(g.priced_rate(), priced)
                 self.assertGreaterEqual(priced, max_rate)  # never below --max-rate
                 self.assertEqual(g.trip(), lg.compute_cap_trip(self.CAP, self.MARGIN, self.CLEANUP, priced))
+                bal = balance if (balance is not None and balance >= 0.0) else None
                 for elapsed in (0.0, 1800.0, 7200.0):
                     want = lg.evaluate_cap_guard(
-                        mode="live", cap=self.CAP, margin=self.MARGIN, cleanup_bound_s=self.CLEANUP,
-                        start_balance=balance, current_balance=balance, rate_ccu_per_hour=priced, elapsed_s=elapsed,
-                        usage_parse_error=error)
+                        mode="offline", cap=self.CAP, margin=self.MARGIN, cleanup_bound_s=self.CLEANUP,
+                        start_balance=bal, current_balance=bal, rate_ccu_per_hour=priced, elapsed_s=elapsed,
+                        usage_parse_error=None)
                     self.assertEqual(g.cap_record(elapsed), want)
 
     def test_a_window_the_library_cannot_price_is_priced_at_max_rate_x_elapsed(self):
@@ -100,31 +103,36 @@ class SharedFixturesTest(unittest.TestCase):
             self.assertEqual(g.priced_rate(), settings["max_rate"])
             self.assertAlmostEqual(g.cap_record(3600)["spend_ccu"], settings["max_rate"], places=6)
 
-    def test_a_stable_rate_above_max_rate_is_refused_as_the_library_refuses_it(self):
+    def test_a_midrun_rate_rise_above_max_rate_is_logged_not_killed(self):
         _, settings, readings, _ = next(f for f in FIXTURES if f[0] == "gpu stable above max")
-        trip = self.guard_for(settings, readings).check(60.0)
-        self.assertTrue(trip.startswith("RATE_ABOVE_MAX:"), trip)
+        g = self.guard_for(settings, readings)
+        self.assertIsNone(g.check(60.0))
+        self.assertTrue(any("mid-run rate note" in ln for ln in g._test_logs))
+        self.assertEqual(g.priced_rate(), 11.2)
 
-    def test_three_bad_assignment_reads_are_refused_as_the_library_refuses_them(self):
+    def test_three_bad_assignment_reads_are_logged_not_killed(self):
         _, settings, readings, _ = next(f for f in FIXTURES if f[0] == "assignments unreadable")
-        self.assertTrue(self.guard_for(settings, readings).check(60.0).startswith("ASSIGNMENTS_UNREADABLE:"))
+        g = self.guard_for(settings, readings)
+        self.assertIsNone(g.check(60.0))
+        self.assertTrue(any("active assignments unreadable" in ln for ln in g._test_logs))
 
-    def test_a_failed_usage_read_trips_the_cap_guard_as_the_library_does(self):
+    def test_a_failed_usage_read_is_logged_and_only_cap_trips_the_guard(self):
         g = self.guard_for({"max_rate": 1.0}, [(0, 0, usage_text(rate=0.26))])
         self.assertIsNone(g.check(60.0))
         g.fold_usage("RuntimeError: Connection was lost", rc=1, epoch=60, at="t60")
-        self.assertTrue(g.check(60.0).startswith("COLAB_USAGE_PARSE_FAILED:"))
-        g.fold_usage(usage_text(rate=0.26), rc=0, epoch=120, at="t120")  # a good read clears it
+        self.assertIsNone(g.check(60.0))
+        self.assertTrue(any("usage read ignored" in ln for ln in g._test_logs))
+        g.fold_usage(usage_text(rate=0.26), rc=0, epoch=120, at="t120")  # a good read clears usage_error
         self.assertIsNone(g.check(120.0))
 
-    def test_no_reading_yet_is_not_a_price(self):
+    def test_no_reading_yet_is_priced_locally_at_max_rate(self):
         g = SpendGuard(max_rate=1.0, cap=5.0, cleanup_bound_s=600)
-        self.assertTrue(g.check(10.0).startswith("COLAB_USAGE_PARSE_FAILED:"))  # live mode needs a reading
+        self.assertIsNone(g.check(10.0))
+        self.assertTrue(g.check(18000.0).startswith("CAP_GUARD_TRIPPED:"))
 
 
 class UsageRetryTest(unittest.TestCase):
-    """Fix 2, item 6: a failed `colab usage` read gets bounded retries inside the time left; after them the
-    library's fail-closed rule still trips."""
+    """Three-stop rule: failed `colab usage` reads are retried, logged, and never kill a progressing job."""
 
     def run_with_usage(self, fail_first, wall_s=3600, g=None, **runner_kw):
         from colab_runner.colab_cli import CliResult
@@ -133,35 +141,36 @@ class UsageRetryTest(unittest.TestCase):
         def usage(n):
             return CliResult(1, "", "RuntimeError: Connection was lost") if n <= fail_first else usage_text()
 
+        logs = []
         with tempfile.TemporaryDirectory() as tmp:
             colab = FakeColab(polls=lambda n, env: rec(rc=0 if n >= 3 else None, progress=n), usage=usage)
-            runner, clock = make(colab, tmp, **runner_kw)
+            runner, clock = make(colab, tmp, log=logs.append, **runner_kw)
             res = runner.run(script="/c/x.sh", wall_s=wall_s, guard=g or guard(max_rate=1.0, cap=20.0))
-            return res, colab, clock
+            return res, colab, clock, logs
 
     def test_one_or_two_failed_reads_are_retried_and_the_run_goes_on(self):
         for fails in (1, 2):
             with self.subTest(fails=fails):
-                res, colab, _ = self.run_with_usage(fails)
+                res, colab, _, _ = self.run_with_usage(fails)
                 self.assertEqual(res.reason, "done")
                 self.assertGreaterEqual(colab.usage_count, fails + 1)
 
-    def test_three_failed_reads_still_trip_fail_closed(self):
-        res, colab, _ = self.run_with_usage(3)
-        self.assertEqual(res.reason, "cap")
-        self.assertTrue(res.detail.startswith("COLAB_USAGE_PARSE_FAILED:"), res.detail)
-        self.assertEqual(colab.usage_count, 3)  # the first try and two retries, no more
-        self.assertEqual(colab.poll_count, 0)
+    def test_three_failed_reads_log_and_let_progressing_job_finish(self):
+        res, colab, _, logs = self.run_with_usage(3)
+        self.assertEqual(res.reason, "done")
+        self.assertTrue(any("usage read ignored" in ln for ln in logs))
+        self.assertGreaterEqual(colab.usage_count, 3)
 
-    def test_the_retries_are_clamped_to_the_time_left(self):
-        # a 40 s window: 0-30 (lost), a 2 s pause, then 32-40 clamped to the 8 s left; a third try has no time
-        res, colab, _ = self.run_with_usage(99, wall_s=40, start_timeout_s=5)
+    def test_the_retries_are_clamped_to_the_time_left_and_stop_at_wall(self):
+        # a 40 s window: 0-30 (lost), a 2 s pause, then 32-40 clamped to the 8 s left; then ends at wall
+        res, colab, _, logs = self.run_with_usage(99, wall_s=40, start_timeout_s=5)
         t0 = 1000.0  # tests.fakes.FakeClock starts every run here
         usage = [c for c in colab.calls if c["kind"] == "usage"]
         self.assertEqual([c["timeout"] for c in usage], [30.0, 8.0])
         for c in usage:
             self.assertLessEqual(c["at"] + c["timeout"], t0 + 40 + 1e-6)
-        self.assertTrue(res.detail.startswith("COLAB_USAGE_PARSE_FAILED:"), res.detail)
+        self.assertEqual(res.reason, "wall")
+        self.assertTrue(any("usage read ignored" in ln for ln in logs))
 
 
 GRANDCHILD_CLI = textwrap.dedent("""

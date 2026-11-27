@@ -170,8 +170,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 9,
-        "lines": 214,
+        "commits": 10,
+        "lines": 224,
         "path": "atlas/README.md"
       },
       {
@@ -180,18 +180,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 9,
-        "lines": 561,
+        "commits": 10,
+        "lines": 599,
         "path": "atlas/page.json"
       },
       {
-        "commits": 9,
-        "lines": 1487,
+        "commits": 10,
+        "lines": 1707,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 9,
-        "lines": 5430,
+        "commits": 10,
+        "lines": 6992,
         "path": "atlas/structure.json"
       },
       {
@@ -545,9 +545,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-11-27T00:19:54.875Z",
+  "generatedAt": "2026-11-27T00:42:14.445Z",
   "generatedFrom": {
-    "commit": "73b6b84e450f8c1b4a38b0ceb19c5af71979bc34"
+    "commit": "878330acb01eb90b7771b01aff0a2e3b8de685bc"
   },
   "pairs": [
     {
@@ -560,30 +560,30 @@
     {
       "a": "CHANGELOG.md",
       "b": "atlas/README.md",
-      "either": 9,
+      "either": 10,
       "shared": 6,
-      "strength": 0.666667
+      "strength": 0.6
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/page.json",
-      "either": 9,
+      "either": 10,
       "shared": 6,
-      "strength": 0.666667
+      "strength": 0.6
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/statistics.json",
-      "either": 9,
+      "either": 10,
       "shared": 6,
-      "strength": 0.666667
+      "strength": 0.6
     },
     {
       "a": "CHANGELOG.md",
       "b": "atlas/structure.json",
-      "either": 9,
+      "either": 10,
       "shared": 6,
-      "strength": 0.666667
+      "strength": 0.6
     },
     {
       "a": "CHANGELOG.md",
@@ -610,99 +610,71 @@
       "a": "README.md",
       "b": "atlas/README.md",
       "either": 10,
-      "shared": 5,
-      "strength": 0.5
+      "shared": 6,
+      "strength": 0.6
     },
     {
       "a": "README.md",
       "b": "atlas/page.json",
       "either": 10,
-      "shared": 5,
-      "strength": 0.5
+      "shared": 6,
+      "strength": 0.6
     },
     {
       "a": "README.md",
       "b": "atlas/statistics.json",
       "either": 10,
-      "shared": 5,
-      "strength": 0.5
+      "shared": 6,
+      "strength": 0.6
     },
     {
       "a": "README.md",
       "b": "atlas/structure.json",
       "either": 10,
-      "shared": 5,
-      "strength": 0.5
+      "shared": 6,
+      "strength": 0.6
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/README.md",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/page.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
+      "either": 7,
+      "shared": 7,
       "strength": 1
-    },
-    {
-      "a": "atlas/statistics.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
-    },
-    {
-      "a": "atlas/structure.json",
-      "b": "colab_runner/__init__.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
     },
     {
       "a": "colab_runner/__init__.py",
@@ -713,7 +685,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 23.25,
+    "appliedChangesetLimit": 23.75,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -722,8 +694,8 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-11-26T19:14:52-05:00",
-    "inScopeFiles": 93,
+    "headDate": "2026-11-26T19:25:07-05:00",
+    "inScopeFiles": 95,
     "pinnedStart": null,
     "priorFloor": "fallen",
     "qualifyingCommits": 12,
@@ -731,7 +703,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-31T00:14:52.000Z",
+    "since": "2026-05-31T00:25:07.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

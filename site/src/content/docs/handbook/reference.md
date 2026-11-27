@@ -10,6 +10,9 @@ sidebar:
 ```text
 usage: python -m colab_runner --version
        python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu] [options] [--quiet | --verbose | --debug]
+       python -m colab_runner queue (validate | run) --queue SPEC [--dry | --local-cpu] [options]
+       python -m colab_runner board [--out-root D | --out-dir D ...] [--json]
+       python -m colab_runner budget (set --line L (--ccu C | --clear) | show [--line L]) [--json]
        python -m colab_runner status --out-dir D [--json] [--quiet | --verbose | --debug]
        python -m colab_runner run --session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R --cap C --cleanup-bound-s N [options] [--quiet | --verbose | --debug]
        python -m colab_runner stop --out-dir D [--quiet | --verbose | --debug]   (stops the session a killed run left in D/session_open.json)
@@ -143,7 +146,7 @@ traceback. A token is scrubbed at every level, the traceback included.
 | `failed` | The job's status file shows a non-zero rc other than 137, and its log has no out-of-memory kill line. |
 | `done` | The job's status file shows rc 0, and its log has no out-of-memory kill line. |
 | `wall` | The run reached `--wall-s`. |
-| `cap` | The spend guard tripped: the priced spend reached the cap less the margin and the cleanup reserve, or a stable rate went above `--max-rate` (`RATE_ABOVE_MAX`). |
+| `cap` | The spend guard tripped: local priced spend (`own_rate x elapsed`) reached the cap less the margin and the cleanup reserve, or open-time rate went above `--max-rate` (`RATE_ABOVE_MAX`). |
 | `setup_stall` | `setup.log` stopped growing for `--setup-stall-s` during setup. |
 | `progress_stall` | Nothing the runner can see moved for `--progress-stall-s` after setup. |
 | `dead` | The job's process is not alive and it left no status file. |
@@ -195,9 +198,8 @@ again.
 | `QUARANTINE_ESCAPE` | no | report it: the file was removed rather than moved outside its quarantine; pass a plain --out-dir (or a download path) without `..` |
 | `CAP_GUARD_TRIPPED` | no | the window's priced spend reached its ceiling (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
 | `CAP_CEILING_REACHED` | no | the clock reached the cap's ceiling at the priced rate (the cap less --margin and the cleanup reserve): raise --cap, or give the job less to do in one window |
-| `RATE_ABOVE_MAX` | no | the window's stable rate went above --max-rate: pass the card's real rate as --max-rate (and a --cap to match), and --pre-open-rate with --pre-open-assignments so a neighbour's rate is not counted as this one's |
-| `ASSIGNMENTS_UNREADABLE` | yes | `colab usage` gave no readable Active assignments count (or a stable rate below the floor) 3 times in a row: check `colab usage` by hand, then run the window again |
-| `COLAB_USAGE_PARSE_FAILED` | yes | `colab usage` could not be read or parsed, and the guard never prices a window it cannot read: check `colab usage` by hand (sign-in, network), then run the window again |
+| `RATE_ABOVE_MAX` | no | the session's open-time rate exceeded --max-rate: pass the card's real rate as --max-rate (and a matching --cap) |
+| `PLATFORM_UNSUPPORTED` | no | run colab-runner on Linux or inside WSL |
 | `UNEXPECTED_ERROR` | no | read runner_result.json; if session_open.json is still in the out dir, run `python -m colab_runner stop --out-dir D`; rerun with --debug for the traceback |
 | `SPEC_NOT_FOUND` | no | pass --spec PATH pointing to an existing .toml or .json window spec |
 | `SPEC_INVALID` | no | fix the window spec file (TOML or JSON) at the field named in the message |
@@ -210,7 +212,6 @@ again.
 | `SEALED_DESTINATION_REFUSED` | no | launch only to a card and host allowed by both [inputs.sealed] and the pre-registration text |
 | `ALLOW_SEALED_REQUIRED` | no | pass --allow-sealed on the command line to confirm a live launch carrying pre-registered sealed inputs |
 | `OUTPUT_PATH_INVALID` | no | list outputs.collect and outputs.salvage as relative paths without '..' |
-| `MAX_RATE_BELOW_FLOOR` | no | raise --max-rate (or compute.max_rate) to at least the card's catalog floor rate |
 | `SESSIONS_READ_FAILED` | yes | check colab sessions (sign-in, network); active sessions must be readable before opening or verifying a window |
 | `CARD_UNKNOWN` | no | choose a known Colab card from the catalog (CPU, T4, L4, G4, A100) |
 | `CARD_UNAVAILABLE` | no | choose an available card (CPU, T4, L4, G4, A100); this card is unavailable on the plan |
@@ -227,7 +228,6 @@ again.
 | `PRE_OPEN_READ_FAILED` | yes | check colab usage (sign-in, network) before opening a GPU window, then retry |
 | `SESSION_OPEN_FAILED` | yes | Colab refused or failed to assign the requested session or card; check availability or circuit-breaker state before retrying |
 | `SHAPE_MISMATCH` | yes | Colab assigned a different machine shape than requested; the session was stopped |
-| `POST_OPEN_RATE_UNREAD` | yes | Colab did not report a stable positive GPU rate after open; check colab usage and retry |
 | `UPLOAD_FAILED` | yes | check session connectivity and file size; colab upload into /content failed and the session was stopped |
 | `CARD_MISMATCH` | yes | Colab assigned a GPU that failed the requested card's name, VRAM, or compute-capability floor; the session was stopped |
 | `STATUS_DIR_MISSING` | no | pass --out-dir pointing to an existing run or launch output directory |

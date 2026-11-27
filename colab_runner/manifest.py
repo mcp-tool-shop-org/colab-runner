@@ -51,6 +51,20 @@ class StagedInputRecord:
     sha256: str
 
 
+DATA_CLASSES = ("public", "synthetic", "private", "sealed")
+PUBLISH_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
+DEFAULT_PUBLISH_ORG = "mcp-tool-shop"
+
+
+@dataclass(frozen=True)
+class PublishSpec:
+    """Hugging Face destination declaration for public or synthetic window outputs."""
+
+    org: str = DEFAULT_PUBLISH_ORG
+    repo_name: Optional[str] = None
+    repo_type: str = "dataset"
+
+
 @dataclass(frozen=True)
 class SealedPolicySpec:
     """Manifest declaration binding sealed or outside-repo inputs to a read-only pre-registration and destination."""
@@ -100,6 +114,10 @@ class WindowSpec:
     salvage_outputs: tuple[str, ...] = ()
     spec_base_dir: Path = Path(".")
     spec_path: Optional[Path] = None
+    purpose: str = ""
+    line: str = ""
+    data_class: str = "private"
+    publish: Optional[PublishSpec] = None
 
     def vram_floor_for(self, card_spec: CardSpec) -> int:
         """Return the VRAM floor in MiB for `card_spec`, preferring per-card overrides then matching catalog floor."""
@@ -156,6 +174,8 @@ class WindowSpec:
         if not JOB_NAME_RE.fullmatch(job):
             raise Refused("SPEC_INVALID", "project.job must match [A-Za-z0-9_-]+ (got %r)" % (job,))
         description = str(proj.get("description", "")).strip()
+        purpose = str(proj.get("purpose", "")).strip() or description
+        line = str(proj.get("line", "")).strip() or study
 
         card = _require_nonempty_str(comp, "card", "compute.card")
         raw_shape = comp.get("shape")
@@ -208,6 +228,19 @@ class WindowSpec:
         inputs_root = (base_dir / raw_root) if not Path(raw_root).is_absolute() else Path(raw_root)
         deny_globs = tuple(_string_list(inp.get("deny_globs", []), "inputs.deny_globs"))
         sealed = _parse_sealed_policy(inp.get("sealed"), base_dir=base_dir)
+        raw_dc = proj.get("data_class")
+        if raw_dc is None:
+            data_class = "sealed" if sealed is not None else "private"
+        else:
+            if not isinstance(raw_dc, str) or raw_dc.strip().lower() not in DATA_CLASSES:
+                raise Refused("SPEC_INVALID", "project.data_class must be one of %s" % ", ".join(DATA_CLASSES))
+            data_class = raw_dc.strip().lower()
+        if sealed is not None and data_class in ("public", "synthetic"):
+            raise Refused(
+                "SEALED_DATA_REFUSED",
+                "project.data_class cannot be %r when [inputs.sealed] is present" % data_class,
+            )
+        publish = _parse_publish_spec(data.get("publish"))
         input_files = _parse_input_files(inp.get("files", []))
 
         setup_cmds = tuple(_string_list(job_tbl.get("setup", []), "job.setup"))
@@ -258,7 +291,32 @@ class WindowSpec:
             salvage_outputs=salvage_outputs,
             spec_base_dir=base_dir.resolve(),
             spec_path=spec_path,
+            purpose=purpose,
+            line=line,
+            data_class=data_class,
+            publish=publish,
         )
+
+
+def _parse_publish_spec(raw: Any) -> Optional[PublishSpec]:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise Refused("SPEC_INVALID", "publish must be a table/object")
+    raw_org = raw.get("org", DEFAULT_PUBLISH_ORG)
+    if not isinstance(raw_org, str) or not PUBLISH_NAME_RE.fullmatch(raw_org.strip()):
+        raise Refused("SPEC_INVALID", "publish.org must match [A-Za-z0-9._-]+")
+    org = raw_org.strip()
+    raw_name = raw.get("repo_name")
+    repo_name: Optional[str] = None
+    if raw_name is not None:
+        if not isinstance(raw_name, str) or not PUBLISH_NAME_RE.fullmatch(raw_name.strip()):
+            raise Refused("SPEC_INVALID", "publish.repo_name must match [A-Za-z0-9._-]+")
+        repo_name = raw_name.strip()
+    raw_type = raw.get("repo_type", "dataset")
+    if not isinstance(raw_type, str) or raw_type.strip().lower() not in ("dataset", "model"):
+        raise Refused("SPEC_INVALID", "publish.repo_type must be 'dataset' or 'model'")
+    return PublishSpec(org=org, repo_name=repo_name, repo_type=raw_type.strip().lower())
 
 
 def _require_table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
@@ -777,8 +835,11 @@ def render_vm_script(
 
 
 __all__ = [
+    "DATA_CLASSES",
+    "DEFAULT_PUBLISH_ORG",
     "DEFAULT_SEALED_HOST",
     "InputFileSpec",
+    "PublishSpec",
     "SEALED_PATH_PATTERNS",
     "SealedPolicySpec",
     "StagedInputRecord",

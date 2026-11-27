@@ -122,12 +122,11 @@ class CodeTableTest(unittest.TestCase):
 
     def test_every_cap_trip_code_in_the_source_has_a_hint_and_a_retryable_value(self):
         trips = trip_codes()
-        # the collector sees spend.py's own prefixes and the library's cap-guard codes that check() passes on
-        self.assertEqual(trips, {"RATE_ABOVE_MAX", "ASSIGNMENTS_UNREADABLE", "CAP_GUARD_TRIPPED",
-                                 "COLAB_USAGE_PARSE_FAILED"})
+        self.assertEqual(trips, {"CAP_GUARD_TRIPPED"})
         codes, _ = source_codes()
         self.assertIn("CAP_CEILING_REACHED", codes)  # the runner's own cap end (the ceiling reached by the clock)
-        for code in sorted(trips | {"CAP_CEILING_REACHED"}):
+        self.assertIn("RATE_ABOVE_MAX", codes)       # open-time rate refusal in launcher.py
+        for code in sorted(trips | {"CAP_CEILING_REACHED", "RATE_ABOVE_MAX"}):
             with self.subTest(code=code):
                 self.assertIn(code, CODES)
                 self.assertTrue(CODES[code].hint.strip())

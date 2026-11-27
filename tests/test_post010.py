@@ -16,7 +16,7 @@ from colab_runner import colab_cli
 from colab_runner.colab_cli import BinaryDownloadRefused, CliResult, QuarantineEscape, scrub_local
 from colab_runner.errors import CODES
 from colab_runner.runner import Runner
-from tests.fakes import FakeClock, FakeColab, guard, make, rec, usage_text
+from tests.fakes import FakeClock, FakeColab, guard, make, rec
 from tests.test_tokens import fake_tokens
 
 WINDOWS = os.name == "nt"
@@ -412,19 +412,11 @@ def overrun_first_poll(seconds):
 
 
 def trip_scenarios():
-    """code -> (FakeColab kwargs, guard CLI args, SpendGuard stand-in or None). One real end per trip code."""
-    pre = ["--pre-open-rate", "0", "--pre-open-assignments", "0"]
-    no_count = "Current balance: 90.00 compute units\nUsage rate: 10.00 / hr\n"  # no Active assignments line
+    """code -> (FakeColab kwargs, guard CLI args, SpendGuard stand-in or None). Mid-run cap trip codes only."""
     return {
         # 10/h with 1000 s reserved: ceiling 5 - 2.78 = 2.22 units after 800 s; the first poll overruns it
         "CAP_GUARD_TRIPPED": ({"on_call": overrun_first_poll(1000)},
                               ["--max-rate", "10", "--cap", "5", "--cleanup-bound-s", "1000"], None),
-        "RATE_ABOVE_MAX": ({"usage": usage_text(rate=11.2, n=1)},
-                           ["--max-rate", "10.5", "--cap", "40", "--cleanup-bound-s", "1000"] + pre, None),
-        "ASSIGNMENTS_UNREADABLE": ({"usage": lambda n: usage_text(rate=10.0, n=1) if n <= 2 else no_count},
-                                   ["--max-rate", "10.5", "--cap", "40", "--cleanup-bound-s", "1000"] + pre, None),
-        "COLAB_USAGE_PARSE_FAILED": ({"usage": lambda n: CliResult(1, "", "RuntimeError: Connection was lost")},
-                                     ["--max-rate", "1", "--cap", "20", "--cleanup-bound-s", "1000"], None),
         "CAP_CEILING_REACHED": ({}, ["--max-rate", "1", "--cap", "20", "--cleanup-bound-s", "1000"],
                                 lambda **kw: QuietGuard()),
     }
@@ -440,8 +432,7 @@ class CapTripTest(unittest.TestCase):
 
     def test_each_trip_code_records_its_cap_trip_and_prints_its_hint(self):
         scenarios = trip_scenarios()
-        self.assertEqual(set(scenarios), {"CAP_GUARD_TRIPPED", "RATE_ABOVE_MAX", "ASSIGNMENTS_UNREADABLE",
-                                          "COLAB_USAGE_PARSE_FAILED", "CAP_CEILING_REACHED"})
+        self.assertEqual(set(scenarios), {"CAP_GUARD_TRIPPED", "CAP_CEILING_REACHED"})
         for code, (fake_kw, guard_args, factory) in scenarios.items():
             with self.subTest(code=code), tempfile.TemporaryDirectory() as tmp:
                 colab = FakeColab(polls=lambda n, env: rec(progress=n), **fake_kw)
@@ -510,7 +501,7 @@ class CapTripTest(unittest.TestCase):
             runner, _ = make(colab, tmp)
             res = runner.run(script="/c/x.sh", wall_s=10.0, guard=guard(max_rate=1.0, cap=50.0, cleanup_bound_s=600.0))
             self.assertEqual(res.reason, "wall")
-            self.assertTrue(res.detail.startswith("COLAB_USAGE_PARSE_FAILED: "), res.detail)
+            self.assertEqual(res.detail, "the wall was reached")
             self.assertIsNone(res.cap_trip)
 
         with self.subTest(end="error that replaced a cap"), tempfile.TemporaryDirectory() as tmp:

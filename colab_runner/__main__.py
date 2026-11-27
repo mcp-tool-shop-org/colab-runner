@@ -29,8 +29,15 @@ from colab_runner import __version__
 from colab_runner.cards import resolve_card
 from colab_runner.colab_cli import cli_from_env, scrub
 from colab_runner.errors import CODES, Refused, error_record, lookup
-from colab_runner.launcher import launch_window, reconcile_stopped_outcome, status_window
+from colab_runner.launcher import (
+    _refuse_native_windows,
+    _state_paths,
+    launch_window,
+    reconcile_stopped_outcome,
+    status_window,
+)
 from colab_runner.manifest import WindowSpec
+from colab_runner.queue import LineLedger, QueueSpec, build_board, format_board, run_queue
 from colab_runner.runner import RunInterrupted, Runner
 from colab_runner.spend import SpendGuard
 
@@ -41,6 +48,9 @@ USAGE = (
     "usage: python -m colab_runner --version\n"
     "       python -m colab_runner launch --spec SPEC --out-dir D [--dry | --local-cpu] [options] "
     "[--quiet | --verbose | --debug]\n"
+    "       python -m colab_runner queue (validate | run) --queue SPEC [--dry | --local-cpu] [options]\n"
+    "       python -m colab_runner board [--out-root D | --out-dir D ...] [--json]\n"
+    "       python -m colab_runner budget (set --line L (--ccu C | --clear) | show [--line L]) [--json]\n"
     "       python -m colab_runner status --out-dir D [--json] [--quiet | --verbose | --debug]\n"
     "       python -m colab_runner run --session S --out-dir D (--script P | --hold-s N) --wall-s N --max-rate R "
     "--cap C --cleanup-bound-s N [options] [--quiet | --verbose | --debug]\n"
@@ -207,6 +217,7 @@ def run_command(argv: list[str]) -> int:
         guard = SpendGuard(
             max_rate=args.max_rate, cap=args.cap, margin=args.margin, cleanup_bound_s=args.cleanup_bound_s,
             pre_open_rate=args.pre_open_rate, pre_open_assignments=args.pre_open_assignments,
+            log=_log_for(args.level),
         )
         runner = Runner(cli_from_env(), args.session, Path(args.out_dir), job=args.job, content=args.content,
                         poll_s=args.poll_s, log=_log_for(args.level), trace=_trace_for(args.level))
@@ -259,6 +270,8 @@ def _launch_parser() -> argparse.ArgumentParser:
     p.add_argument("--state-dir", help="directory storing per-card UTC circuit-breaker state and study ledger")
     p.add_argument("--study-ledger", help="path to study card-consistency ledger JSON")
     p.add_argument("--open-lock", help="path to cross-process open lock file")
+    p.add_argument("--purpose", help="stated purpose for this window (overrides project.purpose)")
+    p.add_argument("--line", help="line of work for standing spend tracking (overrides project.line)")
     _add_levels(p)
     return p
 
@@ -267,6 +280,7 @@ def launch_command(argv: list[str]) -> int:
     args = _launch_parser().parse_args(argv)
     out_dir = Path(args.out_dir)
     try:
+        _refuse_native_windows()
         if not args.dry and not args.local_cpu:
             spec = WindowSpec.from_file(args.spec)
             card_spec = resolve_card(args.card or spec.card)
@@ -298,6 +312,8 @@ def launch_command(argv: list[str]) -> int:
             state_dir=args.state_dir,
             study_ledger=args.study_ledger,
             open_lock=args.open_lock,
+            purpose=args.purpose,
+            line=args.line,
             colab=client,
             log=_log_for(args.level),
             trace=_trace_for(args.level),
@@ -334,6 +350,8 @@ def launch_command(argv: list[str]) -> int:
             _out(res["budget_summary"])
         return EXIT_OK
 
+    if res.get("repo_url") and args.level >= NORMAL:
+        _out("PUBLISHED repo_url=%s flipped_public_at=%s" % (res["repo_url"], res.get("flipped_public_at")))
     refusal = res.get("refusal")
     cap_trip = res.get("cap_trip")
     code = (" code=%s" % refusal["code"]) if refusal else ""
@@ -406,6 +424,113 @@ def stop_command(argv: list[str]) -> int:
     return EXIT_OK
 
 
+def queue_command(argv: list[str]) -> int:
+    """Validate or run an unattended queue manifest (`queue validate` / `queue run`)."""
+    p = ScrubbingParser(prog="colab_runner queue", description="Validate or run an unattended job queue.")
+    p.add_argument("action", choices=("validate", "run"))
+    p.add_argument("--queue", required=True, help="queue manifest (.toml or .json)")
+    p.add_argument("--state-dir", help="state directory holding line_ledger.json and open.lock")
+    p.add_argument("--pool-wait-s", type=float, default=0.0, help="seconds to wait for a busy GPU pool slot")
+    p.add_argument("--pool-poll-s", type=float, default=15.0, help="seconds between pool checks when waiting")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry", action="store_true")
+    mode.add_argument("--local-cpu", action="store_true")
+    _add_levels(p)
+    args = p.parse_args(argv)
+    try:
+        q = QueueSpec.from_file(args.queue)
+        if args.action == "validate":
+            _out("QUEUE_VALID jobs=%d out_root=%s" % (len(q.jobs), q.out_root))
+            return EXIT_OK
+        res = run_queue(
+            args.queue,
+            local_cpu=args.local_cpu,
+            dry=args.dry,
+            state_dir=args.state_dir,
+            pool_wait_s=args.pool_wait_s,
+            pool_poll_s=args.pool_poll_s,
+            log=_log_for(args.level),
+            trace=_trace_for(args.level),
+        )
+    except Refused as exc:
+        return _refused(exc)
+    except Exception as exc:
+        return _error("QUEUE_ERROR", exc, args.level)
+    c = res["counts"]
+    _out(
+        "QUEUE_END jobs=%d spend_ccu=%.6f done=%d failed_ours=%d failed_google=%d refused_capacity=%d stopped=%s"
+        % (
+            len(res["jobs"]), float(res["spend_ccu_total"]), c["done"], c["failed-ours"],
+            c["failed-Google"], c["refused-capacity"], res["all_stopped_confirmed"],
+        )
+    )
+    return int(res["exit_code"])
+
+
+def board_command(argv: list[str]) -> int:
+    """Display an at-a-glance board of lines, windows, queued items, and totals."""
+    p = ScrubbingParser(prog="colab_runner board", description="Inspect lines, windows, queued jobs, and spend.")
+    p.add_argument("--state-dir", help="state directory holding line_ledger.json")
+    p.add_argument("--out-root", help="directory holding queue_state.json and window subdirs")
+    p.add_argument("--out-dir", action="append", default=[], help="explicit window out-dir to include")
+    p.add_argument("--queue-state", help="path to queue_state.json")
+    p.add_argument("--json", action="store_true")
+    _add_levels(p)
+    args = p.parse_args(argv)
+    try:
+        data = build_board(
+            state_dir=args.state_dir, out_root=args.out_root, out_dirs=args.out_dir, queue_state=args.queue_state,
+        )
+    except Refused as exc:
+        return _refused(exc)
+    _out(json.dumps(data, indent=2) if args.json else format_board(data))
+    return EXIT_OK
+
+
+def budget_command(argv: list[str]) -> int:
+    """Set or show standing CCU budgets per line of work (`budget set` / `budget show`)."""
+    p = ScrubbingParser(prog="colab_runner budget", description="Set or show per-line standing budgets.")
+    p.add_argument("action", choices=("set", "show"))
+    p.add_argument("--line", help="line of work name (required for set; optional filter for show)")
+    p.add_argument("--ccu", type=float, help="standing budget in CCU")
+    p.add_argument("--clear", action="store_true", help="remove the standing budget cap on --line")
+    p.add_argument("--note", default="", help="optional approval note")
+    p.add_argument("--state-dir", help="state directory holding line_ledger.json")
+    p.add_argument("--json", action="store_true")
+    _add_levels(p)
+    args = p.parse_args(argv)
+    try:
+        s_dir, _ = _state_paths(args.state_dir, None, live=True)
+        ledger = LineLedger((s_dir / "line_ledger.json") if s_dir else Path("line_ledger.json"))
+        if args.action == "set":
+            if not args.line:
+                raise Refused("SPEC_INVALID", "budget set requires --line")
+            if not args.clear and args.ccu is None:
+                raise Refused("CAP_REQUIRED", "budget set requires --ccu or --clear")
+            res = ledger.set_budget(args.line, None if args.clear else args.ccu, note=args.note)
+        else:
+            res = ledger.line_summary(args.line) if args.line else ledger.all_summaries()
+    except Refused as exc:
+        return _refused(exc)
+    if args.json:
+        _out(json.dumps(res, indent=2))
+    elif args.action == "set" or args.line:
+        c = res["counts"]
+        _out("BUDGET line=%s budget=%s spent=%.6f remaining=%s windows=%d done=%d" % (
+            res["line"], res["budget_ccu"], float(res["spent_ccu"]), res["remaining_ccu"],
+            res["window_count"], c["done"],
+        ))
+    else:
+        _out("LEDGER lines=%d windows=%d spent=%.6f" % (
+            len(res["lines"]), res["total_windows"], float(res["total_spent_ccu"]),
+        ))
+        for name, info in res["lines"].items():
+            _out("  %s budget=%s spent=%.6f remaining=%s windows=%d" % (
+                name, info["budget_ccu"], float(info["spent_ccu"]), info["remaining_ccu"], info["window_count"],
+            ))
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args in ([], ["--help"], ["-h"]):
@@ -416,6 +541,12 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     if args[0] == "launch":
         return launch_command(args[1:])
+    if args[0] == "queue":
+        return queue_command(args[1:])
+    if args[0] == "board":
+        return board_command(args[1:])
+    if args[0] == "budget":
+        return budget_command(args[1:])
     if args[0] == "status":
         return status_command(args[1:])
     if args[0] == "run":

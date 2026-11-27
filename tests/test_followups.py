@@ -134,8 +134,12 @@ class DirectoryScrubTest(unittest.TestCase):
 
         qdir, logs = self.root / "bundle.quarantine", []
         with mock.patch("colab_runner.colab_cli.shutil.move", side_effect=move):
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(BinaryDownloadRefused) as ctx:
                 scrub_local(bundle, quarantine_dir=qdir, on_quarantine=seen.append, log=logs.append)
+        self.assertEqual(len(ctx.exception.failures), 1)
+        self.assertIsInstance(ctx.exception.failures[0], PermissionError)
+        self.assertEqual(len(ctx.exception.removed), 1)
+        self.assertEqual(len(ctx.exception.quarantined), 1)
         self.assertTrue(any("a_first.png could not be moved to quarantine and was removed" in ln for ln in logs))
         for v in values(self.t):
             self.assertNotIn(v, " ".join(logs))

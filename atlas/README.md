@@ -1,20 +1,19 @@
 # colab-runner: how it works
 
-Mapped at 2026-11-27 from commit 73b6b84 by Atlas 1.26.0.
+Mapped at 2026-11-27 from commit 878330a by Atlas 1.26.0.
 
 ## What this is
 
-4 parts, mostly Python (39 files), JavaScript (3), CSS (2), TypeScript (2), shell (2) and Astro (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
+4 parts, mostly Python (42 files), JavaScript (3), CSS (2), TypeScript (2), Astro (1) and shell (1). Work enters through 3 doors; the busiest is CI, which reaches 3 parts. It deploys a site to GitHub Pages.
 
-## What changed since 2026-11-26 (a887fd2)
+## What changed since 2026-11-27 (73b6b84)
 
-- colab_runner/**/*.py is now read by tests/test_errors.py.
-- docs/reference.md is new and belongs to no part, so atlas check fails on it against the previous map.
-- 1 file added and 9 changed content, across 2 parts.
+- README.md is now also read by colab_runner/publish.py.
+- 3 files added, 1 removed and 24 changed content, across 3 parts.
 
 ## What comes in
 
-1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, verify.sh and 24 more; checks colab_runner/ and examples/.
+1. **CI.** On a pull request to main; on a push to main touching 10 paths; or by hand. Runs scripts/check-audit-allowlist.mjs, scripts/check-audit-allowlist.test.mjs, verify.sh and 25 more; checks colab_runner/ and examples/.
 2. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
 3. **colab_runner** (the package's entry, not published from here). Loads colab_runner/__init__.py.
 
@@ -70,9 +69,9 @@ CI runs no code this map can follow; it only checks code, so there is no path of
 
 ## What this map cannot see
 
-- 6 writes and 11 reads use paths built at run time and are not named here.
+- 6 writes and 14 reads use paths built at run time and are not named here.
 - 1 write goes to places this repository does not track, so it is not listed as generated.
-- 20 writes and 26 reads go to a path their caller passes, not to this repository.
+- 17 writes and 24 reads go to a path their caller passes, not to this repository.
 - 1 write goes to a temporary directory or a path its caller passes, not to this repository.
 - 25 files belong to no part: docs/reference.md, examples/merchant_league_seats/README.md, examples/merchant_league_seats/colab-window.toml and 22 more.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
