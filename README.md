@@ -28,6 +28,8 @@ stops the session and writes down what it cost.
   mid-run, `stop --out-dir` closes it later.
 - **Tokens stay out of the results.** Logs and downloaded files are scrubbed of access tokens before they land.
 - **A record of every run.** `outcome.json` in the output folder says how the run ended and what it cost.
+- **Optional publishing.** A job whose spec has `[publish] enabled = true` and a `repo_id` uploads its outputs to
+  Hugging Face when it finishes. Nothing is published unless the spec asks.
 
 ## Install
 
@@ -113,10 +115,12 @@ downloads are scrubbed, and pricing are all in [docs/reference.md](docs/referenc
 - The environment variables you name with `--env`, which it passes to the VM inside the cell file.
 
 **What it does not touch.** No files outside the out dir, its quarantine and the temp quarantine. No other Colab
-session. No account settings, credentials or billing: it reads the account's rate and balance through the `colab`
-command line and never changes them.
+session. No account settings or billing: it reads the account's rate and balance through the `colab` command line
+and never changes them. It reads no credentials of its own, except a Hugging Face token when a job opts into
+publishing.
 
-**Network.** Only through the `colab` command line, to Google Colab. colab-runner opens no connection of its own.
+**Network.** Through the `colab` command line, to Google Colab. colab-runner opens no connection of its own, except
+to huggingface.co when a job opts into publishing.
 
 **Secrets.** A secret passed as `--env NAME` stays off every command line. Every output line, error line, traceback
 and downloaded text file is scrubbed of tokens; a binary file with a token in it is quarantined unchanged and the

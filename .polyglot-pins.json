@@ -324,6 +324,12 @@
       "source": "**No telemetry.** colab-runner collects and sends nothing.",
       "translation": "**Sem telemetria.** colab-runner não coleta nem envia nada.",
       "pinnedAt": "2026-11-17T22:40:25.498Z"
+    },
+    "21ec0e38b048a5b9:ja": {
+      "lang": "ja",
+      "source": "Run a script on a paid Google Colab GPU from your own machine, with a hard spending limit, and get the results\nback. You describe the job in a small file; colab-runner opens the session, runs the job, brings the outputs home,\nstops the session and writes down what it cost.",
+      "translation": "自分のマシンから、有料のGoogle Colab GPUでスクリプトを実行し、予算の上限を設定して、結果を取得します。ジョブは小さなファイルに記述します。colab-runner がセッションを開き、ジョブを実行し、出力を手元に持ち帰り、セッションを停止して、かかった費用を記録します。",
+      "pinnedAt": "2026-11-27T01:30:30.440Z"
     }
   }
 }
